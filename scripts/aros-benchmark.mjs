@@ -240,19 +240,30 @@ async function agentSystem() {
   // 2a. SOUL.md exists (2pts)
   {
     const soulPath = path.join(ROOT, 'aros-ai', 'SOUL.md');
-    const lines = lineCount(soulPath);
-    const score = lines > 100 ? 2 : lines > 0 ? 1 : 0;
+    const soul = readFile(soulPath);
+    const requiredSections = [
+      '## Core Identity',
+      '## Default Stance',
+      '## Stable Values',
+      '## Behavioral Boundaries',
+      '## Recovery Pattern',
+      '## Continuity',
+    ];
+    const missingSections = requiredSections.filter((section) => !soul.includes(section));
+    const score = soul && missingSections.length === 0 ? 2 : soul ? 1 : 0;
     checks.push(
       check(
         'SOUL.md exists',
         score,
         2,
-        lines > 100
-          ? `aros-ai/SOUL.md: ${lines} lines`
-          : lines > 0
-            ? `SOUL.md too short (${lines} lines, need >100)`
+        score === 2
+          ? `aros-ai/SOUL.md: compact kernel with ${requiredSections.length} required sections`
+          : soul
+            ? `SOUL.md missing sections: ${missingSections.join(', ')}`
             : 'aros-ai/SOUL.md not found',
-        score < 2 ? 'Create aros-ai/SOUL.md with comprehensive agent soul (>100 lines)' : null,
+        score < 2
+          ? 'Align aros-ai/SOUL.md to the compact kernel sections used by the agent template'
+          : null,
       ),
     );
   }
