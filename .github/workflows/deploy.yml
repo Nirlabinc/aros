@@ -47,6 +47,20 @@ jobs:
             echo "expected_supabase=https://tvdvfdmpackwebfasrsw.supabase.co" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Normalize SSH host
+        id: hostnorm
+        run: |
+          RAW="${{ steps.host.outputs.ssh_host }}"
+          CLEAN="${RAW#*@}"
+          CLEAN="${CLEAN#*://}"
+          CLEAN="${CLEAN%%/*}"
+          CLEAN="${CLEAN%%:*}"
+          if [ -z "$CLEAN" ]; then
+            echo "Unable to normalize SSH host from secret value"
+            exit 1
+          fi
+          echo "host=$CLEAN" >> "$GITHUB_OUTPUT"
+
       - name: Runtime ownership gate
         run: |
           node deploy/scripts/validate-runtime-ownership.mjs
@@ -61,7 +75,7 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.AROS_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ steps.host.outputs.ssh_host }}" >> ~/.ssh/known_hosts
+          ssh-keyscan -H "${{ steps.hostnorm.outputs.host }}" >> ~/.ssh/known_hosts || true
 
       - name: Sync source
         run: |
@@ -74,12 +88,12 @@ jobs:
             --exclude "shre-sdk/" \
             --exclude "ports.json" \
             -e "ssh -i ~/.ssh/deploy_key" \
-            ./ root@"${{ steps.host.outputs.ssh_host }}":/opt/aros-platform/
+            ./ root@"${{ steps.hostnorm.outputs.host }}":/opt/aros-platform/
 
       - name: Build and restart (prod)
         if: steps.target.outputs.target_env == 'prod'
         run: |
-          ssh -i ~/.ssh/deploy_key root@"${{ steps.host.outputs.ssh_host }}" 'bash -s' << 'EOS'
+          ssh -i ~/.ssh/deploy_key root@"${{ steps.hostnorm.outputs.host }}" 'bash -s' << 'EOS'
           set -euo pipefail
           cd /opt/aros-platform
           pnpm install --frozen-lockfile
@@ -93,7 +107,7 @@ jobs:
       - name: Build and restart (staging)
         if: steps.target.outputs.target_env == 'staging'
         run: |
-          ssh -i ~/.ssh/deploy_key root@"${{ steps.host.outputs.ssh_host }}" 'bash -s' << 'EOS'
+          ssh -i ~/.ssh/deploy_key root@"${{ steps.hostnorm.outputs.host }}" 'bash -s' << 'EOS'
           set -euo pipefail
           cd /opt/aros-platform
           # Staging runtime currently serves from /opt/aros-platform/mib007-live
@@ -116,7 +130,7 @@ jobs:
 
       - name: Validate remote environment mapping
         run: |
-          ssh -i ~/.ssh/deploy_key root@"${{ steps.host.outputs.ssh_host }}" 'bash -s' << 'EOS'
+          ssh -i ~/.ssh/deploy_key root@"${{ steps.hostnorm.outputs.host }}" 'bash -s' << 'EOS'
           set -euo pipefail
 
           if [ "${{ steps.target.outputs.target_env }}" = "prod" ]; then
