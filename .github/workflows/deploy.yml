@@ -95,6 +95,9 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key root@"${{ steps.hostnorm.outputs.host }}" 'bash -s' << 'EOS'
           set -euo pipefail
+          if [ ! -e /opt/shre-sdk ] && [ -d /opt/aros-platform/shre-sdk ]; then
+            ln -s /opt/aros-platform/shre-sdk /opt/shre-sdk
+          fi
           cd /opt/aros-platform
           pnpm install --frozen-lockfile
           pnpm build
@@ -109,6 +112,9 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key root@"${{ steps.hostnorm.outputs.host }}" 'bash -s' << 'EOS'
           set -euo pipefail
+          if [ ! -e /opt/shre-sdk ] && [ -d /opt/aros-platform/shre-sdk ]; then
+            ln -s /opt/aros-platform/shre-sdk /opt/shre-sdk
+          fi
           cd /opt/aros-platform
           # Staging runtime currently serves from /opt/aros-platform/mib007-live
           # and root workspace build depends on ../shre-sdk being present.
