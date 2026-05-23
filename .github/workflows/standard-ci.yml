@@ -60,4 +60,16 @@ jobs:
       - name: Run tests
         run: |
           chmod +x scripts/test.sh || true
-          if [ -f scripts/test.sh ]; then ./scripts/test.sh; else echo "No scripts/test.sh"; fi
+          if [ -f scripts/test.sh ]; then
+            ./scripts/test.sh
+          elif [ -f package.json ]; then
+            if jq -e '.scripts.test' package.json >/dev/null; then
+              pnpm test
+            else
+              echo "No test script; running baseline checks"
+              pnpm typecheck
+              pnpm lint
+            fi
+          else
+            echo "No test entrypoint found"
+          fi
