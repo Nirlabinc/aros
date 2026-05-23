@@ -130,7 +130,15 @@ jobs:
           pm2 describe aros-beta >/dev/null 2>&1 || { echo "Missing PM2 app: aros-beta"; exit 1; }
           pm2 describe aros-dev >/dev/null 2>&1 || { echo "Missing PM2 app: aros-dev"; exit 1; }
           pm2 restart aros-beta
+          for i in 1 2 3 4 5 6; do
+            curl -fsS --max-time 10 http://127.0.0.1:3001/api/health >/dev/null && break
+            sleep 3
+          done
           pm2 restart aros-dev
+          for i in 1 2 3 4 5 6; do
+            curl -fsS --max-time 10 http://127.0.0.1:3002/api/health >/dev/null && break
+            sleep 3
+          done
           pm2 save
           EOS
 
