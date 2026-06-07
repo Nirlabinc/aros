@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Stripe from 'stripe';
-import { handleStripeWebhook, _resetProcessedEvents } from '../webhook.js';
+import { handleStripeWebhook } from '../webhook.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -33,6 +33,8 @@ interface CapturedUpdate {
 }
 
 let capturedUpdates: CapturedUpdate[] = [];
+// Simulates the stripe_billing_events idempotency table: ids seen this test.
+let insertedEventIds = new Set<string>();
 
 vi.mock('../../supabase.js', () => {
   const makeEq = (table: string, fields: Record<string, unknown>) => ({
@@ -55,9 +57,21 @@ vi.mock('../../supabase.js', () => {
   // We need to capture the table name, so build a smarter mock
   const fromFn = (table: string) => ({
     update: (fields: Record<string, unknown>) => makeEq(table, fields),
-    insert: (rows: unknown) => ({
-      select: () => Promise.resolve({ data: rows, error: null }),
-    }),
+    insert: (rows: unknown) => {
+      // Idempotency ledger: a repeated event id fails with a unique violation.
+      if (table === 'stripe_billing_events') {
+        const eventId = (rows as { event_id?: string })?.event_id;
+        if (eventId && insertedEventIds.has(eventId)) {
+          return Promise.resolve({
+            data: null,
+            error: { code: '23505', message: 'duplicate key value violates unique constraint' },
+          });
+        }
+        if (eventId) insertedEventIds.add(eventId);
+        return Promise.resolve({ data: rows, error: null });
+      }
+      return { select: () => Promise.resolve({ data: rows, error: null }) };
+    },
   });
 
   return {
@@ -125,7 +139,7 @@ function makeSubscription(overrides: Record<string, unknown> = {}): Record<strin
 
 beforeEach(() => {
   capturedUpdates = [];
-  _resetProcessedEvents();
+  insertedEventIds = new Set<string>();
   process.env['STRIPE_SECRET_KEY'] = TEST_STRIPE_KEY;
   process.env['STRIPE_WEBHOOK_SECRET'] = TEST_WEBHOOK_SECRET;
   process.env['STRIPE_PRICE_PRO'] = TEST_PRICE_PRO;

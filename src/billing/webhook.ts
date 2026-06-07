@@ -13,19 +13,8 @@ export interface WebhookResult {
   body: Record<string, unknown>;
 }
 
-/**
- * In-process idempotency guard: tracks Stripe event IDs already handled in
- * this process lifetime. Prevents double-processing on webhook replay.
- * NOTE: A persistent store (e.g. stripe_billing_events table) would be needed
- * for cross-process idempotency across multiple replicas. This table does not
- * yet exist in the schema; a future migration should add it and replace this Set.
- */
-const _processedEventIds = new Set<string>();
-
-/** Exposed for test reset only — do not call in production code. */
-export function _resetProcessedEvents(): void {
-  _processedEventIds.clear();
-}
+/** Postgres unique-violation error code (duplicate primary key). */
+const PG_UNIQUE_VIOLATION = '23505';
 
 /**
  * Process an incoming Stripe webhook request.
@@ -45,13 +34,25 @@ export async function handleStripeWebhook(
     return { status: 400, body: { error: `Webhook signature verification failed: ${message}` } };
   }
 
-  // ── Idempotency guard ───────────────────────────────────────
-  if (_processedEventIds.has(event.id)) {
-    return { status: 200, body: { received: true, type: event.type, duplicate: true } };
-  }
-  _processedEventIds.add(event.id);
-
   const supabase = createSupabaseAdmin();
+
+  // ── Idempotency (persistent, cross-replica) ──────────────────
+  // Claim the event by inserting its id into stripe_billing_events. The
+  // primary key makes a replay (same event id) fail with a unique violation —
+  // including across replicas — so we acknowledge and skip without repeating
+  // side effects (notably the meter `recharge` POSTs, which are NOT idempotent).
+  const { error: claimError } = await supabase
+    .from('stripe_billing_events')
+    .insert({ event_id: event.id, type: event.type, payload: event.data.object as unknown });
+  if (claimError) {
+    const code = (claimError as { code?: string }).code;
+    if (code === PG_UNIQUE_VIOLATION) {
+      return { status: 200, body: { received: true, type: event.type, duplicate: true } };
+    }
+    // Non-conflict error (e.g. transient DB issue): log and continue so a
+    // legitimate event is never dropped. Availability over strict idempotency.
+    console.warn('[billing] stripe_billing_events claim failed, processing anyway:', claimError);
+  }
 
   // ── Route by event type ─────────────────────────────────────
   switch (event.type) {
