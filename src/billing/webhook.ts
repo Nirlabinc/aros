@@ -14,6 +14,20 @@ export interface WebhookResult {
 }
 
 /**
+ * In-process idempotency guard: tracks Stripe event IDs already handled in
+ * this process lifetime. Prevents double-processing on webhook replay.
+ * NOTE: A persistent store (e.g. stripe_billing_events table) would be needed
+ * for cross-process idempotency across multiple replicas. This table does not
+ * yet exist in the schema; a future migration should add it and replace this Set.
+ */
+const _processedEventIds = new Set<string>();
+
+/** Exposed for test reset only — do not call in production code. */
+export function _resetProcessedEvents(): void {
+  _processedEventIds.clear();
+}
+
+/**
  * Process an incoming Stripe webhook request.
  * @param rawBody - Raw request body (must NOT be parsed as JSON)
  * @param signature - Value of the `stripe-signature` header
@@ -30,6 +44,12 @@ export async function handleStripeWebhook(
     const message = err instanceof Error ? err.message : 'Invalid signature';
     return { status: 400, body: { error: `Webhook signature verification failed: ${message}` } };
   }
+
+  // ── Idempotency guard ───────────────────────────────────────
+  if (_processedEventIds.has(event.id)) {
+    return { status: 200, body: { received: true, type: event.type, duplicate: true } };
+  }
+  _processedEventIds.add(event.id);
 
   const supabase = createSupabaseAdmin();
 
@@ -63,8 +83,18 @@ export async function handleStripeWebhook(
       const plan = planFromPriceId(priceId);
 
       if (tenantId) {
+        // cancel_at_period_end=true means the subscription will cancel at period end
+        let billingStatus: string;
+        if (subscription.cancel_at_period_end) {
+          billingStatus = 'canceled';
+        } else if (subscription.status === 'active') {
+          billingStatus = 'active';
+        } else {
+          billingStatus = subscription.status;
+        }
+
         const updateFields: Record<string, unknown> = {
-          billing_status: subscription.status === 'active' ? 'active' : subscription.status,
+          billing_status: billingStatus,
           updated_at: new Date().toISOString(),
         };
         if (plan) {
@@ -86,7 +116,7 @@ export async function handleStripeWebhook(
           .update({
             plan: 'free',
             license_tier: 'free',
-            billing_status: 'cancelled',
+            billing_status: 'canceled',
             stripe_subscription_id: null,
             updated_at: new Date().toISOString(),
           })
@@ -104,7 +134,7 @@ export async function handleStripeWebhook(
         await supabase
           .from('tenants')
           .update({
-            billing_status: 'payment_failed',
+            billing_status: 'past_due',
             updated_at: new Date().toISOString(),
           })
           .eq('stripe_customer_id', customerId);
