@@ -602,13 +602,14 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
   const body = await parseJsonBody(req);
   if (!body) return json(res, 400, { error: 'Invalid JSON' });
 
-  const { name, email, password, company, posSystem, storeCount } = body as {
+  const { name, email, password, company, posSystem, storeCount, intent } = body as {
     name?: string;
     email?: string;
     password?: string;
     company?: string;
     posSystem?: string;
     storeCount?: number;
+    intent?: string;
   };
 
   // Validate required fields
@@ -642,6 +643,10 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
   const safeEmail = email.trim().toLowerCase().slice(0, 254);
   const safeCompany = sanitizeString(String(company), 200);
   const safePosSystem = posSystem ? sanitizeString(String(posSystem), 50) : null;
+  // The one-question signup intent ("what do you want your agent to do?") seeds
+  // the day-one demo scenario + default tools. Stored in freeform user_metadata
+  // (no tenant-schema migration needed).
+  const safeIntent = intent ? sanitizeString(String(intent), 50) : null;
 
   const clientIp = getClientIp(req);
 
@@ -656,6 +661,7 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
       user_metadata: {
         name: safeName,
         company: safeCompany,
+        intent: safeIntent,
       },
     });
 
