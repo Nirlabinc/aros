@@ -2,7 +2,7 @@
  * AROS Platform — Health Server + Billing API + Signup + Onboarding
  *
  * Lightweight HTTP server providing /health, /readyz, billing, signup,
- * onboarding, and email verification endpoints.
+ * onboarding, marketplace, and email verification endpoints.
  * Uses Node built-in http module to avoid adding dependencies.
  */
 
@@ -232,7 +232,7 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
     res.setHeader('Access-Control-Allow-Origin', origin);
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Aros-Tenant-Id, X-Aros-App-Key');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
 }
 
@@ -897,7 +897,24 @@ async function handleLeadCapture(req: IncomingMessage, res: ServerResponse): Pro
 
 // ── Auth Helper ─────────────────────────────────────────────────
 
-async function authenticateRequest(req: IncomingMessage): Promise<{ userId: string; tenantId: string } | null> {
+type AuthContext = {
+  userId: string;
+  tenantId: string;
+  role: string;
+};
+
+function getRequestUrl(req: IncomingMessage): URL {
+  return new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+}
+
+function getRequestedTenantId(req: IncomingMessage): string | null {
+  const headerTenantId = req.headers['x-aros-tenant-id'] ?? req.headers['x-tenant-id'];
+  if (Array.isArray(headerTenantId)) return headerTenantId[0] || null;
+  if (typeof headerTenantId === 'string' && headerTenantId.trim()) return headerTenantId.trim();
+  return getRequestUrl(req).searchParams.get('tenantId');
+}
+
+async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | null> {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) return null;
 
@@ -907,18 +924,204 @@ async function authenticateRequest(req: IncomingMessage): Promise<{ userId: stri
     const { data: { user }, error } = await supabase.auth.getUser(token);
     if (error || !user) return null;
 
-    // Look up tenant membership
-    const { data: membership } = await supabase
+    const requestedTenantId = getRequestedTenantId(req);
+    let membershipQuery = supabase
       .from('tenant_members')
-      .select('tenant_id')
+      .select('tenant_id, role, status')
       .eq('user_id', user.id)
-      .limit(1)
-      .single();
+      .eq('status', 'active');
+
+    if (requestedTenantId) {
+      membershipQuery = membershipQuery.eq('tenant_id', requestedTenantId);
+    }
+
+    const { data: memberships } = await membershipQuery
+      .order('is_default', { ascending: false })
+      .order('joined_at', { ascending: true })
+      .limit(1);
+
+    const membership = memberships?.[0];
 
     if (!membership) return null;
-    return { userId: user.id, tenantId: membership.tenant_id };
+    return {
+      userId: user.id,
+      tenantId: membership.tenant_id,
+      role: membership.role || 'member',
+    };
   } catch {
     return null;
+  }
+}
+
+function canManageMarketplace(role: string): boolean {
+  return ['owner', 'admin'].includes(role);
+}
+
+function normalizeAppKey(raw: unknown): string {
+  const value = String(raw ?? '').trim().toLowerCase();
+  const aliases: Record<string, string> = {
+    '@aros/storepulse-ui': 'storepulse',
+    'storepulse-ui': 'storepulse',
+    'storepulse.aros.live': 'storepulse',
+    'storepulse-hq': 'storepulse',
+    '@aros/shre-chat': 'chat',
+    'shre-chat': 'chat',
+    'chat.aros.live': 'chat',
+    'rapid-support': 'rapidsupport',
+    'rapidsupport.aros.live': 'rapidsupport',
+    atomdesk: 'centrix',
+    'centrix.aros.live': 'centrix',
+  };
+  return (aliases[value] ?? value).replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+async function handleMarketplaceEntitlements(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data, error } = await supabase
+      .from('marketplace_app_entitlements')
+      .select('id, tenant_id, app_key, status, source, enabled_by, enabled_at, disabled_at, role_mapping, service_config, metadata, created_at, updated_at')
+      .eq('tenant_id', auth.tenantId)
+      .order('app_key', { ascending: true });
+
+    if (error) throw error;
+    json(res, 200, { entitlements: data || [] });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to list marketplace entitlements';
+    console.error('[marketplace.entitlements]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+async function handleMarketplaceInstall(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+
+  const appKey = normalizeAppKey(body.appKey ?? body.nodeId);
+  if (!appKey) return json(res, 400, { error: 'Missing required field: appKey or nodeId' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const payload = {
+      tenant_id: auth.tenantId,
+      app_key: appKey,
+      status: 'active',
+      source: String(body.source || 'marketplace'),
+      enabled_by: auth.userId,
+      enabled_at: new Date().toISOString(),
+      disabled_at: null,
+      role_mapping: isRecord(body.roleMapping) ? body.roleMapping : {},
+      service_config: isRecord(body.config) ? body.config : {},
+      metadata: {
+        ...(isRecord(body.metadata) ? body.metadata : {}),
+        nodeId: typeof body.nodeId === 'string' ? body.nodeId : appKey,
+      },
+    };
+
+    const { data, error } = await supabase
+      .from('marketplace_app_entitlements')
+      .upsert(payload, { onConflict: 'tenant_id,app_key' })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'marketplace.app_enabled',
+      resource: appKey,
+      detail: { appKey, source: payload.source },
+      ip: getClientIp(req),
+    });
+
+    json(res, 200, { ok: true, entitlement: data });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to install marketplace app';
+    console.error('[marketplace.install]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+async function handleMarketplaceDisable(req: IncomingMessage, res: ServerResponse, appKeyParam: string): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+
+  const appKey = normalizeAppKey(appKeyParam);
+  if (!appKey) return json(res, 400, { error: 'Missing app key' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data, error } = await supabase
+      .from('marketplace_app_entitlements')
+      .update({
+        status: 'disabled',
+        disabled_at: new Date().toISOString(),
+      })
+      .eq('tenant_id', auth.tenantId)
+      .eq('app_key', appKey)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'marketplace.app_disabled',
+      resource: appKey,
+      detail: { appKey },
+      ip: getClientIp(req),
+    });
+
+    json(res, 200, { ok: true, entitlement: data });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to disable marketplace app';
+    console.error('[marketplace.disable]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+async function handleAppEntitlement(req: IncomingMessage, res: ServerResponse, appKeyParam: string): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  const appKey = normalizeAppKey(appKeyParam);
+  if (!appKey) return json(res, 400, { error: 'Missing app key' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data, error } = await supabase
+      .from('marketplace_app_entitlements')
+      .select('id, tenant_id, app_key, status, role_mapping, service_config, metadata, enabled_at, disabled_at')
+      .eq('tenant_id', auth.tenantId)
+      .eq('app_key', appKey)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    json(res, 200, {
+      appKey,
+      tenantId: auth.tenantId,
+      entitled: data?.status === 'active',
+      entitlement: data || null,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to check app entitlement';
+    console.error('[app.entitlement]', message);
+    json(res, 500, { error: message });
   }
 }
 
@@ -1283,6 +1486,8 @@ function timeAgo(isoDate: string): string {
 
 async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? '/';
+  const requestUrl = getRequestUrl(req);
+  const pathname = requestUrl.pathname;
   const method = req.method ?? 'GET';
 
   // Security headers + CORS
@@ -1413,6 +1618,24 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (url === '/api/human/connectors/activate' && method === 'POST') {
     return handleActivateHumanConnectors(req, res);
+  }
+
+  if (pathname === '/api/marketplace/entitlements' && method === 'GET') {
+    return handleMarketplaceEntitlements(req, res);
+  }
+
+  if (pathname === '/api/marketplace/install' && method === 'POST') {
+    return handleMarketplaceInstall(req, res);
+  }
+
+  const marketplaceDisableMatch = pathname.match(/^\/api\/marketplace\/apps\/([^/]+)\/disable$/);
+  if (marketplaceDisableMatch && method === 'POST') {
+    return handleMarketplaceDisable(req, res, decodeURIComponent(marketplaceDisableMatch[1]));
+  }
+
+  const appEntitlementMatch = pathname.match(/^\/api\/apps\/([^/]+)\/entitlement$/);
+  if (appEntitlementMatch && method === 'GET') {
+    return handleAppEntitlement(req, res, decodeURIComponent(appEntitlementMatch[1]));
   }
 
   // ── Lead capture (public, no auth) ──────────────────────

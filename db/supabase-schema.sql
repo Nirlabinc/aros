@@ -44,8 +44,11 @@ CREATE TABLE tenant_members (
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   role TEXT NOT NULL DEFAULT 'member',
+  is_default BOOLEAN NOT NULL DEFAULT FALSE,
+  status TEXT NOT NULL DEFAULT 'active',
   invited_at TIMESTAMPTZ DEFAULT now(),
   accepted_at TIMESTAMPTZ,
+  joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(tenant_id, user_id)
 );
 
@@ -98,6 +101,24 @@ CREATE TABLE audit_log (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Marketplace app entitlements (per tenant)
+CREATE TABLE marketplace_app_entitlements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  app_key TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled', 'pending', 'error')),
+  source TEXT NOT NULL DEFAULT 'marketplace',
+  enabled_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  enabled_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  disabled_at TIMESTAMPTZ,
+  role_mapping JSONB NOT NULL DEFAULT '{}',
+  service_config JSONB NOT NULL DEFAULT '{}',
+  metadata JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(tenant_id, app_key)
+);
+
 -- ============================================================================
 -- Row Level Security
 -- ============================================================================
@@ -108,6 +129,7 @@ ALTER TABLE pos_connections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE edge_relays ENABLE ROW LEVEL SECURITY;
 ALTER TABLE onboarding_progress ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE marketplace_app_entitlements ENABLE ROW LEVEL SECURITY;
 
 -- Helper: SECURITY DEFINER function to break RLS recursion between
 -- tenants ↔ tenant_members. Without this, tenant_member_access reads
@@ -164,6 +186,31 @@ CREATE POLICY audit_tenant ON audit_log
     tenant_id IN (SELECT id FROM tenants WHERE owner_id = auth.uid())
   );
 
+-- Marketplace entitlements: members can read, owners/admins manage
+CREATE POLICY marketplace_entitlements_select_member ON marketplace_app_entitlements
+  FOR SELECT USING (
+    tenant_id IN (SELECT public.get_owned_tenant_ids(auth.uid()))
+    OR tenant_id IN (
+      SELECT tenant_id FROM tenant_members
+      WHERE user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY marketplace_entitlements_write_admin ON marketplace_app_entitlements
+  FOR ALL USING (
+    tenant_id IN (SELECT public.get_owned_tenant_ids(auth.uid()))
+    OR tenant_id IN (
+      SELECT tenant_id FROM tenant_members
+      WHERE user_id = auth.uid() AND role IN ('owner','admin')
+    )
+  ) WITH CHECK (
+    tenant_id IN (SELECT public.get_owned_tenant_ids(auth.uid()))
+    OR tenant_id IN (
+      SELECT tenant_id FROM tenant_members
+      WHERE user_id = auth.uid() AND role IN ('owner','admin')
+    )
+  );
+
 -- ============================================================================
 -- Indexes
 -- ============================================================================
@@ -176,6 +223,8 @@ CREATE INDEX idx_pos_tenant ON pos_connections(tenant_id);
 CREATE INDEX idx_relay_tenant ON edge_relays(tenant_id);
 CREATE INDEX idx_audit_tenant ON audit_log(tenant_id);
 CREATE INDEX idx_audit_created ON audit_log(created_at);
+CREATE INDEX idx_marketplace_entitlements_tenant_status ON marketplace_app_entitlements(tenant_id, status);
+CREATE INDEX idx_marketplace_entitlements_app_key ON marketplace_app_entitlements(app_key);
 
 -- ============================================================================
 -- Triggers
@@ -195,4 +244,8 @@ CREATE TRIGGER tenants_updated
 
 CREATE TRIGGER onboarding_updated
   BEFORE UPDATE ON onboarding_progress
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER marketplace_app_entitlements_updated
+  BEFORE UPDATE ON marketplace_app_entitlements
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
