@@ -37,6 +37,7 @@ import {
   listHumanProjects,
 } from './human-state.js';
 import { createTask } from '../tasks/store.js';
+import type { TaskPriority } from '../tasks/types.js';
 
 const PORT = 5457;
 const startedAt = new Date().toISOString();
