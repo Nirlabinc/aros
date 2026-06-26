@@ -1,0 +1,32 @@
+# AROS customer web app (app.aros.live) — ghcr.io/shreai/shreai/aros
+#
+# Packages a PRE-BUILT apps/web/dist into a tiny static-server runtime.
+#
+# The dist must be built first (deploy/build-aros-web.sh does this) with
+# VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY exported, because Vite inlines
+# them at build time — a dist built without them ships a bundle that throws
+# "supabaseUrl is required" at load and renders a blank page.
+#
+# Why not a hermetic multi-stage `pnpm install` here: the workspace has an
+# absolute-path dependency (link:/shre-sdk) that only exists on build hosts,
+# so an in-container install fails. Building on the host (or CI runner, which
+# has the workspace resolved) and copying the artifact is the reliable path.
+FROM node:20-alpine AS production
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Fail the image build if the dist wasn't produced with Supabase config baked
+# in (guards against packaging a blank-page bundle).
+COPY apps/web/dist ./dist
+RUN grep -rqlE "supabase\.co" ./dist/assets/*.js || \
+    (echo "ERROR: apps/web/dist has no Supabase URL baked in — rebuild with deploy/build-aros-web.sh" && exit 1)
+
+COPY aros.config.json ./aros.config.json
+COPY whitelabel ./whitelabel
+COPY package.json ./package.json
+COPY deploy/web-server.mjs ./server.mjs
+
+RUN addgroup -g 1001 -S aros && adduser -S aros -u 1001
+USER aros
+EXPOSE 3000
+CMD ["node", "server.mjs"]
