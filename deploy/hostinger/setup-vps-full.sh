@@ -3,7 +3,10 @@
 # Run as root: sudo bash setup-vps-full.sh
 #
 # Sets up: Docker + Docker Compose, Node 20, PM2, nginx, certbot,
-# directory structure for AROS (PM2) + Shre Core (Docker) + SpillQuest (Docker)
+# directory structure for AROS (PM2) + Shre Core (Docker)
+#
+# NOTE: SpillQuest (spillquest.com) is a separate product with its own repo
+# (Nirpat3/find-myself) and its own dedicated VPS — not provisioned here.
 
 set -euo pipefail
 
@@ -131,24 +134,18 @@ echo "   cd /opt/shre-sdk && pnpm install && pnpm build"
 echo ""
 echo "2. Copy compose files:"
 echo "   cp /opt/aros-platform/deploy/docker-compose.aros-retail.yml /opt/shre/compose/"
-echo "   cp /opt/aros-platform/deploy/docker-compose.spillquest.yml /opt/shre/compose/"
 echo ""
 echo "3. Create env files from templates:"
 echo "   cp /opt/aros-platform/deploy/hostinger/.env.shre-core.example /opt/shre/envs/.env.shre-core"
-echo "   cp /opt/aros-platform/deploy/hostinger/.env.spillquest.example /opt/shre/envs/.env.spillquest"
 echo "   nano /opt/shre/envs/.env.shre-core    # Fill in real values"
-echo "   nano /opt/shre/envs/.env.spillquest    # Fill in real values"
 echo "   chmod 600 /opt/shre/envs/.env.*"
 echo ""
 echo "4. Copy nginx configs:"
 echo "   mkdir -p /opt/shre/compose/nginx"
 echo "   cp /opt/aros-platform/deploy/hostinger/nginx.conf /opt/shre/compose/nginx/aros.conf"
-echo "   cp /opt/aros-platform/deploy/hostinger/nginx-spillquest.conf /opt/shre/compose/nginx/spillquest.conf"
 echo "   cp /opt/aros-platform/deploy/hostinger/nginx-nirtek.conf /opt/shre/compose/nginx/nirtek.conf"
 echo ""
 echo "5. SSL certificates:"
-echo "   # SpillQuest (standard HTTP challenge)"
-echo "   certbot --nginx -d spillquest.com -d www.spillquest.com --non-interactive --agree-tos --email admin@nirtek.net"
 echo "   # AROS (already done if migrated earlier)"
 echo "   certbot --nginx -d aros.nirtek.net --non-interactive --agree-tos --email admin@nirtek.net"
 echo "   # nirtek.net wildcard (requires DNS challenge via Cloudflare)"

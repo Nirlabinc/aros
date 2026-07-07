@@ -129,8 +129,8 @@ ingress:
 #   agenticretailos.com, www          — SEO concept page
 #   arosapp.com, arosapp.online       — 301 → aros.live
 #   agenticretailos.online             — 301 → agenticretailos.com
-#   spillquest.com                     — SpillQuest app
 #   nirtek.net, www.nirtek.net         — legacy AROS SPA
+#   (spillquest.com now lives on its own dedicated VPS — not in this zone routing)
 #
 # Mac tunnel (above — depends on CortexDB/Ollama/agents):
 #   app.shre.ai      — MIB007 platform UI

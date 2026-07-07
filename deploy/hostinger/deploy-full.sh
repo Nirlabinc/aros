@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 # Shre Production VPS — Full Stack Deployment
-# Deploys: AROS (PM2) + Shre Core (Docker) + SpillQuest (Docker)
+# Deploys: AROS (PM2) + Shre Core (Docker)
 #
 # Usage:
 #   ./deploy-full.sh                    # Deploy everything
 #   ./deploy-full.sh --aros-only        # AROS only (PM2)
 #   ./deploy-full.sh --docker-only      # Docker stacks only
-#   ./deploy-full.sh --spillquest-only  # SpillQuest only
 #
 # Prereqs on VPS:
 #   - Docker + Docker Compose v2
 #   - Node 20+, pnpm, pm2 (for AROS)
 #   - nginx + certbot
 #   - /opt/shre/ directory structure
-#   - /opt/shre/envs/.env.shre-core and .env.spillquest
+#   - /opt/shre/envs/.env.shre-core
+#
+# NOTE: SpillQuest (spillquest.com) is a separate product deployed from its own
+# repo (Nirpat3/find-myself) onto its own dedicated VPS — it is intentionally
+# not managed here.
 
 set -euo pipefail
 
@@ -42,7 +45,7 @@ preflight() {
   fi
 
   # Env files
-  for envfile in "$ENV_DIR/.env.shre-core" "$ENV_DIR/.env.spillquest"; do
+  for envfile in "$ENV_DIR/.env.shre-core"; do
     if [ ! -f "$envfile" ]; then
       echo "ERROR: Missing $envfile"
       exit 1
@@ -105,43 +108,6 @@ deploy_shre_core() {
   done
 }
 
-# ── SpillQuest (Docker Compose) ────────────────────────────────────────────
-
-deploy_spillquest() {
-  echo ""
-  echo "── Deploying SpillQuest (Docker) ──"
-
-  cd "$COMPOSE_DIR"
-
-  # Export SpillQuest env vars for compose interpolation
-  set -a
-  source "$ENV_DIR/.env.spillquest"
-  set +a
-
-  # IMAGE_TAG defaults to "latest" — CI sets it to the git SHA
-  export IMAGE_TAG="${IMAGE_TAG:-latest}"
-  echo "  Image tag: $IMAGE_TAG"
-
-  # Pull pre-built images from GHCR (no source builds on VPS)
-  docker compose -f docker-compose.spillquest.yml pull --quiet
-
-  # Rolling restart — nginx stays up while backends replace
-  docker compose -f docker-compose.spillquest.yml up -d \
-    --no-build \
-    --remove-orphans
-
-  echo "Waiting for SpillQuest..."
-  for i in $(seq 1 12); do
-    if curl -sf --max-time 5 http://localhost:4080/health >/dev/null 2>&1; then
-      echo "  SpillQuest: OK (attempt $i)"
-      return 0
-    fi
-    sleep 5
-  done
-
-  echo "  WARNING: SpillQuest health check did not pass within 60s"
-}
-
 # ── Nginx config sync ──────────────────────────────────────────────────────
 
 sync_nginx() {
@@ -151,7 +117,7 @@ sync_nginx() {
   NGINX_SRC="$COMPOSE_DIR/nginx"
   NGINX_DST="/etc/nginx/sites-available"
 
-  for conf in aros spillquest nirtek; do
+  for conf in aros nirtek; do
     if [ -f "$NGINX_SRC/$conf.conf" ]; then
       cp "$NGINX_SRC/$conf.conf" "$NGINX_DST/$conf"
       ln -sf "$NGINX_DST/$conf" "/etc/nginx/sites-enabled/$conf" 2>/dev/null || true
@@ -173,15 +139,10 @@ case "$MODE" in
     ;;
   --docker-only)
     deploy_shre_core
-    deploy_spillquest
-    ;;
-  --spillquest-only)
-    deploy_spillquest
     ;;
   all|*)
     deploy_aros
     deploy_shre_core
-    deploy_spillquest
     sync_nginx
     ;;
 esac
