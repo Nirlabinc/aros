@@ -14,6 +14,7 @@ import { BillingPage } from '../pages/billing/BillingPage';
 import { ChatWidget } from '../components/ChatWidget';
 import { Login } from '../pages/Login';
 import { Signup } from '../pages/Signup';
+import { StartChat } from '../pages/start/StartChat';
 import { ResetPassword } from '../pages/ResetPassword';
 import { VerifyEmail } from '../pages/VerifyEmail';
 
@@ -39,7 +40,7 @@ function AppContent() {
   // ── Public auth pages (no session required) ────────────────
   if (path === '/login') {
     if (session && !loading) {
-      window.location.href = onboarded ? '/dashboard' : '/onboarding';
+      window.location.href = onboarded ? '/dashboard' : '/start';
       return null;
     }
     return <><Login /><ChatWidget /></>;
@@ -47,7 +48,7 @@ function AppContent() {
 
   if (path === '/signup') {
     if (session && !loading) {
-      window.location.href = onboarded ? '/dashboard' : '/onboarding';
+      window.location.href = onboarded ? '/dashboard' : '/start';
       return null;
     }
     return <><Signup /><ChatWidget /></>;
@@ -73,8 +74,21 @@ function AppContent() {
 
   // ── Auth-required pages ────────────────────────────────────
 
+  // Start — value-first demo chat before setup.
+  if (path.startsWith('/start')) {
+    return (
+      <ProtectedRoute>
+        <StartChat />
+      </ProtectedRoute>
+    );
+  }
+
   // Onboarding — full-screen, no sidebar
   if (path.startsWith('/onboarding')) {
+    if (onboarded) {
+      window.location.href = "/dashboard";
+      return null;
+    }
     return (
       <ProtectedRoute>
         <OnboardingPage />
@@ -91,13 +105,13 @@ function AppContent() {
 }
 
 function AuthenticatedRoutes({ path, isAdmin, onboarded }: { path: string; isAdmin: boolean; onboarded: boolean }) {
-  // Gate: new users who haven't completed onboarding get redirected
+  // Gate: new users who haven't completed onboarding get routed to the value-first start page
   if (!onboarded) {
     const params = new URLSearchParams(window.location.search);
     if (params.has('payment')) {
       return <OnboardingPage />;
     }
-    window.location.href = '/onboarding';
+    window.location.href = '/start';
     return null;
   }
 

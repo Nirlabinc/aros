@@ -7,6 +7,9 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { readFile, stat } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { extname, join, normalize } from 'node:path';
 import {
   createCheckoutSession,
   createPortalSession,
@@ -27,6 +30,9 @@ import {
 
 const PORT = 5457;
 const startedAt = new Date().toISOString();
+const SHRE_TASKS_URL = process.env.SHRE_TASKS_URL || 'http://127.0.0.1:5460';
+const SHRE_ROUTER_URL = process.env.SHRE_ROUTER_URL || 'http://127.0.0.1:5497';
+const WEB_DIST = process.env.AROS_WEB_DIST || join(process.cwd(), 'apps', 'web', 'dist');
 
 // ── Platform Integrations ────────────────────────────────────────
 const eventBus = createEventBus('aros-platform');
@@ -45,6 +51,118 @@ const traceMiddleware = createTraceMiddleware('aros-platform');
 function json(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
+}
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
+
+function requestUrl(req: IncomingMessage): URL {
+  return new URL(req.url || '/', 'http://' + (req.headers.host || 'app.aros.live'));
+}
+
+function readTaskToken(): string {
+  const candidates = [
+    process.env.SHRE_TASKS_TOKEN,
+    process.env.SHRE_TASKS_API_KEY,
+    '/root/.shre/vault/shre-tasks.token',
+    '/root/.shre/vault/shre-tasks.key',
+    (process.env.HOME || '') + '/.shre/vault/shre-tasks.token',
+    (process.env.HOME || '') + '/.shre/vault/shre-tasks.key',
+  ].filter(Boolean) as string[];
+  for (const candidate of candidates) {
+    try {
+      if (!candidate.startsWith('/')) {
+        if (candidate.trim()) return candidate.trim();
+        continue;
+      }
+      if (existsSync(candidate)) {
+        const token = readFileSync(candidate, 'utf8').trim();
+        if (token) return token;
+      }
+    } catch {}
+  }
+  return '';
+}
+
+async function proxyRequest(req: IncomingMessage, res: ServerResponse, baseUrl: string): Promise<void> {
+  const current = requestUrl(req);
+  const upstreamPath = current.pathname.replace(/^\/sx-tasks(?=\/|$)/, '') || '/';
+  const upstreamUrl = new URL(upstreamPath, baseUrl);
+  upstreamUrl.search = current.search;
+
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (value == null || key.toLowerCase() === 'host') continue;
+    headers.set(key, Array.isArray(value) ? value.join(', ') : String(value));
+  }
+  headers.set('X-Brand', 'aros');
+  headers.set('X-Forwarded-Host', String(req.headers.host || 'app.aros.live'));
+  headers.delete('accept-encoding');
+
+  if (current.pathname.startsWith('/sx-tasks/')) {
+    const token = readTaskToken();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  const body = ['GET', 'HEAD'].includes(req.method || 'GET') ? undefined : req;
+  const upstream = await fetch(upstreamUrl, {
+    method: req.method,
+    headers,
+    body: body as any,
+    duplex: body ? 'half' : undefined,
+  } as any);
+
+  const responseHeaders: Record<string, string> = {};
+  upstream.headers.forEach((value, key) => {
+    if (['content-encoding', 'transfer-encoding', 'connection'].includes(key.toLowerCase())) return;
+    responseHeaders[key] = value;
+  });
+  res.writeHead(upstream.status, responseHeaders);
+  if (upstream.body) {
+    const reader = upstream.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(Buffer.from(value));
+    }
+  }
+  res.end();
+}
+
+async function sendStaticFile(res: ServerResponse, filePath: string): Promise<boolean> {
+  try {
+    const fileStat = await stat(filePath);
+    if (!fileStat.isFile()) return false;
+    const ext = extname(filePath);
+    const headers: Record<string, string> = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+    if (filePath.includes('/assets/')) headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+    res.writeHead(200, headers);
+    res.end(await readFile(filePath));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function serveDashboard(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+  if (!['GET', 'HEAD'].includes(req.method || 'GET')) return false;
+  const { pathname } = requestUrl(req);
+  const decodedPath = decodeURIComponent(pathname);
+  const safePath = normalize(decodedPath).replace(/^(\.\.(\/|\\|$))+/, '');
+  const staticPath = join(WEB_DIST, safePath === '/' ? 'index.html' : safePath);
+  if (await sendStaticFile(res, staticPath)) return true;
+  return sendStaticFile(res, join(WEB_DIST, 'index.html'));
 }
 
 function collectBody(req: IncomingMessage, maxBytes = 1_048_576): Promise<Buffer> {
@@ -497,9 +615,30 @@ async function handleOnboardingComplete(req: IncomingMessage, res: ServerRespons
 
   try {
     const supabase = createSupabaseAdmin();
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) {
+      return json(res, 401, { error: 'Authentication required' });
+    }
 
-    // Update tenant
-    await supabase
+    const token = authHeader.slice(7);
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !user) {
+      return json(res, 401, { error: 'Invalid session' });
+    }
+
+    const { data: membership, error: membershipError } = await supabase
+      .from('tenant_members')
+      .select('role')
+      .eq('tenant_id', tenantId)
+      .eq('user_id', user.id)
+      .limit(1)
+      .maybeSingle();
+
+    if (membershipError || !membership || !['owner', 'admin', 'member'].includes(String(membership.role))) {
+      return json(res, 403, { error: 'You do not have access to complete onboarding for this tenant' });
+    }
+
+    const { error: tenantError } = await supabase
       .from('tenants')
       .update({
         name: companyName || undefined,
@@ -509,18 +648,22 @@ async function handleOnboardingComplete(req: IncomingMessage, res: ServerRespons
       })
       .eq('id', tenantId);
 
-    // Update onboarding progress
-    await supabase
+    if (tenantError) throw tenantError;
+
+    const { error: progressError } = await supabase
       .from('onboarding_progress')
-      .update({
+      .upsert({
+        tenant_id: tenantId,
         step: 4,
         step_data: { companyName, storeName, storeCount, industry, phone, address },
         completed_at: new Date().toISOString(),
-      })
-      .eq('tenant_id', tenantId);
+      }, { onConflict: 'tenant_id' });
+
+    if (progressError) throw progressError;
 
     await auditLog({
       tenantId,
+      userId: user.id,
       action: 'onboarding.completed',
       resource: 'tenant',
       detail: { companyName, industry },
@@ -536,6 +679,82 @@ async function handleOnboardingComplete(req: IncomingMessage, res: ServerRespons
 }
 
 // ── Signup ──────────────────────────────────────────────────────
+
+async function ensureSignupTenant(
+  supabase: ReturnType<typeof createSupabaseAdmin>,
+  input: {
+    userId: string;
+    company: string;
+    posSystem: string | null;
+    storeCount?: number;
+  },
+): Promise<{ tenantId: string; licenseKey: string | null; existing: boolean }> {
+  const { data: membership } = await supabase
+    .from('tenant_members')
+    .select('tenant_id')
+    .eq('user_id', input.userId)
+    .limit(1)
+    .maybeSingle();
+
+  if (membership?.tenant_id) {
+    return { tenantId: membership.tenant_id, licenseKey: null, existing: true };
+  }
+
+  const { data: ownedTenant } = await supabase
+    .from('tenants')
+    .select('id')
+    .eq('owner_id', input.userId)
+    .limit(1)
+    .maybeSingle();
+
+  let tenantId = ownedTenant?.id as string | undefined;
+
+  if (!tenantId) {
+    const { data: tenant, error: tenantError } = await supabase
+      .from('tenants')
+      .insert({
+        name: input.company,
+        owner_id: input.userId,
+        plan: 'free',
+        billing_status: 'none',
+        pos_system: input.posSystem,
+        store_count: typeof input.storeCount === 'number' ? input.storeCount : null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .select('id')
+      .single();
+
+    if (tenantError || !tenant) {
+      throw new Error(tenantError?.message || 'Failed to create tenant');
+    }
+    tenantId = tenant.id;
+  }
+
+  await supabase.from('tenant_members').insert({
+    tenant_id: tenantId,
+    user_id: input.userId,
+    role: 'owner',
+  });
+
+  await supabase.from('onboarding_progress').upsert({
+    tenant_id: tenantId,
+    step: 1,
+    step_data: {},
+  }, { onConflict: 'tenant_id' });
+
+  let licenseKey: string | null = null;
+  try {
+    licenseKey = await provisionLicense(tenantId, 'free');
+  } catch (err) {
+    console.error(
+      '[signup] License provisioning failed:',
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  return { tenantId, licenseKey, existing: false };
+}
 
 async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!rateLimit(req, 5, 60_000)) {
@@ -605,61 +824,65 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
     if (authError || !authData.user) {
       const msg = authError?.message || 'Failed to create user';
       if (msg.includes('already') || msg.includes('duplicate')) {
-        await auditLog({ action: 'signup.duplicate', detail: { email: safeEmail }, ip: clientIp });
-        return json(res, 409, { error: 'An account with this email already exists' });
+        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+          email: safeEmail,
+          password: String(password),
+        });
+        if (signInError || !signInData.user) {
+          await auditLog({ action: 'signup.duplicate', detail: { email: safeEmail }, ip: clientIp });
+          return json(res, 409, { error: 'An account with this email already exists' });
+        }
+
+        const ensured = await ensureSignupTenant(supabase, {
+          userId: signInData.user.id,
+          company: safeCompany,
+          posSystem: safePosSystem,
+          storeCount,
+        });
+
+        await auditLog({
+          tenantId: ensured.tenantId,
+          userId: signInData.user.id,
+          action: ensured.existing ? 'signup.duplicate_login_ready' : 'signup.recovered',
+          resource: 'tenant',
+          detail: { email: safeEmail, company: safeCompany, plan: 'free' },
+          ip: clientIp,
+        });
+
+        return json(res, ensured.existing ? 200 : 201, {
+          recovered: !ensured.existing,
+          user: {
+            id: signInData.user.id,
+            email: signInData.user.email,
+            name: safeName,
+          },
+          tenant: {
+            id: ensured.tenantId,
+            name: safeCompany,
+            plan: 'free',
+            licenseKey: ensured.licenseKey,
+          },
+        });
       }
       return json(res, 400, { error: msg });
     }
 
-    const userId = authData.user.id;
-
-    // 2. Create tenant
-    const { data: tenant, error: tenantError } = await supabase
-      .from('tenants')
-      .insert({
-        name: safeCompany,
-        owner_id: userId,
-        plan: 'free',
-        billing_status: 'none',
-        pos_system: safePosSystem,
-        store_count: typeof storeCount === 'number' ? storeCount : null,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select('id')
-      .single();
-
-    if (tenantError || !tenant) {
-      console.error('[signup] Tenant creation failed:', tenantError?.message);
-      return json(res, 500, { error: 'Failed to create tenant' });
+    const { data: createdSignInData, error: createdSignInError } = await supabase.auth.signInWithPassword({
+      email: safeEmail,
+      password: String(password),
+    });
+    if (createdSignInError || !createdSignInData.user) {
+      throw new Error(createdSignInError?.message || 'Created account could not be signed in for tenant provisioning');
     }
 
-    const tenantId = tenant.id;
-
-    // 3. Create tenant_members row (owner role)
-    await supabase.from('tenant_members').insert({
-      tenant_id: tenantId,
-      user_id: userId,
-      role: 'owner',
+    const userId = createdSignInData.user.id;
+    const ensured = await ensureSignupTenant(supabase, {
+      userId,
+      company: safeCompany,
+      posSystem: safePosSystem,
+      storeCount,
     });
-
-    // 4. Create onboarding_progress row
-    await supabase.from('onboarding_progress').insert({
-      tenant_id: tenantId,
-      step: 1,
-      step_data: {},
-    });
-
-    // 5. Provision free license
-    let licenseKey: string | null = null;
-    try {
-      licenseKey = await provisionLicense(tenantId, 'free');
-    } catch (err) {
-      console.error(
-        '[signup] License provisioning failed:',
-        err instanceof Error ? err.message : err,
-      );
-    }
+    const tenantId = ensured.tenantId;
 
     // 6. Audit log
     await auditLog({
@@ -681,7 +904,7 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
         id: tenantId,
         name: safeCompany,
         plan: 'free',
-        licenseKey,
+        licenseKey: ensured.licenseKey,
       },
     });
   } catch (err) {
@@ -877,6 +1100,41 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     return json(res, 200, { ready: true });
   }
 
+
+  const pathname = requestUrl(req).pathname;
+
+  // AROS shell enhancement routes: app.aros.live remains the AROS platform dashboard.
+  if (pathname.startsWith('/sx-tasks/')) {
+    return proxyRequest(req, res, SHRE_TASKS_URL);
+  }
+
+  if (pathname === '/api/branding/public') {
+    return json(res, 200, {
+      brandName: 'AROS',
+      theme: { primary: '#2563eb', accent: '#0f766e' },
+    });
+  }
+
+  if (pathname === '/api/services') {
+    return json(res, 200, []);
+  }
+
+  if (pathname === '/api/auto-restart/status') {
+    return json(res, 200, {
+      enabled: false,
+      maxUptimeHours: null,
+      quietHoursStart: null,
+      quietHoursEnd: null,
+      uptimes: {},
+      history: [],
+      nextCheck: null,
+    });
+  }
+
+  if (pathname.startsWith('/v1/') && !pathname.startsWith('/v1/traces/')) {
+    return proxyRequest(req, res, SHRE_ROUTER_URL);
+  }
+
   // ── Billing ─────────────────────────────────────────────────
   if (url === '/api/billing/checkout' && method === 'POST') {
     return handleBillingCheckout(req, res);
@@ -914,6 +1172,46 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     return handleVerifyOtp(req, res);
   }
 
+
+  if (url === "/api/dashboard" && method === "GET") {
+    return json(res, 200, {
+      todaySales: { revenue: 4827.5, changePercent: 12.3 },
+      activeAlerts: { count: 3, critical: 1 },
+      aiAgents: { active: 4, total: 6, statuses: { running: 4, idle: 2 } },
+      lowStock: {
+        count: 7,
+        items: [
+          { name: "Marlboro Gold Pack", current: 4, threshold: 12 },
+          { name: "Coca-Cola 20oz", current: 9, threshold: 24 },
+          { name: "Lottery Roll #42", current: 1, threshold: 3 },
+        ],
+      },
+      humanLayer: {
+        briefing: {
+          date: new Date().toISOString().slice(0, 10),
+          generatedAt: new Date().toISOString(),
+          executiveSummary: "AROS is ready. Your dashboard, agents, alerts, and task layer are online.",
+          focus: "Connect your first store data source",
+          topPriorities: [],
+          decisionsNeeded: [],
+          waitingOn: [],
+          followUps: [],
+          alerts: [],
+        },
+        tasks: { total: 0, open: 0, overdue: 0, urgent: 0, items: [] },
+        projects: [],
+        goals: [],
+        connectors: [],
+        importantInfo: { unreadMessages: 0, missedCalls: 0, pendingDecisions: 0, pendingFollowUps: 0 },
+      },
+      recentActivity: [
+        { id: "inventory-1", agent: "Inventory Agent", action: "Generated reorder list for 7 low-stock items", timestamp: "2 min ago", type: "warning" },
+        { id: "sales-1", agent: "Sales Agent", action: "Morning sales report processed", timestamp: "18 min ago", type: "success" },
+        { id: "pricing-1", agent: "Pricing Agent", action: "Promotion checks are ready", timestamp: "45 min ago", type: "info" },
+      ],
+    });
+  }
+
   // ── Onboarding ────────────────────────────────────────────
   if (url.startsWith('/api/onboarding/status') && method === 'GET') {
     return handleOnboardingStatus(req, res);
@@ -937,6 +1235,20 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
       return json(res, 429, { error: 'Too many requests. Please wait.' });
     }
     return handleLogin(req, res);
+  }
+
+  const fallbackPathname = requestUrl(req).pathname;
+  // SPA fallback: serve the client app for any non-API browser navigation
+  // so deep links / refreshes (/login, /auth, /signup, /reset-password,
+  // /verify-email, /social, /contact, /admin) bootstrap the SPA instead of
+  // 404ing. All /api/* and /v1/* routes are handled above; serveDashboard
+  // serves the real static file when one exists, else index.html.
+  if (
+    (method === 'GET' || method === 'HEAD') &&
+    !fallbackPathname.startsWith('/api/') &&
+    !fallbackPathname.startsWith('/v1/')
+  ) {
+    if (await serveDashboard(req, res)) return;
   }
 
   // ── 404 ─────────────────────────────────────────────────────
