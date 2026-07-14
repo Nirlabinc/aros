@@ -498,7 +498,7 @@ export function DeveloperPortal() {
         </div>
       )}
 
-      {step === 'review' && step !== 'submitted' && (
+      {step === 'review' && (
         <div style={{ marginTop: 12 }}>
           <button onClick={goBack} style={{ ...navBtnStyle, marginTop: 8 }}>Back to Edit</button>
         </div>

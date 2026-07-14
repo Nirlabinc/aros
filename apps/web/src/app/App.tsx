@@ -15,6 +15,9 @@ import { BillingPage } from '../pages/billing/BillingPage';
 import { ChatWidget } from '../components/ChatWidget';
 import { Login } from '../pages/Login';
 import { Signup } from '../pages/Signup';
+import { StartChat } from '../pages/start/StartChat';
+import { ConnectStorePage } from '../pages/connect/ConnectStorePage';
+import { ConnectStoreBanner } from '../components/ConnectStoreBanner';
 import { ResetPassword } from '../pages/ResetPassword';
 import { VerifyEmail } from '../pages/VerifyEmail';
 
@@ -40,7 +43,8 @@ function AppContent() {
   // ── Public auth pages (no session required) ────────────────
   if (path === '/login') {
     if (session && !loading) {
-      window.location.href = onboarded ? '/dashboard' : '/onboarding';
+      // New users land in the value-first demo chat (/start), not the wizard.
+      window.location.href = onboarded ? '/dashboard' : '/start';
       return null;
     }
     return <><Login /><ChatWidget /></>;
@@ -48,7 +52,7 @@ function AppContent() {
 
   if (path === '/signup') {
     if (session && !loading) {
-      window.location.href = onboarded ? '/dashboard' : '/onboarding';
+      window.location.href = onboarded ? '/dashboard' : '/start';
       return null;
     }
     return <><Signup /><ChatWidget /></>;
@@ -91,7 +95,28 @@ function AppContent() {
 
   // ── Auth-required pages ────────────────────────────────────
 
-  // Onboarding — full-screen, no sidebar
+  // Start — value-first demo chat, the day-one landing surface (full-screen).
+  // Reachable by new users right after signup; requires auth but NOT onboarding.
+  if (path.startsWith('/start')) {
+    return (
+      <ProtectedRoute>
+        <StartChat />
+      </ProtectedRoute>
+    );
+  }
+
+  // Connect store — the real "connect your store" step. Reachable both before
+  // onboarding (from /start, full-screen) and after (from the sidebar/banner).
+  if (path.startsWith('/connect')) {
+    return (
+      <ProtectedRoute>
+        <ConnectStorePage onboarded={onboarded} />
+      </ProtectedRoute>
+    );
+  }
+
+  // Onboarding — full-screen plan + business setup wizard, reached from
+  // /connect (or a paid CTA) once the user is sold — not a gate before value.
   if (path.startsWith('/onboarding')) {
     return (
       <ProtectedRoute>
@@ -109,13 +134,15 @@ function AppContent() {
 }
 
 function AuthenticatedRoutes({ path, isAdmin, onboarded }: { path: string; isAdmin: boolean; onboarded: boolean }) {
-  // Gate: new users who haven't completed onboarding get redirected
+  // Gate: new users who haven't completed onboarding land in the value-first
+  // demo chat (/start), not the wizard. The payment callback still resumes the
+  // onboarding flow so Stripe round-trips complete.
   if (!onboarded) {
     const params = new URLSearchParams(window.location.search);
     if (params.has('payment')) {
       return <OnboardingPage />;
     }
-    window.location.href = '/onboarding';
+    window.location.href = '/start';
     return null;
   }
 
@@ -194,6 +221,7 @@ function AuthenticatedRoutes({ path, isAdmin, onboarded }: { path: string; isAdm
     <div className="aros-app">
       <Sidebar />
       <main className="aros-main">
+        <ConnectStoreBanner />
         <Dashboard />
       </main>
       <ArosChat />

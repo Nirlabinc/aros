@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useWhitelabel } from '../whitelabel/WhitelabelProvider';
-import { UpdateBadge } from './updates';
 import { useAuth } from '../admin/useAuth';
 import { TenantPicker } from './TenantPicker';
 
@@ -52,18 +51,16 @@ export function Sidebar() {
           <TenantPicker />
         </div>
         <nav className="aros-nav">
+          {/* Journey order: operate → connect data → extend → manage account. */}
           <a href="/dashboard" className={`aros-nav-item${path.startsWith('/dashboard') || path === '/' ? ' active' : ''}`} onClick={close}>Dashboard</a>
+          <a href="/connect" className={`aros-nav-item${path.startsWith('/connect') ? ' active' : ''}`} onClick={close}>Connect Store</a>
           <a href="/human" className={`aros-nav-item${path.startsWith('/human') ? ' active' : ''}`} onClick={close}>Human OS</a>
-          {config.features?.marketplace && <a href="/marketplace" className="aros-nav-item" onClick={close}>Marketplace</a>}
-          {config.features?.marketplace && <a href="/developers" className="aros-nav-item" onClick={close}>Settings</a>}
-          {config.features?.analytics && <a href="/analytics" className="aros-nav-item" onClick={close}>Analytics</a>}
-          <a href="/billing" className="aros-nav-item" onClick={close}>Billing</a>
-          <a href="/costs" className="aros-nav-item" onClick={close}>Costs</a>
-          <a href="/updates" className="aros-nav-item" onClick={close}>
-            Updates
-            <UpdateBadge coreAvailable={false} uiAvailable={false} />
-          </a>
-          {config.features?.settings && <a href="/settings" className="aros-nav-item" onClick={close}>Settings</a>}
+          {config.features?.marketplace && <a href="/marketplace" className={`aros-nav-item${path.startsWith('/marketplace') ? ' active' : ''}`} onClick={close}>Marketplace</a>}
+          {config.features?.marketplace && <a href="/developers" className={`aros-nav-item${path.startsWith('/developers') ? ' active' : ''}`} onClick={close}>Developers</a>}
+          <a href="/billing" className={`aros-nav-item${path.startsWith('/billing') ? ' active' : ''}`} onClick={close}>Billing</a>
+          <a href="/costs" className={`aros-nav-item${path.startsWith('/costs') ? ' active' : ''}`} onClick={close}>Costs</a>
+          {/* /analytics, /updates, /settings intentionally removed until their
+              pages have routes — dead links silently rendered the Dashboard. */}
           {isAdmin && <a href="/admin" className="aros-nav-item" onClick={close}>Admin</a>}
         </nav>
       </aside>

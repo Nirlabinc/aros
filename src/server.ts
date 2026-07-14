@@ -2,7 +2,7 @@
  * AROS Platform — Health Server + Billing API + Signup + Onboarding
  *
  * Lightweight HTTP server providing /health, /readyz, billing, signup,
- * onboarding, and email verification endpoints.
+ * onboarding, marketplace, and email verification endpoints.
  * Uses Node built-in http module to avoid adding dependencies.
  */
 
@@ -37,6 +37,13 @@ import {
   listHumanProjects,
 } from './human-state.js';
 import { createTask } from '../tasks/store.js';
+import type { TaskPriority } from '../tasks/types.js';
+import { createHash } from 'node:crypto';
+import { testConnection as testRapidRmsConnector } from '../connectors/rapidrms-api.js';
+import { testConnection as testAzureDbConnector } from '../connectors/azure-db.js';
+import { testConnection as testVerifoneConnector } from '../connectors/verifone/connector.js';
+import { setTenantSecret, storeCredential, deleteCredential } from '../connectors/vault-ref.js';
+import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
 
 const PORT = 5457;
 const startedAt = new Date().toISOString();
@@ -232,7 +239,7 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
     res.setHeader('Access-Control-Allow-Origin', origin);
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Aros-Tenant-Id, X-Aros-App-Key');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
 }
 
@@ -602,13 +609,14 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
   const body = await parseJsonBody(req);
   if (!body) return json(res, 400, { error: 'Invalid JSON' });
 
-  const { name, email, password, company, posSystem, storeCount } = body as {
+  const { name, email, password, company, posSystem, storeCount, intent } = body as {
     name?: string;
     email?: string;
     password?: string;
     company?: string;
     posSystem?: string;
     storeCount?: number;
+    intent?: string;
   };
 
   // Validate required fields
@@ -642,6 +650,10 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
   const safeEmail = email.trim().toLowerCase().slice(0, 254);
   const safeCompany = sanitizeString(String(company), 200);
   const safePosSystem = posSystem ? sanitizeString(String(posSystem), 50) : null;
+  // The one-question signup intent ("what do you want your agent to do?") seeds
+  // the day-one demo scenario + default tools. Stored in freeform user_metadata
+  // (no tenant-schema migration needed).
+  const safeIntent = intent ? sanitizeString(String(intent), 50) : null;
 
   const clientIp = getClientIp(req);
 
@@ -656,6 +668,7 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
       user_metadata: {
         name: safeName,
         company: safeCompany,
+        intent: safeIntent,
       },
     });
 
@@ -891,7 +904,24 @@ async function handleLeadCapture(req: IncomingMessage, res: ServerResponse): Pro
 
 // ── Auth Helper ─────────────────────────────────────────────────
 
-async function authenticateRequest(req: IncomingMessage): Promise<{ userId: string; tenantId: string } | null> {
+type AuthContext = {
+  userId: string;
+  tenantId: string;
+  role: string;
+};
+
+function getRequestUrl(req: IncomingMessage): URL {
+  return new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+}
+
+function getRequestedTenantId(req: IncomingMessage): string | null {
+  const headerTenantId = req.headers['x-aros-tenant-id'] ?? req.headers['x-tenant-id'];
+  if (Array.isArray(headerTenantId)) return headerTenantId[0] || null;
+  if (typeof headerTenantId === 'string' && headerTenantId.trim()) return headerTenantId.trim();
+  return getRequestUrl(req).searchParams.get('tenantId');
+}
+
+async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | null> {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) return null;
 
@@ -901,18 +931,204 @@ async function authenticateRequest(req: IncomingMessage): Promise<{ userId: stri
     const { data: { user }, error } = await supabase.auth.getUser(token);
     if (error || !user) return null;
 
-    // Look up tenant membership
-    const { data: membership } = await supabase
+    const requestedTenantId = getRequestedTenantId(req);
+    let membershipQuery = supabase
       .from('tenant_members')
-      .select('tenant_id')
+      .select('tenant_id, role, status')
       .eq('user_id', user.id)
-      .limit(1)
-      .single();
+      .eq('status', 'active');
+
+    if (requestedTenantId) {
+      membershipQuery = membershipQuery.eq('tenant_id', requestedTenantId);
+    }
+
+    const { data: memberships } = await membershipQuery
+      .order('is_default', { ascending: false })
+      .order('joined_at', { ascending: true })
+      .limit(1);
+
+    const membership = memberships?.[0];
 
     if (!membership) return null;
-    return { userId: user.id, tenantId: membership.tenant_id };
+    return {
+      userId: user.id,
+      tenantId: membership.tenant_id,
+      role: membership.role || 'member',
+    };
   } catch {
     return null;
+  }
+}
+
+function canManageMarketplace(role: string): boolean {
+  return ['owner', 'admin'].includes(role);
+}
+
+function normalizeAppKey(raw: unknown): string {
+  const value = String(raw ?? '').trim().toLowerCase();
+  const aliases: Record<string, string> = {
+    '@aros/storepulse-ui': 'storepulse',
+    'storepulse-ui': 'storepulse',
+    'storepulse.aros.live': 'storepulse',
+    'storepulse-hq': 'storepulse',
+    '@aros/shre-chat': 'chat',
+    'shre-chat': 'chat',
+    'chat.aros.live': 'chat',
+    'rapid-support': 'rapidsupport',
+    'rapidsupport.aros.live': 'rapidsupport',
+    atomdesk: 'centrix',
+    'centrix.aros.live': 'centrix',
+  };
+  return (aliases[value] ?? value).replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+async function handleMarketplaceEntitlements(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data, error } = await supabase
+      .from('marketplace_app_entitlements')
+      .select('id, tenant_id, app_key, status, source, enabled_by, enabled_at, disabled_at, role_mapping, service_config, metadata, created_at, updated_at')
+      .eq('tenant_id', auth.tenantId)
+      .order('app_key', { ascending: true });
+
+    if (error) throw error;
+    json(res, 200, { entitlements: data || [] });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to list marketplace entitlements';
+    console.error('[marketplace.entitlements]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+async function handleMarketplaceInstall(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+
+  const appKey = normalizeAppKey(body.appKey ?? body.nodeId);
+  if (!appKey) return json(res, 400, { error: 'Missing required field: appKey or nodeId' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const payload = {
+      tenant_id: auth.tenantId,
+      app_key: appKey,
+      status: 'active',
+      source: String(body.source || 'marketplace'),
+      enabled_by: auth.userId,
+      enabled_at: new Date().toISOString(),
+      disabled_at: null,
+      role_mapping: isRecord(body.roleMapping) ? body.roleMapping : {},
+      service_config: isRecord(body.config) ? body.config : {},
+      metadata: {
+        ...(isRecord(body.metadata) ? body.metadata : {}),
+        nodeId: typeof body.nodeId === 'string' ? body.nodeId : appKey,
+      },
+    };
+
+    const { data, error } = await supabase
+      .from('marketplace_app_entitlements')
+      .upsert(payload, { onConflict: 'tenant_id,app_key' })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'marketplace.app_enabled',
+      resource: appKey,
+      detail: { appKey, source: payload.source },
+      ip: getClientIp(req),
+    });
+
+    json(res, 200, { ok: true, entitlement: data });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to install marketplace app';
+    console.error('[marketplace.install]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+async function handleMarketplaceDisable(req: IncomingMessage, res: ServerResponse, appKeyParam: string): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+
+  const appKey = normalizeAppKey(appKeyParam);
+  if (!appKey) return json(res, 400, { error: 'Missing app key' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data, error } = await supabase
+      .from('marketplace_app_entitlements')
+      .update({
+        status: 'disabled',
+        disabled_at: new Date().toISOString(),
+      })
+      .eq('tenant_id', auth.tenantId)
+      .eq('app_key', appKey)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'marketplace.app_disabled',
+      resource: appKey,
+      detail: { appKey },
+      ip: getClientIp(req),
+    });
+
+    json(res, 200, { ok: true, entitlement: data });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to disable marketplace app';
+    console.error('[marketplace.disable]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+async function handleAppEntitlement(req: IncomingMessage, res: ServerResponse, appKeyParam: string): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  const appKey = normalizeAppKey(appKeyParam);
+  if (!appKey) return json(res, 400, { error: 'Missing app key' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data, error } = await supabase
+      .from('marketplace_app_entitlements')
+      .select('id, tenant_id, app_key, status, role_mapping, service_config, metadata, enabled_at, disabled_at')
+      .eq('tenant_id', auth.tenantId)
+      .eq('app_key', appKey)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    json(res, 200, {
+      appKey,
+      tenantId: auth.tenantId,
+      entitled: data?.status === 'active',
+      entitlement: data || null,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to check app entitlement';
+    console.error('[app.entitlement]', message);
+    json(res, 500, { error: message });
   }
 }
 
@@ -1081,6 +1297,248 @@ async function handleHumanBriefing(req: IncomingMessage, res: ServerResponse): P
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to fetch human briefing';
     console.error('[human-briefing]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+// ── Store Connectors (POS / store data sources) ─────────────────
+// Credentials are encrypted server-side (AES-256-GCM) before persisting;
+// the plain value never leaves this process and is never returned to clients.
+// TODO: move key custody to shre-secrets vault (:5473) once commissioned.
+
+const STORE_CONNECTOR_TYPES = ['rapidrms-api', 'verifone-commander', 'azure-db'] as const;
+type StoreConnectorType = (typeof STORE_CONNECTOR_TYPES)[number];
+
+const CONNECTOR_COLUMNS = 'id, tenant_id, type, name, config, status, last_tested, last_error, created_at, updated_at';
+
+let connectorCryptoReady = false;
+function ensureConnectorCrypto(): void {
+  if (connectorCryptoReady) return;
+  // Stable key so credential blobs survive restarts. Without either env var
+  // the input-handler falls back to an ephemeral key (dev only).
+  const secret = process.env.AROS_ENCRYPTION_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (secret) setEncryptionKey(createHash('sha256').update(secret).digest());
+  connectorCryptoReady = true;
+}
+
+function validateConnectorInput(
+  type: StoreConnectorType,
+  config: Record<string, unknown>,
+  secrets: Record<string, unknown>,
+): string | null {
+  const missing = (fields: string[], source: Record<string, unknown>, label: string) =>
+    fields.filter((f) => typeof source[f] !== 'string' || !(source[f] as string).trim()).map((f) => `${label}.${f}`);
+
+  let gaps: string[] = [];
+  if (type === 'rapidrms-api') {
+    gaps = [...missing(['clientId'], config, 'config'), ...missing(['email', 'password'], secrets, 'secrets')];
+  } else if (type === 'verifone-commander') {
+    gaps = [...missing(['commanderIp', 'username'], config, 'config'), ...missing(['password'], secrets, 'secrets')];
+  } else if (type === 'azure-db') {
+    gaps = [...missing(['server', 'database', 'username'], config, 'config'), ...missing(['password'], secrets, 'secrets')];
+  }
+  return gaps.length ? `Missing required fields: ${gaps.join(', ')}` : null;
+}
+
+async function handleConnectorsList(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data, error } = await supabase
+      .from('tenant_connectors')
+      .select(CONNECTOR_COLUMNS)
+      .eq('tenant_id', auth.tenantId)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    json(res, 200, { connectors: data || [] });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to list connectors';
+    console.error('[connectors.list]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+async function handleConnectorsCreate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+
+  const type = String(body.type || '') as StoreConnectorType;
+  if (!STORE_CONNECTOR_TYPES.includes(type)) {
+    return json(res, 400, { error: `Invalid connector type. Expected one of: ${STORE_CONNECTOR_TYPES.join(', ')}` });
+  }
+  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : null;
+  if (!name) return json(res, 400, { error: 'Missing required field: name' });
+
+  const config = isRecord(body.config) ? body.config : {};
+  const secrets = isRecord(body.secrets) ? body.secrets : {};
+  const validationError = validateConnectorInput(type, config, secrets);
+  if (validationError) return json(res, 400, { error: validationError });
+
+  try {
+    ensureConnectorCrypto();
+    const supabase = createSupabaseAdmin();
+    const payload = {
+      tenant_id: auth.tenantId,
+      type,
+      name,
+      config,
+      credentials_encrypted: encryptValue(JSON.stringify(secrets)),
+      status: 'pending',
+      last_error: null,
+      created_by: auth.userId,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from('tenant_connectors')
+      .upsert(payload, { onConflict: 'tenant_id,name' })
+      .select(CONNECTOR_COLUMNS)
+      .single();
+
+    if (error) throw error;
+
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'connector.saved',
+      resource: name,
+      detail: { type },
+      ip: getClientIp(req),
+    });
+
+    json(res, 200, { ok: true, connector: data });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to save connector';
+    console.error('[connectors.create]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+async function handleConnectorsTest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  const body = await parseJsonBody(req);
+  const id = body && typeof body.id === 'string' ? body.id : null;
+  if (!id) return json(res, 400, { error: 'Missing required field: id' });
+
+  const supabase = createSupabaseAdmin();
+  const { data: row, error: loadError } = await supabase
+    .from('tenant_connectors')
+    .select(`${CONNECTOR_COLUMNS}, credentials_encrypted`)
+    .eq('tenant_id', auth.tenantId)
+    .eq('id', id)
+    .single();
+
+  if (loadError || !row) return json(res, 404, { error: 'Connector not found' });
+
+  const refs: string[] = [];
+  try {
+    ensureConnectorCrypto();
+    const secrets = JSON.parse(decryptValue(row.credentials_encrypted)) as Record<string, string>;
+    const config = (row.config ?? {}) as Record<string, any>;
+
+    // Bridge decrypted secrets into the connector vault for this test only.
+    setTenantSecret(`${auth.tenantId}:${process.env.AROS_ENCRYPTION_KEY || 'aros-dev'}`);
+    const passwordRef = await storeCredential(`${row.id}:password`, secrets.password ?? '');
+    refs.push(passwordRef);
+
+    let result;
+    if (row.type === 'rapidrms-api') {
+      const emailRef = await storeCredential(`${row.id}:email`, secrets.email ?? '');
+      refs.push(emailRef);
+      result = await testRapidRmsConnector(
+        {
+          baseUrl: String(config.baseUrl || 'https://rapidrmsapi.azurewebsites.net'),
+          clientId: String(config.clientId || ''),
+          sessionTimeout: Number(config.sessionTimeout) || 420,
+        },
+        emailRef,
+        passwordRef,
+      );
+    } else if (row.type === 'azure-db') {
+      result = await testAzureDbConnector(
+        {
+          server: String(config.server || ''),
+          database: String(config.database || ''),
+          username: String(config.username || ''),
+          port: Number(config.port) || 1433,
+          ssl: true,
+          encrypt: true,
+        },
+        passwordRef,
+      );
+    } else {
+      result = await testVerifoneConnector(
+        {
+          commanderIp: String(config.commanderIp || ''),
+          username: String(config.username || ''),
+          syncIntervalMs: Number(config.syncIntervalMs) || 300_000,
+          siteName: row.name,
+        },
+        passwordRef,
+      );
+    }
+
+    await supabase
+      .from('tenant_connectors')
+      .update({
+        status: result.success ? 'connected' : 'error',
+        last_tested: result.testedAt,
+        last_error: result.success ? null : (result.error ?? 'Connection test failed'),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', row.id);
+
+    json(res, 200, { ok: true, result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Connection test failed';
+    console.error('[connectors.test]', message);
+    json(res, 500, { error: message });
+  } finally {
+    // Never leave test credentials in the in-memory vault.
+    await Promise.all(refs.map((ref) => deleteCredential(ref).catch(() => {})));
+  }
+}
+
+async function handleConnectorsDelete(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+
+  const id = getRequestUrl(req).searchParams.get('id');
+  if (!id) return json(res, 400, { error: 'Missing required query param: id' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const { error } = await supabase
+      .from('tenant_connectors')
+      .delete()
+      .eq('tenant_id', auth.tenantId)
+      .eq('id', id);
+
+    if (error) throw error;
+
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'connector.removed',
+      resource: id,
+      detail: {},
+      ip: getClientIp(req),
+    });
+
+    json(res, 200, { ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to remove connector';
+    console.error('[connectors.delete]', message);
     json(res, 500, { error: message });
   }
 }
@@ -1277,6 +1735,8 @@ function timeAgo(isoDate: string): string {
 
 async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? '/';
+  const requestUrl = getRequestUrl(req);
+  const pathname = requestUrl.pathname;
   const method = req.method ?? 'GET';
 
   // Security headers + CORS
@@ -1407,6 +1867,41 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (url === '/api/human/connectors/activate' && method === 'POST') {
     return handleActivateHumanConnectors(req, res);
+  }
+
+  // ── Store Connectors (authenticated) ─────────────────────
+  if (pathname === '/api/connectors' && method === 'GET') {
+    return handleConnectorsList(req, res);
+  }
+
+  if (pathname === '/api/connectors' && method === 'POST') {
+    return handleConnectorsCreate(req, res);
+  }
+
+  if (pathname === '/api/connectors/test' && method === 'POST') {
+    return handleConnectorsTest(req, res);
+  }
+
+  if (pathname === '/api/connectors' && method === 'DELETE') {
+    return handleConnectorsDelete(req, res);
+  }
+
+  if (pathname === '/api/marketplace/entitlements' && method === 'GET') {
+    return handleMarketplaceEntitlements(req, res);
+  }
+
+  if (pathname === '/api/marketplace/install' && method === 'POST') {
+    return handleMarketplaceInstall(req, res);
+  }
+
+  const marketplaceDisableMatch = pathname.match(/^\/api\/marketplace\/apps\/([^/]+)\/disable$/);
+  if (marketplaceDisableMatch && method === 'POST') {
+    return handleMarketplaceDisable(req, res, decodeURIComponent(marketplaceDisableMatch[1]));
+  }
+
+  const appEntitlementMatch = pathname.match(/^\/api\/apps\/([^/]+)\/entitlement$/);
+  if (appEntitlementMatch && method === 'GET') {
+    return handleAppEntitlement(req, res, decodeURIComponent(appEntitlementMatch[1]));
   }
 
   // ── Lead capture (public, no auth) ──────────────────────

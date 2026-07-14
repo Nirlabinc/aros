@@ -3,20 +3,14 @@ import { useState, FormEvent } from 'react';
 const API_BASE = (window as any).__AROS_API_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
 
-const POS_SYSTEMS = [
-  { value: '', label: 'Select your POS system' },
-  { value: 'rapidrms', label: 'RapidRMS' },
-  { value: 'verifone-commander', label: 'Verifone Commander' },
-  { value: 'other', label: 'Other' },
-];
-
-const STORE_COUNTS = [
-  { value: '1', label: '1' },
-  { value: '2-5', label: '2-5' },
-  { value: '6-10', label: '6-10' },
-  { value: '11-25', label: '11-25' },
-  { value: '26-50', label: '26-50' },
-  { value: '50+', label: '50+' },
+// One question instead of a config wizard: what the operator wants their agent
+// to do. This single answer seeds sensible model/tool defaults downstream — the
+// user never has to pick a "model". Retail-forward, but covers generic SMB jobs.
+const INTENTS = [
+  { value: 'sales-inventory', icon: '📊', label: 'Track sales & inventory', hint: 'Daily numbers, low stock, reorders' },
+  { value: 'customer-support', icon: '💬', label: 'Answer customer questions', hint: 'Hours, products, support' },
+  { value: 'staff-scheduling', icon: '🧑‍🤝‍🧑', label: 'Manage staff & scheduling', hint: 'Labor, shifts, performance' },
+  { value: 'exploring', icon: '✨', label: 'Just exploring', hint: 'Show me what AROS can do' },
 ];
 
 type Step = 'form' | 'verify' | 'done';
@@ -43,8 +37,7 @@ export function Signup() {
   const [password, setPassword] = useState('');
   const [company, setCompany] = useState('');
   const [phone, setPhone] = useState('');
-  const [posSystem, setPosSystem] = useState('');
-  const [storeCount, setStoreCount] = useState('');
+  const [intent, setIntent] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -75,6 +68,14 @@ export function Signup() {
       return;
     }
 
+    if (!intent) {
+      setError('Please pick what you want your agent to do');
+      return;
+    }
+
+    // Persist the intent so the demo chat / provisioning can seed defaults from it.
+    try { localStorage.setItem('aros-intent', intent); } catch { /* non-fatal */ }
+
     setLoading(true);
 
     try {
@@ -87,8 +88,7 @@ export function Signup() {
           password,
           company,
           phone: phone || undefined,
-          posSystem,
-          storeCount,
+          intent,
         }),
       });
 
@@ -322,36 +322,31 @@ export function Signup() {
               />
             </div>
 
-            <div style={{ display: 'flex', gap: 12 }}>
-              <div style={{ ...styles.field, flex: 1 }}>
-                <label style={styles.label}>POS System</label>
-                <select
-                  value={posSystem}
-                  onChange={e => setPosSystem(e.target.value)}
-                  required
-                  style={styles.input}
-                >
-                  {POS_SYSTEMS.map(p => (
-                    <option key={p.value} value={p.value} disabled={!p.value}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{ ...styles.field, flex: 1 }}>
-                <label style={styles.label}>Number of Stores</label>
-                <select
-                  value={storeCount}
-                  onChange={e => setStoreCount(e.target.value)}
-                  required
-                  style={styles.input}
-                >
-                  <option value="" disabled>Select</option>
-                  {STORE_COUNTS.map(s => (
-                    <option key={s.value} value={s.value}>{s.label}</option>
-                  ))}
-                </select>
+            <div style={styles.field}>
+              <label style={styles.label}>What do you want your agent to do?</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {INTENTS.map(opt => {
+                  const selected = intent === opt.value;
+                  return (
+                    <button
+                      type="button"
+                      key={opt.value}
+                      onClick={() => setIntent(opt.value)}
+                      style={{
+                        display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'left',
+                        padding: '12px 14px', borderRadius: 10, cursor: 'pointer',
+                        background: selected ? '#eef2ff' : '#fff',
+                        border: `1.5px solid ${selected ? '#3b5bdb' : '#d1d5db'}`,
+                        fontFamily: 'inherit', transition: 'border-color 0.15s, background 0.15s',
+                      }}
+                    >
+                      <span style={{ fontSize: 15, fontWeight: 600, color: '#1a1a2e' }}>
+                        <span style={{ marginRight: 6 }}>{opt.icon}</span>{opt.label}
+                      </span>
+                      <span style={{ fontSize: 12, color: '#6b7280' }}>{opt.hint}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

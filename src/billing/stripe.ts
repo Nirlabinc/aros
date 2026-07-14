@@ -27,16 +27,24 @@ function getStripe(): Stripe {
 
 export type PlanId = 'starter' | 'pro' | 'enterprise';
 
-const PLAN_PRICES: Record<PlanId, string> = {
-  starter: process.env.STRIPE_PRICE_STARTER || '',
-  pro: process.env.STRIPE_PRICE_PRO || '',
-  enterprise: process.env.STRIPE_PRICE_ENTERPRISE || '',
-};
+/**
+ * Plan → Price ID mapping, resolved at call time so runtime env changes
+ * (and per-test overrides) are respected. Resolving lazily avoids the
+ * module-load snapshot pitfall where env set after import is ignored.
+ */
+function planPrices(): Record<PlanId, string> {
+  return {
+    starter: process.env.STRIPE_PRICE_STARTER || '',
+    pro: process.env.STRIPE_PRICE_PRO || '',
+    enterprise: process.env.STRIPE_PRICE_ENTERPRISE || '',
+  };
+}
 
 /** Reverse lookup: Stripe price ID → plan name */
 export function planFromPriceId(priceId: string): PlanId | null {
-  for (const [plan, id] of Object.entries(PLAN_PRICES)) {
-    if (id === priceId) return plan as PlanId;
+  if (!priceId) return null;
+  for (const [plan, id] of Object.entries(planPrices())) {
+    if (id && id === priceId) return plan as PlanId;
   }
   return null;
 }
@@ -57,7 +65,7 @@ export interface CheckoutOptions {
  */
 export async function createCheckoutSession(opts: CheckoutOptions): Promise<string> {
   const stripe = getStripe();
-  const priceId = PLAN_PRICES[opts.plan];
+  const priceId = planPrices()[opts.plan];
 
   if (!priceId) {
     throw new Error(`No Stripe price configured for plan: ${opts.plan}`);

@@ -329,6 +329,7 @@ export function BillingPage() {
       return;
     }
 
+    const tenantId = tenant.id;
     let cancelled = false;
 
     async function loadBilling() {
@@ -337,8 +338,8 @@ export function BillingPage() {
 
       try {
         const [statusRes, invoicesRes] = await Promise.allSettled([
-          fetch(`${API_BASE}/api/billing/status?tenantId=${tenant.id}`),
-          fetch(`${API_BASE}/api/companies/${tenant.id}/invoices`, { credentials: 'include' }),
+          fetch(`${API_BASE}/api/billing/status?tenantId=${tenantId}`),
+          fetch(`${API_BASE}/api/companies/${tenantId}/invoices`, { credentials: 'include' }),
         ]);
 
         if (cancelled) return;
