@@ -16,6 +16,8 @@ import { ChatWidget } from '../components/ChatWidget';
 import { Login } from '../pages/Login';
 import { Signup } from '../pages/Signup';
 import { StartChat } from '../pages/start/StartChat';
+import { ConnectStorePage } from '../pages/connect/ConnectStorePage';
+import { ConnectStoreBanner } from '../components/ConnectStoreBanner';
 import { ResetPassword } from '../pages/ResetPassword';
 import { VerifyEmail } from '../pages/VerifyEmail';
 
@@ -103,8 +105,18 @@ function AppContent() {
     );
   }
 
-  // Onboarding — full-screen, no sidebar. Now the in-context "connect your store"
-  // flow, reached from /start when the user is sold — not a gate before value.
+  // Connect store — the real "connect your store" step. Reachable both before
+  // onboarding (from /start, full-screen) and after (from the sidebar/banner).
+  if (path.startsWith('/connect')) {
+    return (
+      <ProtectedRoute>
+        <ConnectStorePage onboarded={onboarded} />
+      </ProtectedRoute>
+    );
+  }
+
+  // Onboarding — full-screen plan + business setup wizard, reached from
+  // /connect (or a paid CTA) once the user is sold — not a gate before value.
   if (path.startsWith('/onboarding')) {
     return (
       <ProtectedRoute>
@@ -209,6 +221,7 @@ function AuthenticatedRoutes({ path, isAdmin, onboarded }: { path: string; isAdm
     <div className="aros-app">
       <Sidebar />
       <main className="aros-main">
+        <ConnectStoreBanner />
         <Dashboard />
       </main>
       <ArosChat />

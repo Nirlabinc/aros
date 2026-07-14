@@ -38,6 +38,12 @@ import {
 } from './human-state.js';
 import { createTask } from '../tasks/store.js';
 import type { TaskPriority } from '../tasks/types.js';
+import { createHash } from 'node:crypto';
+import { testConnection as testRapidRmsConnector } from '../connectors/rapidrms-api.js';
+import { testConnection as testAzureDbConnector } from '../connectors/azure-db.js';
+import { testConnection as testVerifoneConnector } from '../connectors/verifone/connector.js';
+import { setTenantSecret, storeCredential, deleteCredential } from '../connectors/vault-ref.js';
+import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
 
 const PORT = 5457;
 const startedAt = new Date().toISOString();
@@ -1295,6 +1301,248 @@ async function handleHumanBriefing(req: IncomingMessage, res: ServerResponse): P
   }
 }
 
+// ── Store Connectors (POS / store data sources) ─────────────────
+// Credentials are encrypted server-side (AES-256-GCM) before persisting;
+// the plain value never leaves this process and is never returned to clients.
+// TODO: move key custody to shre-secrets vault (:5473) once commissioned.
+
+const STORE_CONNECTOR_TYPES = ['rapidrms-api', 'verifone-commander', 'azure-db'] as const;
+type StoreConnectorType = (typeof STORE_CONNECTOR_TYPES)[number];
+
+const CONNECTOR_COLUMNS = 'id, tenant_id, type, name, config, status, last_tested, last_error, created_at, updated_at';
+
+let connectorCryptoReady = false;
+function ensureConnectorCrypto(): void {
+  if (connectorCryptoReady) return;
+  // Stable key so credential blobs survive restarts. Without either env var
+  // the input-handler falls back to an ephemeral key (dev only).
+  const secret = process.env.AROS_ENCRYPTION_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (secret) setEncryptionKey(createHash('sha256').update(secret).digest());
+  connectorCryptoReady = true;
+}
+
+function validateConnectorInput(
+  type: StoreConnectorType,
+  config: Record<string, unknown>,
+  secrets: Record<string, unknown>,
+): string | null {
+  const missing = (fields: string[], source: Record<string, unknown>, label: string) =>
+    fields.filter((f) => typeof source[f] !== 'string' || !(source[f] as string).trim()).map((f) => `${label}.${f}`);
+
+  let gaps: string[] = [];
+  if (type === 'rapidrms-api') {
+    gaps = [...missing(['clientId'], config, 'config'), ...missing(['email', 'password'], secrets, 'secrets')];
+  } else if (type === 'verifone-commander') {
+    gaps = [...missing(['commanderIp', 'username'], config, 'config'), ...missing(['password'], secrets, 'secrets')];
+  } else if (type === 'azure-db') {
+    gaps = [...missing(['server', 'database', 'username'], config, 'config'), ...missing(['password'], secrets, 'secrets')];
+  }
+  return gaps.length ? `Missing required fields: ${gaps.join(', ')}` : null;
+}
+
+async function handleConnectorsList(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data, error } = await supabase
+      .from('tenant_connectors')
+      .select(CONNECTOR_COLUMNS)
+      .eq('tenant_id', auth.tenantId)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    json(res, 200, { connectors: data || [] });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to list connectors';
+    console.error('[connectors.list]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+async function handleConnectorsCreate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+
+  const type = String(body.type || '') as StoreConnectorType;
+  if (!STORE_CONNECTOR_TYPES.includes(type)) {
+    return json(res, 400, { error: `Invalid connector type. Expected one of: ${STORE_CONNECTOR_TYPES.join(', ')}` });
+  }
+  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : null;
+  if (!name) return json(res, 400, { error: 'Missing required field: name' });
+
+  const config = isRecord(body.config) ? body.config : {};
+  const secrets = isRecord(body.secrets) ? body.secrets : {};
+  const validationError = validateConnectorInput(type, config, secrets);
+  if (validationError) return json(res, 400, { error: validationError });
+
+  try {
+    ensureConnectorCrypto();
+    const supabase = createSupabaseAdmin();
+    const payload = {
+      tenant_id: auth.tenantId,
+      type,
+      name,
+      config,
+      credentials_encrypted: encryptValue(JSON.stringify(secrets)),
+      status: 'pending',
+      last_error: null,
+      created_by: auth.userId,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from('tenant_connectors')
+      .upsert(payload, { onConflict: 'tenant_id,name' })
+      .select(CONNECTOR_COLUMNS)
+      .single();
+
+    if (error) throw error;
+
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'connector.saved',
+      resource: name,
+      detail: { type },
+      ip: getClientIp(req),
+    });
+
+    json(res, 200, { ok: true, connector: data });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to save connector';
+    console.error('[connectors.create]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+async function handleConnectorsTest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  const body = await parseJsonBody(req);
+  const id = body && typeof body.id === 'string' ? body.id : null;
+  if (!id) return json(res, 400, { error: 'Missing required field: id' });
+
+  const supabase = createSupabaseAdmin();
+  const { data: row, error: loadError } = await supabase
+    .from('tenant_connectors')
+    .select(`${CONNECTOR_COLUMNS}, credentials_encrypted`)
+    .eq('tenant_id', auth.tenantId)
+    .eq('id', id)
+    .single();
+
+  if (loadError || !row) return json(res, 404, { error: 'Connector not found' });
+
+  const refs: string[] = [];
+  try {
+    ensureConnectorCrypto();
+    const secrets = JSON.parse(decryptValue(row.credentials_encrypted)) as Record<string, string>;
+    const config = (row.config ?? {}) as Record<string, any>;
+
+    // Bridge decrypted secrets into the connector vault for this test only.
+    setTenantSecret(`${auth.tenantId}:${process.env.AROS_ENCRYPTION_KEY || 'aros-dev'}`);
+    const passwordRef = await storeCredential(`${row.id}:password`, secrets.password ?? '');
+    refs.push(passwordRef);
+
+    let result;
+    if (row.type === 'rapidrms-api') {
+      const emailRef = await storeCredential(`${row.id}:email`, secrets.email ?? '');
+      refs.push(emailRef);
+      result = await testRapidRmsConnector(
+        {
+          baseUrl: String(config.baseUrl || 'https://rapidrmsapi.azurewebsites.net'),
+          clientId: String(config.clientId || ''),
+          sessionTimeout: Number(config.sessionTimeout) || 420,
+        },
+        emailRef,
+        passwordRef,
+      );
+    } else if (row.type === 'azure-db') {
+      result = await testAzureDbConnector(
+        {
+          server: String(config.server || ''),
+          database: String(config.database || ''),
+          username: String(config.username || ''),
+          port: Number(config.port) || 1433,
+          ssl: true,
+          encrypt: true,
+        },
+        passwordRef,
+      );
+    } else {
+      result = await testVerifoneConnector(
+        {
+          commanderIp: String(config.commanderIp || ''),
+          username: String(config.username || ''),
+          syncIntervalMs: Number(config.syncIntervalMs) || 300_000,
+          siteName: row.name,
+        },
+        passwordRef,
+      );
+    }
+
+    await supabase
+      .from('tenant_connectors')
+      .update({
+        status: result.success ? 'connected' : 'error',
+        last_tested: result.testedAt,
+        last_error: result.success ? null : (result.error ?? 'Connection test failed'),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', row.id);
+
+    json(res, 200, { ok: true, result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Connection test failed';
+    console.error('[connectors.test]', message);
+    json(res, 500, { error: message });
+  } finally {
+    // Never leave test credentials in the in-memory vault.
+    await Promise.all(refs.map((ref) => deleteCredential(ref).catch(() => {})));
+  }
+}
+
+async function handleConnectorsDelete(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+
+  const id = getRequestUrl(req).searchParams.get('id');
+  if (!id) return json(res, 400, { error: 'Missing required query param: id' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const { error } = await supabase
+      .from('tenant_connectors')
+      .delete()
+      .eq('tenant_id', auth.tenantId)
+      .eq('id', id);
+
+    if (error) throw error;
+
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'connector.removed',
+      resource: id,
+      detail: {},
+      ip: getClientIp(req),
+    });
+
+    json(res, 200, { ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to remove connector';
+    console.error('[connectors.delete]', message);
+    json(res, 500, { error: message });
+  }
+}
+
 async function handleHumanConnectors(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const auth = await authenticateRequest(req);
   if (!auth) {
@@ -1619,6 +1867,23 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (url === '/api/human/connectors/activate' && method === 'POST') {
     return handleActivateHumanConnectors(req, res);
+  }
+
+  // ── Store Connectors (authenticated) ─────────────────────
+  if (pathname === '/api/connectors' && method === 'GET') {
+    return handleConnectorsList(req, res);
+  }
+
+  if (pathname === '/api/connectors' && method === 'POST') {
+    return handleConnectorsCreate(req, res);
+  }
+
+  if (pathname === '/api/connectors/test' && method === 'POST') {
+    return handleConnectorsTest(req, res);
+  }
+
+  if (pathname === '/api/connectors' && method === 'DELETE') {
+    return handleConnectorsDelete(req, res);
   }
 
   if (pathname === '/api/marketplace/entitlements' && method === 'GET') {

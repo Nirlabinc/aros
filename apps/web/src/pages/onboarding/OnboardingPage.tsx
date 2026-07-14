@@ -498,12 +498,19 @@ export function OnboardingPage() {
             <h2 style={styles.cardTitle}>You're all set!</h2>
             <p style={styles.cardDesc}>
               Your AI agents are being configured. {companyName || 'Your store'} will be ready in moments.
+              Connect your POS or back-office next so they work with real numbers.
             </p>
 
             <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
               <button
-                onClick={() => { window.location.href = '/dashboard'; }}
+                onClick={() => { window.location.href = '/connect'; }}
                 style={styles.button}
+              >
+                Connect Your Store
+              </button>
+              <button
+                onClick={() => { window.location.href = '/dashboard'; }}
+                style={{ ...styles.button, background: '#f3f4f6', color: '#374151' }}
               >
                 Go to Dashboard
               </button>

@@ -9,8 +9,8 @@ import { useState, useRef, useEffect, type FormEvent } from 'react';
  * plus suggested questions — so value lands before any integration is required.
  *
  * "Connect your store" is an in-context CTA (value first, credentials second),
- * not a gate. The old 9-step wizard remains reachable at /onboarding as the
- * connect flow once the user is sold.
+ * not a gate. It leads to /connect — the actual store-connection step — and
+ * from there to /onboarding (plan + business setup) once the user is sold.
  */
 
 const ROUTER_URL = (import.meta as any).env?.VITE_ROUTER_URL || '/api';
@@ -122,7 +122,7 @@ export function StartChat() {
         <div style={s.sampleBadge}>
           <span style={s.dot} /> Exploring with sample data{activation ? ` · ${activation.store}` : ''}
         </div>
-        <a href="/onboarding" style={s.connectBtn}>Connect your store</a>
+        <a href="/connect" style={s.connectBtn}>Connect your store</a>
       </header>
 
       <main style={s.main}>
