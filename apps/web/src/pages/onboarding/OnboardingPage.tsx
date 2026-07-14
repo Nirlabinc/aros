@@ -52,7 +52,7 @@ const PLANS = [
 ];
 
 export function OnboardingPage() {
-  const { user, tenant } = useAuth();
+  const { user, session, tenant, refreshMemberships } = useAuth();
   const [step, setStep] = useState<OnboardingStep>('verify-email');
   const [otp, setOtp] = useState('');
   const [otpSent, setOtpSent] = useState(false);
@@ -70,6 +70,45 @@ export function OnboardingPage() {
   const [zip, setZip] = useState('');
   const [country, setCountry] = useState('US');
   const [setupDone, setSetupDone] = useState(false);
+  const [completionError, setCompletionError] = useState('');
+
+  async function completeOnboarding(input?: {
+    companyName?: string;
+    storeName?: string;
+    storeCount?: number;
+    industry?: string;
+    phone?: string;
+    address?: Record<string, string>;
+  }) {
+    if (tenant?.id) {
+      const res = await fetch(`${API_BASE}/api/onboarding/complete`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          tenantId: tenant.id,
+          companyName: input?.companyName || companyName || tenant.name,
+          storeName: input?.storeName || storeName || tenant.name,
+          storeCount: input?.storeCount ?? storeCount,
+          industry: input?.industry || industry,
+          phone: input?.phone || phone,
+          address: input?.address || { street: address, city, state, zip, country },
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Could not complete onboarding. Please try again.');
+      }
+
+      await refreshMemberships();
+    }
+
+    localStorage.setItem('aros-onboarding-complete', 'true');
+    sessionStorage.setItem('aros-onboarding-complete', 'true');
+  }
 
   // Check URL params for payment callback
   useEffect(() => {
@@ -142,10 +181,22 @@ export function OnboardingPage() {
 
   async function handlePlanSelect(planId: string) {
     setSelectedPlan(planId);
+    setCompletionError('');
 
     if (planId === 'free') {
-      // Free plan — skip payment, go to business setup
-      setStep('business-setup');
+      setLoading(true);
+      try {
+        await completeOnboarding({
+          companyName: tenant?.name || user?.user_metadata?.company || 'My Store',
+          storeName: tenant?.name || user?.user_metadata?.company || 'My Store',
+          storeCount: 1,
+          industry: 'convenience',
+        });
+        window.location.href = '/dashboard';
+      } catch (err) {
+        setCompletionError(err instanceof Error ? err.message : 'Could not complete onboarding. Please try again.');
+        setLoading(false);
+      }
       return;
     }
 
@@ -184,35 +235,24 @@ export function OnboardingPage() {
   async function handleBusinessSetup(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
+    setCompletionError('');
 
-    if (tenant?.id) {
-      // Complete onboarding via server API (updates tenant + onboarding_progress + audit log)
-      try {
-        await fetch(`${API_BASE}/api/onboarding/complete`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tenantId: tenant.id,
-            companyName: companyName || tenant.name,
-            storeName,
-            storeCount,
-            industry,
-            phone,
-            address: { street: address, city, state, zip, country },
-          }),
-        });
-      } catch {
-        // Non-fatal — proceed
-      }
-
+    try {
+      await completeOnboarding({
+        companyName: companyName || tenant?.name,
+        storeName,
+        storeCount,
+        industry,
+        phone,
+        address: { street: address, city, state, zip, country },
+      });
+      setSetupDone(true);
+      setStep('complete');
+    } catch (err) {
+      setCompletionError(err instanceof Error ? err.message : 'Could not complete onboarding. Please try again.');
+    } finally {
+      setLoading(false);
     }
-
-    // Mark onboarding complete (client-side cache of server state)
-    localStorage.setItem('aros-onboarding-complete', 'true');
-    sessionStorage.setItem('aros-onboarding-complete', 'true');
-    setSetupDone(true);
-    setStep('complete');
-    setLoading(false);
   }
 
   const stepIndex = ['verify-email', 'choose-plan', 'payment', 'business-setup', 'complete'].indexOf(step);
@@ -291,6 +331,7 @@ export function OnboardingPage() {
             <p style={{ textAlign: 'center', fontSize: 14, color: '#6b7280', marginBottom: 32 }}>
               Start free or go managed. Upgrade anytime.
             </p>
+            {completionError && <div style={{ ...styles.error, marginBottom: 16 }}>{completionError}</div>}
             <div style={styles.planGrid}>
               {PLANS.map(plan => (
                 <div
@@ -483,6 +524,7 @@ export function OnboardingPage() {
                 }
                 return null;
               })()}
+              {completionError && <div style={styles.error}>{completionError}</div>}
 
               <button type="submit" disabled={loading} style={styles.button}>
                 {loading ? 'Setting up...' : 'Launch AROS'}

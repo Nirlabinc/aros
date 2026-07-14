@@ -2,3 +2,7 @@ packages:
   - "packages/*"
   - "apps/*"
   - "plugins/*"
+
+  - "shre-sdk"
+  - "shre-model-config"
+  - "mib007-live"

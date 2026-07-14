@@ -6,6 +6,7 @@ const API_BASE = (window as any).__AROS_API_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
 
 const ACTIVE_TENANT_STORAGE_KEY = 'aros.activeTenantId';
+const MEMBERSHIP_FETCH_TIMEOUT_MS = 5000;
 
 export interface Tenant {
   id: string;
@@ -37,6 +38,7 @@ interface AuthContextValue {
   tenant: Tenant | null;
   loading: boolean;
   selectTenant: (tenantId: string) => void;
+  refreshMemberships: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string, metadata: Record<string, string>) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
@@ -47,11 +49,20 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function fetchMemberships(userId: string): Promise<TenantMembership[]> {
   try {
-    const { data, error } = await supabase
+    const query = supabase
       .from('tenant_members')
       .select('tenant_id, role, is_default, status, tenant:tenants(*)')
       .eq('user_id', userId)
       .eq('status', 'active');
+    const { data, error } = await Promise.race([
+      query,
+      new Promise<{ data: null; error: Error }>((resolve) => {
+        window.setTimeout(
+          () => resolve({ data: null, error: new Error('Membership lookup timed out') }),
+          MEMBERSHIP_FETCH_TIMEOUT_MS,
+        );
+      }),
+    ]);
     if (error || !data) return [];
     return (data as unknown as TenantMembership[]).filter((m) => !!m.tenant);
   } catch {
@@ -96,11 +107,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (active) localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, active.id);
   }, []);
 
+  const refreshMemberships = useCallback(async () => {
+    if (!session?.user) return;
+    const mems = await fetchMemberships(session.user.id);
+    setMemberships(mems);
+    const storedId = localStorage.getItem(ACTIVE_TENANT_STORAGE_KEY);
+    const active = pickActiveTenant(mems, storedId);
+    setTenant(active);
+    if (active) localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, active.id);
+  }, [session]);
+
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data: { session: s } }) => {
-      await hydrateUser(s);
-      setLoading(false);
-    });
+    supabase.auth.getSession()
+      .then(async ({ data: { session: s } }) => {
+        await hydrateUser(s);
+      })
+      .catch(() => {
+        setSession(null);
+        setUser(null);
+        setMemberships([]);
+        setTenant(null);
+      })
+      .finally(() => setLoading(false));
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (_event, s) => {
         await hydrateUser(s);
@@ -177,6 +205,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         tenant,
         loading,
         selectTenant,
+        refreshMemberships,
         signIn,
         signUp,
         signOut,
