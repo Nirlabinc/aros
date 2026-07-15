@@ -211,11 +211,12 @@ export function OnboardingPage() {
     try {
       const res = await fetch(`${API_BASE}/api/billing/checkout`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token || ''}`,
+        },
         body: JSON.stringify({
-          tenantId: tenant?.id,
           plan: planId,
-          email: user?.email,
         }),
       });
       const data = await res.json();
