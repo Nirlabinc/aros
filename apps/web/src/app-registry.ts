@@ -11,6 +11,7 @@ export const AROS_APPS = [
 const ALLOWED_RETURN_HOSTS = new Set(['app.aros.live', ...AROS_APPS.map(app => new URL(app.url).hostname)]);
 export function safeReturnTo(value: string | null): string {
   if (!value) return '/dashboard';
+  if (value.startsWith('/') && !value.startsWith('//') && !value.includes('\\')) return value;
   try { const target = new URL(value, window.location.origin); return target.protocol === 'https:' && ALLOWED_RETURN_HOSTS.has(target.hostname) ? target.toString() : '/dashboard'; }
   catch { return '/dashboard'; }
 }
