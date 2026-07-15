@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './aros.css';
+import './aros-design.css';
 import './setup-flow.css';
 import { App } from './App';
 
