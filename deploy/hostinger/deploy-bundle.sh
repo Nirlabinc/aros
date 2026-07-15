@@ -25,8 +25,8 @@ rollback() {
   trap - ERR
   echo "Deploy failed; restoring ${PREVIOUS_COMMIT:0:12}" >&2
   git checkout -B "$DEPLOY_BRANCH" "$PREVIOUS_COMMIT"
-  CI=1 pnpm install --frozen-lockfile --offline --reporter=append-only
-  CI=1 pnpm build
+  env -u NODE_ENV CI=1 pnpm install --frozen-lockfile --offline --reporter=append-only
+  env -u NODE_ENV CI=1 pnpm build
   if [[ "$RESTARTED" == "1" ]]; then
     pm2 restart "$PM2_APP" --update-env
     pm2 save
@@ -38,21 +38,22 @@ trap rollback ERR
 git fetch "$BUNDLE_PATH" "$BUNDLE_REF"
 git checkout -B "$DEPLOY_BRANCH" FETCH_HEAD
 
-set -a
-source ./.env
-set +a
+SUPABASE_RUNTIME_URL="$(grep '^SUPABASE_URL=' .env | cut -d= -f2-)"
+PUBLIC_RUNTIME_URL="$(grep '^AROS_PUBLIC_URL=' .env | cut -d= -f2-)"
 TARGET_ENV=prod \
 RUNTIME_REPO=aros \
-PUBLIC_URL="${AROS_PUBLIC_URL:-https://aros.live}" \
+PUBLIC_URL="${PUBLIC_RUNTIME_URL:-https://aros.live}" \
+SUPABASE_URL="$SUPABASE_RUNTIME_URL" \
 node deploy/scripts/validate-runtime-ownership.mjs
 
-if ! CI=1 pnpm install --frozen-lockfile --offline --reporter=append-only; then
-  CI=1 pnpm install --frozen-lockfile --reporter=append-only
+if ! env -u NODE_ENV CI=1 pnpm install --frozen-lockfile --offline --reporter=append-only; then
+  env -u NODE_ENV CI=1 pnpm install --frozen-lockfile --reporter=append-only
 fi
-CI=1 pnpm build
+env -u NODE_ENV CI=1 pnpm build
 
 # Migrations must pass before the process is restarted.
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+DATABASE_RUNTIME_URL="$(grep '^DATABASE_URL=' .env | cut -d= -f2-)"
+psql "$DATABASE_RUNTIME_URL" -v ON_ERROR_STOP=1 \
   -f supabase/migrations/20260715_setup_resources.sql
 
 pm2 restart "$PM2_APP" --update-env
