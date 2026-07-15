@@ -1,7 +1,7 @@
 import { useState, useEffect, FormEvent } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 
-type OnboardingStep = 'verify-email' | 'choose-plan' | 'payment' | 'business-setup' | 'complete';
+type OnboardingStep = 'verify-email' | 'choose-plan' | 'payment' | 'business-setup' | 'connect-pos' | 'complete';
 
 const API_BASE = (window as any).__AROS_API_URL__
   || (window.location.hostname === 'localhost'
@@ -71,6 +71,16 @@ export function OnboardingPage() {
   const [country, setCountry] = useState('US');
   const [setupDone, setSetupDone] = useState(false);
   const [completionError, setCompletionError] = useState('');
+  // Connect-POS step
+  const [storeId, setStoreId] = useState<string | null>(null);
+  const [selectedPos, setSelectedPos] = useState<'verifone' | 'rapidrms' | null>(null);
+  const [activation, setActivation] = useState<{ code: string; expiresAt?: string } | null>(null);
+  const [posConnected, setPosConnected] = useState(false);
+  const [posLoading, setPosLoading] = useState(false);
+  const [posError, setPosError] = useState('');
+  const [edgeProducts, setEdgeProducts] = useState<string[]>(['aros']);
+  const [deploymentMode, setDeploymentMode] = useState<'existing-computer' | 'managed-edge'>('existing-computer');
+  const [remoteCommanderAccess, setRemoteCommanderAccess] = useState(false);
 
   async function completeOnboarding(input?: {
     companyName?: string;
@@ -98,10 +108,11 @@ export function OnboardingPage() {
         }),
       });
 
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         throw new Error(data.error || 'Could not complete onboarding. Please try again.');
       }
+      if (data.storeId) setStoreId(data.storeId as string);
 
       await refreshMemberships();
     }
@@ -184,19 +195,7 @@ export function OnboardingPage() {
     setCompletionError('');
 
     if (planId === 'free') {
-      setLoading(true);
-      try {
-        await completeOnboarding({
-          companyName: tenant?.name || user?.user_metadata?.company || 'My Store',
-          storeName: tenant?.name || user?.user_metadata?.company || 'My Store',
-          storeCount: 1,
-          industry: 'convenience',
-        });
-        window.location.href = '/dashboard';
-      } catch (err) {
-        setCompletionError(err instanceof Error ? err.message : 'Could not complete onboarding. Please try again.');
-        setLoading(false);
-      }
+      setStep('business-setup');
       return;
     }
 
@@ -211,11 +210,12 @@ export function OnboardingPage() {
     try {
       const res = await fetch(`${API_BASE}/api/billing/checkout`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token || ''}`,
+        },
         body: JSON.stringify({
-          tenantId: tenant?.id,
           plan: planId,
-          email: user?.email,
         }),
       });
       const data = await res.json();
@@ -247,7 +247,7 @@ export function OnboardingPage() {
         address: { street: address, city, state, zip, country },
       });
       setSetupDone(true);
-      setStep('complete');
+      setStep('connect-pos');
     } catch (err) {
       setCompletionError(err instanceof Error ? err.message : 'Could not complete onboarding. Please try again.');
     } finally {
@@ -255,7 +255,62 @@ export function OnboardingPage() {
     }
   }
 
-  const stepIndex = ['verify-email', 'choose-plan', 'payment', 'business-setup', 'complete'].indexOf(step);
+  // ── Connect POS (edge activation for Verifone; cloud for RapidRMS) ──────────
+  async function startVerifoneConnect() {
+    setPosLoading(true);
+    setPosError('');
+    try {
+      const res = await fetch(`${API_BASE}/api/edge/activation-codes`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token || ''}`,
+        },
+        // connectorId is an optional pos_connections UUID, not a provider name.
+        // First-time setup binds this short-lived code directly to the store.
+        body: JSON.stringify({
+          storeId,
+          expiresInMinutes: 60,
+          setup: { products: edgeProducts, deploymentMode, remoteCommanderAccess },
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not generate an activation code.');
+      setActivation({ code: data.activationCode, expiresAt: data.expiresAt });
+    } catch (err) {
+      setPosError(err instanceof Error ? err.message : 'Could not start the connection.');
+    } finally {
+      setPosLoading(false);
+    }
+  }
+
+  // Poll onboarding status while a Verifone activation is pending.
+  useEffect(() => {
+    if (step !== 'connect-pos' || !activation || posConnected || !storeId) return;
+    let active = true;
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/edge/onboarding/status?storeId=${encodeURIComponent(storeId)}`,
+          { headers: { Authorization: `Bearer ${session?.access_token || ''}` } },
+        );
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        if (active && data.state === 'connected') {
+          setPosConnected(true);
+        }
+      } catch {
+        /* transient — keep polling */
+      }
+    }, 5000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [step, activation, posConnected, storeId, session]);
+
+  const stepIndex = ['verify-email', 'choose-plan', 'payment', 'business-setup', 'connect-pos', 'complete'].indexOf(step);
+  const progressIndex = stepIndex <= 0 ? 0 : stepIndex <= 2 ? 1 : stepIndex === 3 ? 2 : 3;
 
   return (
     <div style={styles.wrapper}>
@@ -269,19 +324,19 @@ export function OnboardingPage() {
         {/* Progress */}
         {step !== 'complete' && (
           <div style={styles.progress}>
-            {['Verify Email', 'Choose Plan', 'Setup Business'].map((label, i) => (
+            {['Verify Email', 'Choose Plan', 'Setup Business', 'Connect Store'].map((label, i) => (
               <div key={label} style={styles.progressStep}>
                 <div style={{
                   ...styles.progressDot,
-                  background: i <= (stepIndex > 2 ? 2 : stepIndex) ? '#3b5bdb' : '#e5e7eb',
-                  color: i <= (stepIndex > 2 ? 2 : stepIndex) ? '#fff' : '#9ca3af',
+                  background: i <= progressIndex ? '#3b5bdb' : '#e5e7eb',
+                  color: i <= progressIndex ? '#fff' : '#9ca3af',
                 }}>
-                  {i < (stepIndex > 2 ? 3 : stepIndex) ? '✓' : i + 1}
+                  {i < progressIndex ? '✓' : i + 1}
                 </div>
                 <span style={{
                   fontSize: 12,
-                  color: i <= (stepIndex > 2 ? 2 : stepIndex) ? '#1a1a2e' : '#9ca3af',
-                  fontWeight: i === (stepIndex > 2 ? 2 : stepIndex) ? 700 : 400,
+                  color: i <= progressIndex ? '#1a1a2e' : '#9ca3af',
+                  fontWeight: i === progressIndex ? 700 : 400,
                 }}>{label}</span>
               </div>
             ))}
@@ -533,6 +588,152 @@ export function OnboardingPage() {
           </div>
         )}
 
+        {/* Step: Connect POS */}
+        {step === 'connect-pos' && (
+          <div style={{ ...styles.card, maxWidth: 560 }}>
+            <h2 style={styles.cardTitle}>Connect your POS</h2>
+            <p style={styles.cardDesc}>
+              Link your point-of-sale so your agents work with real numbers. You can
+              do this now or skip and connect later from your dashboard.
+            </p>
+
+            {!selectedPos && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPos('verifone')}
+                  style={styles.posCard}
+                >
+                  <div style={{ fontWeight: 700, color: '#1a1a2e' }}>Verifone Commander</div>
+                  <div style={{ fontSize: 13, color: '#6b7280' }}>
+                    Fuel &amp; c-store. Runs on-site — installs a small edge app on a
+                    store computer (or we host it for you).
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPos('rapidrms')}
+                  style={styles.posCard}
+                >
+                  <div style={{ fontWeight: 700, color: '#1a1a2e' }}>RapidRMS</div>
+                  <div style={{ fontSize: 13, color: '#6b7280' }}>
+                    Cloud POS — connects directly with your store credentials.
+                  </div>
+                </button>
+              </div>
+            )}
+
+            {selectedPos === 'verifone' && !posConnected && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {!activation ? (
+                  <>
+                    <p style={{ fontSize: 13, color: '#374151', margin: 0 }}>
+                      Verifone Commander lives on your store network, so it needs a
+                      small edge app on an on-site computer. Generate an activation
+                      code, install the app, and paste the code to link it.
+                    </p>
+                    <div style={styles.setupGroup}>
+                      <div style={styles.setupTitle}>1. Choose what this computer will run</div>
+                      {[
+                        ['aros', 'AROS Edge', 'Secure sync, health monitoring, and workspace connection'],
+                        ['cstoresku', 'CStoreSKU', 'Local Commander reports and operational tools'],
+                      ].map(([id, label, hint]) => (
+                        <label key={id} style={styles.choiceRow}>
+                          <input type="checkbox" checked={edgeProducts.includes(id)} onChange={(e) => setEdgeProducts((current) => e.target.checked ? [...new Set([...current, id])] : current.filter((item) => item !== id))} />
+                          <span><strong>{label}</strong><small style={styles.choiceHint}>{hint}</small></span>
+                        </label>
+                      ))}
+                    </div>
+                    <div style={styles.setupGroup}>
+                      <div style={styles.setupTitle}>2. Choose where the edge runs</div>
+                      <label style={styles.choiceRow}>
+                        <input type="radio" name="deployment" checked={deploymentMode === 'existing-computer'} onChange={() => setDeploymentMode('existing-computer')} />
+                        <span><strong>This store computer</strong><small style={styles.choiceHint}>Recommended when it stays on and can reach Commander.</small></span>
+                      </label>
+                      <label style={styles.choiceRow}>
+                        <input type="radio" name="deployment" checked={deploymentMode === 'managed-edge'} onChange={() => setDeploymentMode('managed-edge')} />
+                        <span><strong>Managed AROS edge computer</strong><small style={styles.choiceHint}>We provision a dedicated device for the store LAN.</small></span>
+                      </label>
+                    </div>
+                    <div style={styles.setupGroup}>
+                      <div style={styles.setupTitle}>3. Optional remote Commander access</div>
+                      <label style={styles.choiceRow}>
+                        <input type="checkbox" checked={remoteCommanderAccess} onChange={(e) => setRemoteCommanderAccess(e.target.checked)} />
+                        <span><strong>Enable protected remote administration</strong><small style={styles.choiceHint}>Creates a workspace-only Cloudflare Access route after approval. Commander is never exposed directly.</small></span>
+                      </label>
+                    </div>
+                    {posError && <div style={styles.error}>{posError}</div>}
+                    <button type="button" onClick={startVerifoneConnect} disabled={posLoading || !storeId || edgeProducts.length === 0} style={styles.button}>
+                      {posLoading ? 'Generating…' : 'Get activation code'}
+                    </button>
+                    {!storeId && (
+                      <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                        Preparing your store… if this persists, you can connect from the dashboard.
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div style={{ background: '#f0f4ff', border: '1px solid #c7d2fe', borderRadius: 10, padding: 16, textAlign: 'center' }}>
+                      <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>Activation code</div>
+                      <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: 4, color: '#1a1a2e', fontFamily: 'monospace' }}>
+                        {activation.code}
+                      </div>
+                    </div>
+                    <ol style={{ fontSize: 13, color: '#374151', paddingLeft: 18, margin: 0, lineHeight: 1.7 }}>
+                      <li>
+                        Open the <a href="/verifone/download.html" style={styles.link} target="_blank" rel="noopener">Edge Relay installer</a> on a store computer and choose its operating system.
+                      </li>
+                      <li>In the setup wizard, enter your Commander IP (usually <code>192.168.31.11</code>) and credentials — they stay on-site.</li>
+                      <li>Paste the activation code above to link it to this store.</li>
+                      <li>Choose <strong>{edgeProducts.includes('aros') && edgeProducts.includes('cstoresku') ? 'AROS + CStoreSKU' : edgeProducts.includes('cstoresku') ? 'CStoreSKU' : 'AROS Edge'}</strong> in the installer.</li>
+                      <li>Validate a closed business period before automatic sync begins.</li>
+                    </ol>
+                    {remoteCommanderAccess && (
+                      <div style={{ fontSize: 12, color: '#1e40af', background: '#eff6ff', borderRadius: 8, padding: 10 }}>
+                        Remote administration remains pending until a workspace administrator approves its Cloudflare Access hostname and allowed users.
+                      </div>
+                    )}
+                    <div style={{ fontSize: 12, color: '#6b7280', background: '#f9fafb', borderRadius: 8, padding: 10 }}>
+                      Don't want to manage a computer? <strong>We can host the edge for you</strong> — reply to your welcome email and we'll set up a managed device.
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#6b7280' }}>
+                      <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#f59e0b' }} />
+                      Waiting for your edge app to connect…
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {selectedPos === 'verifone' && posConnected && (
+              <div style={{ textAlign: 'center', padding: '8px 0' }}>
+                <div style={{ fontSize: 40 }}>✅</div>
+                <div style={{ fontWeight: 700, color: '#059669', margin: '8px 0' }}>Store connected</div>
+                <p style={{ fontSize: 13, color: '#6b7280' }}>Your Verifone data is flowing in.</p>
+              </div>
+            )}
+
+            {selectedPos === 'rapidrms' && (
+              <div style={{ fontSize: 13, color: '#374151' }}>
+                RapidRMS connects with your store credentials. Continue to your
+                dashboard and open <strong>Stores &amp; POS → Connect POS → RapidRMS</strong> to finish.
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
+              <button type="button" onClick={() => setStep('complete')} style={{ ...styles.button, flex: 1 }}>
+                {posConnected ? 'Continue' : 'Skip for now'}
+              </button>
+              {selectedPos && !posConnected && (
+                <button type="button" onClick={() => { setSelectedPos(null); setActivation(null); setPosError(''); }} style={{ ...styles.button, flex: 1, background: '#f3f4f6', color: '#374151' }}>
+                  Back
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Step: Complete */}
         {step === 'complete' && (
           <div style={{ ...styles.card, textAlign: 'center' }}>
@@ -695,6 +896,30 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontFamily: 'inherit',
   },
+  posCard: {
+    textAlign: 'left' as const,
+    background: '#fff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 12,
+    padding: '16px 18px',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 4,
+  },
+  setupGroup: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 10,
+    border: '1px solid #e5e7eb',
+    borderRadius: 12,
+    padding: 14,
+    background: '#f9fafb',
+  },
+  setupTitle: { fontSize: 13, fontWeight: 800, color: '#1a1a2e' },
+  choiceRow: { display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 13, color: '#374151', cursor: 'pointer' },
+  choiceHint: { display: 'block', color: '#6b7280', marginTop: 2, lineHeight: 1.4 },
   planGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
