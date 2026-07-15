@@ -310,7 +310,7 @@ function BreakdownSection({
 }
 
 export function BillingPage() {
-  const { tenant, user, loading: authLoading } = useAuth();
+  const { tenant, session, loading: authLoading } = useAuth();
   const [billing, setBilling] = useState<BillingStatus | null>(null);
   const [invoices, setInvoices] = useState<BillingInvoice[]>([]);
   const [usage, setUsage] = useState<BillingUsageSummary | null>(null);
@@ -337,7 +337,9 @@ export function BillingPage() {
 
       try {
         const [statusRes, invoicesRes] = await Promise.allSettled([
-          fetch(`${API_BASE}/api/billing/status?tenantId=${tenantId}`),
+          fetch(`${API_BASE}/api/billing/status`, {
+            headers: { Authorization: `Bearer ${session?.access_token || ''}` },
+          }),
           fetch(`${API_BASE}/api/companies/${tenantId}/invoices`, { credentials: 'include' }),
         ]);
 
@@ -390,7 +392,7 @@ export function BillingPage() {
     return () => {
       cancelled = true;
     };
-  }, [authLoading, tenant?.id]);
+  }, [authLoading, tenant?.id, session?.access_token]);
 
   async function openPortal() {
     if (!billing?.stripeCustomerId) return;
@@ -398,8 +400,11 @@ export function BillingPage() {
     try {
       const res = await fetch(`${API_BASE}/api/billing/portal`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stripeCustomerId: billing.stripeCustomerId }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token || ''}`,
+        },
+        body: JSON.stringify({}),
       });
       const data = await res.json();
       if (data.url) {
@@ -418,11 +423,12 @@ export function BillingPage() {
     try {
       const res = await fetch(`${API_BASE}/api/billing/checkout`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token || ''}`,
+        },
         body: JSON.stringify({
-          tenantId: tenant.id,
           plan,
-          email: user?.email,
         }),
       });
       const data = await res.json();

@@ -54,6 +54,7 @@ import { handleEdgeRequest } from './edge/http.js';
 import { handleEdgeProvisioningRequest } from './edge/provisioning-http.js';
 import { EdgeProvisioningService } from './edge/provisioning.js';
 import { SupabaseEdgeProvisioningRepository } from './edge/supabase-provisioning-repository.js';
+import { getTrustedClientIp, isPublicRouterPath } from './api-security.js';
 
 const PORT = Number(process.env.PORT || 5457);
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
@@ -64,6 +65,7 @@ const SHRE_METER_URL = process.env.SHRE_METER_URL || 'http://127.0.0.1:5495';
 const SHRE_TASKS_URL = process.env.SHRE_TASKS_URL || 'http://127.0.0.1:5460';
 const SHRE_ROUTER_URL = process.env.SHRE_ROUTER_URL || 'http://127.0.0.1:5497';
 const WEB_DIST = process.env.AROS_WEB_DIST || join(process.cwd(), 'apps', 'web', 'dist');
+const TRUST_PROXY = process.env.AROS_TRUST_PROXY === '1' || process.env.AROS_TRUST_PROXY === 'true';
 
 // ── Platform Integrations ────────────────────────────────────────
 const eventBus = createEventBus('aros-platform');
@@ -217,7 +219,8 @@ function collectBody(req: IncomingMessage, maxBytes = 1_048_576): Promise<Buffer
 async function parseJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
   try {
     const raw = await collectBody(req, 65_536);
-    return JSON.parse(raw.toString());
+    const parsed: unknown = JSON.parse(raw.toString());
+    return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -228,10 +231,7 @@ async function parseJsonBody(req: IncomingMessage): Promise<Record<string, unkno
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 function rateLimit(req: IncomingMessage, maxRequests: number, windowMs: number): boolean {
-  const ip =
-    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
-    req.socket.remoteAddress ||
-    'unknown';
+  const ip = getClientIp(req);
   const now = Date.now();
   const bucket = rateBuckets.get(ip);
 
@@ -279,11 +279,14 @@ async function auditLog(opts: {
 }
 
 function getClientIp(req: IncomingMessage): string {
-  return (
-    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
-    req.socket.remoteAddress ||
-    'unknown'
-  );
+  return getTrustedClientIp(req, TRUST_PROXY);
+}
+
+async function authorizeRouterProxy(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<boolean> {
+  if (isPublicRouterPath(pathname)) return true;
+  if (await authenticateRequest(req)) return true;
+  json(res, 401, { error: 'Authentication required' });
+  return false;
 }
 
 // ── Brute-Force Login Protection (separate from general rate limiter) ─
@@ -380,18 +383,22 @@ function setSecurityHeaders(res: ServerResponse): void {
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.aros.live https://*.nirtek.net; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  );
 }
 
 // ── Billing Routes ──────────────────────────────────────────────
 
 async function handleBillingCheckout(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageBilling(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
   const body = await parseJsonBody(req);
   if (!body) return json(res, 400, { error: 'Invalid JSON' });
 
-  const { tenantId, plan, email } = body as { tenantId?: string; plan?: string; email?: string };
-  if (!tenantId || !plan || !email) {
-    return json(res, 400, { error: 'Missing required fields: tenantId, plan, email' });
-  }
+  const { plan } = body as { plan?: unknown };
 
   const validPlans: PlanId[] = ['starter', 'pro', 'enterprise'];
   if (!validPlans.includes(plan as PlanId)) {
@@ -400,13 +407,14 @@ async function handleBillingCheckout(req: IncomingMessage, res: ServerResponse):
 
   try {
     const url = await createCheckoutSession({
-      tenantId: String(tenantId),
+      tenantId: auth.tenantId,
       plan: plan as PlanId,
-      email: String(email),
+      email: auth.email,
     });
 
     await auditLog({
-      tenantId: String(tenantId),
+      tenantId: auth.tenantId,
+      userId: auth.userId,
       action: 'billing.checkout_started',
       resource: 'stripe',
       detail: { plan },
@@ -422,16 +430,15 @@ async function handleBillingCheckout(req: IncomingMessage, res: ServerResponse):
 }
 
 async function handleBillingPortal(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const body = await parseJsonBody(req);
-  if (!body) return json(res, 400, { error: 'Invalid JSON' });
-
-  const { stripeCustomerId } = body as { stripeCustomerId?: string };
-  if (!stripeCustomerId) {
-    return json(res, 400, { error: 'Missing required field: stripeCustomerId' });
-  }
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageBilling(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
 
   try {
-    const url = await createPortalSession(String(stripeCustomerId));
+    const supabase = createSupabaseAdmin();
+    const { data, error } = await supabase.from('tenants').select('stripe_customer_id').eq('id', auth.tenantId).single();
+    if (error || !data?.stripe_customer_id) return json(res, 404, { error: 'Billing customer not found' });
+    const url = await createPortalSession(data.stripe_customer_id);
     json(res, 200, { url });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Portal session failed';
@@ -458,12 +465,9 @@ async function handleBillingWebhook(req: IncomingMessage, res: ServerResponse): 
 }
 
 async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-  const tenantId = url.searchParams.get('tenantId');
-
-  if (!tenantId) {
-    return json(res, 400, { error: 'Missing query parameter: tenantId' });
-  }
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const tenantId = auth.tenantId;
 
   try {
     const supabase = createSupabaseAdmin();
@@ -631,12 +635,9 @@ async function handleVerifyOtp(req: IncomingMessage, res: ServerResponse): Promi
 // ── Onboarding ──────────────────────────────────────────────────
 
 async function handleOnboardingStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-  const tenantId = url.searchParams.get('tenantId');
-
-  if (!tenantId) {
-    return json(res, 400, { error: 'Missing query parameter: tenantId' });
-  }
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const tenantId = auth.tenantId;
 
   try {
     const supabase = createSupabaseAdmin();
@@ -1161,6 +1162,7 @@ async function handleLeadCapture(req: IncomingMessage, res: ServerResponse): Pro
 
 type AuthContext = {
   userId: string;
+  email: string;
   tenantId: string;
   role: string;
 };
@@ -1172,8 +1174,12 @@ function getRequestUrl(req: IncomingMessage): URL {
 function getRequestedTenantId(req: IncomingMessage): string | null {
   const headerTenantId = req.headers['x-aros-tenant-id'] ?? req.headers['x-tenant-id'];
   if (Array.isArray(headerTenantId)) return headerTenantId[0] || null;
-  if (typeof headerTenantId === 'string' && headerTenantId.trim()) return headerTenantId.trim();
-  return getRequestUrl(req).searchParams.get('tenantId');
+  const requested = typeof headerTenantId === 'string' && headerTenantId.trim()
+    ? headerTenantId.trim()
+    : getRequestUrl(req).searchParams.get('tenantId');
+  return requested && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requested)
+    ? requested
+    : null;
 }
 
 async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | null> {
@@ -1207,6 +1213,7 @@ async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | 
     if (!membership) return null;
     return {
       userId: user.id,
+      email: user.email || '',
       tenantId: membership.tenant_id,
       role: membership.role || 'member',
     };
@@ -1216,6 +1223,10 @@ async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | 
 }
 
 function canManageMarketplace(role: string): boolean {
+  return ['owner', 'admin'].includes(role);
+}
+
+function canManageBilling(role: string): boolean {
   return ['owner', 'admin'].includes(role);
 }
 
@@ -2323,12 +2334,15 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   // ── Trace Endpoints ─────────────────────────────────────────
   if (url === '/v1/traces/recent' && method === 'GET') {
+    if (!(await authenticateRequest(req))) return json(res, 401, { error: 'Authentication required' });
     return json(res, 200, getRecentTraces());
   }
   if (url === '/v1/traces/failures' && method === 'GET') {
+    if (!(await authenticateRequest(req))) return json(res, 401, { error: 'Authentication required' });
     return json(res, 200, getRecentFailures());
   }
   if (url === '/v1/traces/stats' && method === 'GET') {
+    if (!(await authenticateRequest(req))) return json(res, 401, { error: 'Authentication required' });
     return json(res, 200, getTraceStats());
   }
 
@@ -2377,11 +2391,13 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   }
 
   if (pathname.startsWith('/api/v1/')) {
+    if (!(await authorizeRouterProxy(req, res, pathname))) return;
     req.url = pathname.slice('/api'.length) + requestUrl.search;
     return proxyRequest(req, res, SHRE_ROUTER_URL);
   }
 
   if (pathname.startsWith('/v1/') && !pathname.startsWith('/v1/traces/')) {
+    if (!(await authorizeRouterProxy(req, res, pathname))) return;
     return proxyRequest(req, res, SHRE_ROUTER_URL);
   }
 
