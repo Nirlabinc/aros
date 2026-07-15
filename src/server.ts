@@ -796,6 +796,10 @@ async function ensureSignupTenant(
     tenantId = tenant.id;
   }
 
+  if (!tenantId) {
+    throw new Error('Tenant resolution failed during signup recovery');
+  }
+
   await supabase.from('tenant_members').insert({
     tenant_id: tenantId,
     user_id: input.userId,

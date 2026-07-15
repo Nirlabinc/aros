@@ -37,6 +37,8 @@ interface AuthContextValue {
   tenant: Tenant | null;
   loading: boolean;
   selectTenant: (tenantId: string) => void;
+  /** Re-fetch memberships + active tenant (e.g. right after onboarding completes) */
+  refreshMemberships: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string, metadata: Record<string, string>) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
@@ -108,6 +110,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setTenant(active);
     if (active) localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, active.id);
   }, []);
+
+  const refreshMemberships = useCallback(async () => {
+    if (!session?.user) return;
+    const mems = await fetchMemberships(session.user.id);
+    setMemberships(mems);
+    const storedId = localStorage.getItem(ACTIVE_TENANT_STORAGE_KEY);
+    const active = pickActiveTenant(mems, storedId);
+    setTenant(active);
+    if (active) localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, active.id);
+  }, [session]);
 
   useEffect(() => {
     // Prod hotfix carried over from the live VPS tree: a rejected getSession
@@ -199,6 +211,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         tenant,
         loading,
         selectTenant,
+        refreshMemberships,
         signIn,
         signUp,
         signOut,
