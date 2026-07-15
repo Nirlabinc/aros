@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { EdgeDeviceView, EdgeProvisioningRepository } from './provisioning.js';
+import type { EdgeDeviceView, EdgeProvisioningRepository, EdgeSetupPreferences } from './provisioning.js';
 
 export class SupabaseEdgeProvisioningRepository implements EdgeProvisioningRepository {
   constructor(private readonly db: SupabaseClient) {}
@@ -14,10 +14,10 @@ export class SupabaseEdgeProvisioningRepository implements EdgeProvisioningRepos
     if (error) throw error;
     return Boolean(data);
   }
-  async createActivation(input: { tenantId:string; storeId:string; connectorId?:string; codeHash:string; expiresAt:string }) {
+  async createActivation(input: { tenantId:string; storeId:string; connectorId?:string; codeHash:string; expiresAt:string; setup:EdgeSetupPreferences }) {
     const { data, error } = await this.db.from('edge_activation_tokens').insert({
       tenant_id: input.tenantId, store_id: input.storeId, connector_id: input.connectorId ?? null,
-      provider: 'verifone', code_hash: input.codeHash, expires_at: input.expiresAt,
+      provider: 'verifone', code_hash: input.codeHash, expires_at: input.expiresAt, setup: input.setup,
     }).select('id').single();
     if (error) throw error;
     return data.id as string;

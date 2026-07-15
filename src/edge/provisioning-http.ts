@@ -23,6 +23,7 @@ export async function handleEdgeProvisioningRequest(
       reply(res, 201, await service.createActivationCode(auth, {
         storeId: input.storeId, connectorId: input.connectorId as string | undefined,
         expiresInMinutes: input.expiresInMinutes as number | undefined,
+        setup: input.setup as any,
       })); return true;
     }
     if (pathname === '/api/edge/devices' && req.method === 'GET') {
@@ -41,6 +42,7 @@ export async function handleEdgeProvisioningRequest(
     if (message === 'EDGE_FORBIDDEN') reply(res, 403, { error: 'insufficient_role' });
     else if (message === 'EDGE_STORE_NOT_FOUND' || message === 'EDGE_CONNECTOR_NOT_FOUND') reply(res, 404, { error: 'resource_not_found' });
     else if (message === 'EDGE_INVALID_EXPIRY') reply(res, 400, { error: 'invalid_expiry' });
+    else if (message === 'EDGE_INVALID_SETUP') reply(res, 400, { error: 'invalid_setup_preferences' });
     else if (message === 'BODY_TOO_LARGE') reply(res, 413, { error: 'payload_too_large' });
     else if (error instanceof SyntaxError) reply(res, 400, { error: 'invalid_json' });
     else reply(res, 500, { error: 'edge_provisioning_failure' });

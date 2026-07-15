@@ -28,6 +28,12 @@ describe('EdgeProvisioningService', () => {
     await expect(service.createActivationCode(owner,{storeId:'store-b'})).rejects.toThrow('EDGE_STORE_NOT_FOUND');
     await expect(service.createActivationCode(owner,{storeId:'store-a',connectorId:'other'})).rejects.toThrow('EDGE_CONNECTOR_NOT_FOUND');
   });
+  it('validates and persists guided setup preferences', async () => {
+    const repo=new Repository(); const service=new EdgeProvisioningService(repo);
+    await service.createActivationCode(owner,{storeId:'store-a',setup:{products:['aros','cstoresku'],deploymentMode:'managed-edge',remoteCommanderAccess:true}});
+    expect((repo.activations[0] as any).setup).toEqual({products:['aros','cstoresku'],deploymentMode:'managed-edge',remoteCommanderAccess:true});
+    await expect(service.createActivationCode(owner,{storeId:'store-a',setup:{products:[] as any,deploymentMode:'existing-computer',remoteCommanderAccess:false}})).rejects.toThrow('EDGE_INVALID_SETUP');
+  });
   it('lists and summarizes devices only inside the authenticated tenant', async () => {
     const repo=new Repository();
     repo.devices.push(

@@ -4,8 +4,10 @@ CREATE TABLE IF NOT EXISTS edge_activation_tokens (
   store_id UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
   connector_id UUID REFERENCES pos_connections(id) ON DELETE SET NULL, provider TEXT NOT NULL DEFAULT 'verifone', code_hash TEXT NOT NULL UNIQUE,
   expires_at TIMESTAMPTZ NOT NULL, max_attempts INTEGER NOT NULL DEFAULT 5 CHECK (max_attempts > 0),
+  setup JSONB NOT NULL DEFAULT '{"products":["aros"],"deploymentMode":"existing-computer","remoteCommanderAccess":false}'::jsonb,
   attempts INTEGER NOT NULL DEFAULT 0, consumed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE edge_activation_tokens ADD COLUMN IF NOT EXISTS setup JSONB NOT NULL DEFAULT '{"products":["aros"],"deploymentMode":"existing-computer","remoteCommanderAccess":false}'::jsonb;
 CREATE TABLE IF NOT EXISTS edge_devices (
   id UUID PRIMARY KEY, tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   store_id UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,

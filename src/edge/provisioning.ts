@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { hashSecret } from './service.js';
 
 export interface ProvisioningAuth { tenantId: string; userId: string; role: string }
-export interface ActivationCodeInput { storeId: string; connectorId?: string; expiresInMinutes?: number }
+export interface EdgeSetupPreferences { products: Array<'aros' | 'cstoresku'>; deploymentMode: 'existing-computer' | 'managed-edge'; remoteCommanderAccess: boolean }
+export interface ActivationCodeInput { storeId: string; connectorId?: string; expiresInMinutes?: number; setup?: EdgeSetupPreferences }
 export interface EdgeDeviceView {
   id: string; storeId: string; connectorId: string | null; provider: string; machineId: string;
   status: string; lastHeartbeatAt: string | null; createdAt: string; revokedAt: string | null;
@@ -11,7 +12,7 @@ export interface EdgeDeviceView {
 export interface EdgeProvisioningRepository {
   storeExists(tenantId: string, storeId: string): Promise<boolean>;
   connectorExists(tenantId: string, storeId: string, connectorId: string): Promise<boolean>;
-  createActivation(input: { tenantId: string; storeId: string; connectorId?: string; codeHash: string; expiresAt: string }): Promise<string>;
+  createActivation(input: { tenantId: string; storeId: string; connectorId?: string; codeHash: string; expiresAt: string; setup: EdgeSetupPreferences }): Promise<string>;
   listDevices(tenantId: string, storeId?: string): Promise<EdgeDeviceView[]>;
   hasUsableActivation(tenantId: string, storeId: string): Promise<boolean>;
 }
@@ -30,11 +31,15 @@ export class EdgeProvisioningService {
     }
     const expiresInMinutes = input.expiresInMinutes ?? 15;
     if (!Number.isInteger(expiresInMinutes) || expiresInMinutes < 5 || expiresInMinutes > 60) throw new Error('EDGE_INVALID_EXPIRY');
+    const setup = input.setup ?? { products: ['aros'], deploymentMode: 'existing-computer', remoteCommanderAccess: false };
+    if (!Array.isArray(setup.products) || setup.products.length < 1 || setup.products.length > 2
+      || new Set(setup.products).size !== setup.products.length || setup.products.some(product => !['aros', 'cstoresku'].includes(product))
+      || !['existing-computer', 'managed-edge'].includes(setup.deploymentMode) || typeof setup.remoteCommanderAccess !== 'boolean') throw new Error('EDGE_INVALID_SETUP');
     const activationCode = code();
     const expiresAt = new Date(Date.now() + expiresInMinutes * 60_000).toISOString();
     const id = await this.repository.createActivation({
       tenantId: auth.tenantId, storeId: input.storeId, connectorId: input.connectorId,
-      codeHash: hashSecret(activationCode), expiresAt,
+      codeHash: hashSecret(activationCode), expiresAt, setup,
     });
     return { id, activationCode, expiresAt, storeId: input.storeId, provider: 'verifone' as const };
   }

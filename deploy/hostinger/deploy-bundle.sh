@@ -53,8 +53,10 @@ env -u NODE_ENV CI=1 pnpm build
 
 # Migrations must pass before the process is restarted.
 DATABASE_RUNTIME_URL="$(grep '^DATABASE_URL=' .env | cut -d= -f2-)"
-psql "$DATABASE_RUNTIME_URL" -v ON_ERROR_STOP=1 \
-  -f supabase/migrations/20260715_setup_resources.sql
+  psql "$DATABASE_RUNTIME_URL" -v ON_ERROR_STOP=1 \
+    -f supabase/migrations/20260715_edge_control_plane.sql
+  psql "$DATABASE_RUNTIME_URL" -v ON_ERROR_STOP=1 \
+    -f supabase/migrations/20260715_setup_resources.sql
 
 pm2 restart "$PM2_APP" --update-env
 RESTARTED=1
