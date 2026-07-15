@@ -41,12 +41,13 @@ import {
 } from './human-state.js';
 import { createTask } from '../tasks/store.js';
 import type { TaskPriority } from '../tasks/types.js';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { testConnection as testRapidRmsConnector } from '../connectors/rapidrms-api.js';
 import { testConnection as testAzureDbConnector } from '../connectors/azure-db.js';
 import { testConnection as testVerifoneConnector } from '../connectors/verifone/connector.js';
 import { setTenantSecret, storeCredential, deleteCredential } from '../connectors/vault-ref.js';
 import { fetchStoreSummary, type StoreSummary } from '../connectors/data-service.js';
+import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
 import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
 
 const PORT = 5457;
@@ -1612,6 +1613,11 @@ async function getTenantStoreSummary(tenantId: string): Promise<StoreSummary | n
         { id: row.id, type: row.type, name: row.name, config: (row.config ?? {}) as Record<string, unknown>, secrets },
         vaultSecretFor(tenantId),
       );
+      // Enrich changePercent from warehouse history (same weekday last week)
+      // — null until a week of snapshots exists.
+      if (summary && summary.todaySales.changePercent === null) {
+        summary = { ...summary, todaySales: { ...summary.todaySales, changePercent: await weekOverWeekChange(supabase, tenantId, summary.todaySales.revenue) } };
+      }
     }
   } catch (err) {
     console.error('[store-summary]', err instanceof Error ? err.message : err);
@@ -1622,14 +1628,188 @@ async function getTenantStoreSummary(tenantId: string): Promise<StoreSummary | n
   return summary;
 }
 
+/**
+ * Internal service token used by trusted services (e.g. shre-router's
+ * data-source-resolver) to fetch a *specific* tenant's summary. Read from env
+ * or the vault file; empty string disables the service path entirely
+ * (fail-closed — the user-bearer path still works).
+ */
+function readServiceToken(): string {
+  const candidates = [
+    process.env.AROS_SERVICE_TOKEN,
+    process.env.AROS_INTERNAL_TOKEN,
+    '/root/.shre/vault/aros-platform.token',
+    (process.env.HOME || '') + '/.shre/vault/aros-platform.token',
+  ].filter(Boolean) as string[];
+  for (const candidate of candidates) {
+    try {
+      if (!candidate.startsWith('/')) {
+        if (candidate.trim()) return candidate.trim();
+        continue;
+      }
+      if (existsSync(candidate)) {
+        const token = readFileSync(candidate, 'utf8').trim();
+        if (token) return token;
+      }
+    } catch { /* try next */ }
+  }
+  return '';
+}
+
+/**
+ * Timing-safe token comparison. Hashes both sides to a fixed 32 bytes first,
+ * so timingSafeEqual never throws on length mismatch AND no length is leaked.
+ */
+function tokensMatch(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const ha = createHash('sha256').update(a).digest();
+  const hb = createHash('sha256').update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
+
+/** Callers permitted to use the service path — spoofable header, allow-listed for audit clarity. */
+const ALLOWED_SERVICE_SOURCES = new Set(['shre-router']);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** UTC business date (YYYY-MM-DD) offset by `daysAgo`. */
+function businessDate(daysAgo = 0): string {
+  return new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** % change vs the snapshot from 7 days ago; null if no comparable history. */
+async function weekOverWeekChange(
+  supabase: ReturnType<typeof createSupabaseAdmin>,
+  tenantId: string,
+  todayRevenue: number,
+): Promise<number | null> {
+  try {
+    const { data: prior } = await supabase
+      .from('store_snapshots')
+      .select('revenue')
+      .eq('tenant_id', tenantId)
+      .eq('business_date', businessDate(7))
+      .maybeSingle();
+    const priorRevenue = prior && typeof prior.revenue === 'number' ? prior.revenue : null;
+    if (priorRevenue === null || priorRevenue <= 0) return null;
+    return Math.round(((todayRevenue - priorRevenue) / priorRevenue) * 1000) / 10;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Warehouse snapshotter: pull each connected connector's live summary and
+ * upsert today's snapshot row. Scheduled (env-gated) so the self-serve
+ * connector path accrues history — real trends + changePercent — rather than
+ * being live-pull-only. Per-tenant failures are isolated.
+ */
+async function captureStoreSnapshots(): Promise<{ captured: number; failed: number; skipped: number }> {
+  const supabase = createSupabaseAdmin();
+  const { data: rows, error } = await supabase
+    .from('tenant_connectors')
+    .select(`${CONNECTOR_COLUMNS}, credentials_encrypted`)
+    .eq('status', 'connected');
+  if (error) {
+    console.error('[snapshot] connector query failed:', error.message);
+    return { captured: 0, failed: 0, skipped: 0 };
+  }
+
+  // One connector per tenant for the headline snapshot (POS preferred).
+  const byTenant = new Map<string, (typeof rows)[number]>();
+  for (const r of rows ?? []) {
+    const cur = byTenant.get(r.tenant_id);
+    if (!cur || (r.type === 'rapidrms-api' && cur.type !== 'rapidrms-api')) byTenant.set(r.tenant_id, r);
+  }
+
+  let captured = 0, failed = 0, skipped = 0;
+  const today = businessDate();
+  for (const [tenantId, row] of byTenant) {
+    try {
+      ensureConnectorCrypto();
+      const secrets = JSON.parse(decryptValue(row.credentials_encrypted)) as Record<string, string>;
+      const summary = await fetchStoreSummary(
+        { id: row.id, type: row.type, name: row.name, config: (row.config ?? {}) as Record<string, unknown>, secrets },
+        vaultSecretFor(tenantId),
+      );
+      if (!summary) { skipped++; continue; } // unsupported connector type
+      const { error: upErr } = await supabase.from('store_snapshots').upsert({
+        tenant_id: tenantId,
+        connector_id: row.id,
+        business_date: today,
+        captured_at: new Date().toISOString(),
+        revenue: summary.todaySales.revenue,
+        transactions: summary.todaySales.transactions,
+        low_stock_count: summary.lowStock.count,
+        low_stock_items: summary.lowStock.items,
+        source: summary.source,
+        partial: summary.partial,
+      }, { onConflict: 'tenant_id,business_date' });
+      if (upErr) throw new Error(upErr.message);
+      storeSummaryCache.delete(tenantId); // fresh data on next read
+      // Replicate into the shared CortexDB warehouse (opt-in, fire-and-forget).
+      void replicateSnapshotToCortex({
+        tenantId,
+        connectorId: row.id,
+        businessDate: today,
+        revenue: summary.todaySales.revenue,
+        transactions: summary.todaySales.transactions,
+        lowStockCount: summary.lowStock.count,
+        source: summary.source,
+        partial: summary.partial,
+      });
+      captured++;
+    } catch (err) {
+      failed++;
+      console.error('[snapshot] tenant', tenantId, err instanceof Error ? err.message : err);
+    }
+  }
+  return { captured, failed, skipped };
+}
+
 async function handleStoreSummary(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // ── Service-to-service path ──────────────────────────────────
+  // A trusted internal caller (shre-router) may request a SPECIFIC tenant's
+  // summary with the service token + an explicit tenantId. That caller is
+  // responsible for having already authorized the end user for that tenant
+  // (the router does this via checkTenantBinding + canAccessData). This
+  // endpoint is a trusted data provider, NOT the tenant-authorization
+  // boundary — so the service path never runs off an end-user's identity.
+  const serviceToken = readServiceToken();
+  const presentedToken = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const rawSource = req.headers['x-service-source'];
+  const serviceSource = Array.isArray(rawSource) ? rawSource[0] : rawSource;
+  const claimsService = Boolean(serviceSource) && ALLOWED_SERVICE_SOURCES.has(String(serviceSource));
+  if (serviceToken && claimsService && tokensMatch(presentedToken, serviceToken)) {
+    const tenantId = getRequestUrl(req).searchParams.get('tenantId');
+    if (!tenantId) {
+      return json(res, 400, { error: 'tenantId query param required for service requests' });
+    }
+    // Defence-in-depth: only real tenant UUIDs. A non-UUID id (e.g. a POS
+    // store slug 'client-2' that the router might derive from prompt text)
+    // can never reach a tenant's data through this path.
+    if (!UUID_RE.test(tenantId)) {
+      return json(res, 400, { error: 'tenantId must be a valid tenant UUID' });
+    }
+    const summary = await getTenantStoreSummary(tenantId);
+    // Audit every service-path read — the service token is powerful (any
+    // tenant); make its use traceable (source + tenant, never the token).
+    void auditLog({
+      tenantId,
+      action: 'store.summary.service_read',
+      resource: tenantId,
+      detail: { source: String(serviceSource) },
+      ip: getClientIp(req),
+    });
+    return json(res, 200, summary ? { connected: true, summary } : { connected: false, summary: null });
+  }
+
+  // ── End-user path ────────────────────────────────────────────
+  // A user's Supabase bearer resolves ONLY to their own tenant — a user can
+  // never request another tenant's summary here.
   const auth = await authenticateRequest(req);
   if (!auth) return json(res, 401, { error: 'Authentication required' });
   const summary = await getTenantStoreSummary(auth.tenantId);
-  if (!summary) {
-    return json(res, 200, { connected: false, summary: null });
-  }
-  json(res, 200, { connected: true, summary });
+  json(res, 200, summary ? { connected: true, summary } : { connected: false, summary: null });
 }
 
 function validateConnectorInput(
@@ -2312,6 +2492,19 @@ const server = createServer((req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[aros-platform] Health server listening on 0.0.0.0:${PORT}`);
   heartbeat.start();
+
+  // Warehouse snapshotter — env-gated (STORE_SNAPSHOT_INTERVAL_MIN>0 to enable).
+  // Off by default: no env, no background work.
+  const snapshotMin = Number(process.env.STORE_SNAPSHOT_INTERVAL_MIN || 0);
+  if (snapshotMin > 0) {
+    const run = () =>
+      captureStoreSnapshots()
+        .then((r) => console.log(`[snapshot] captured=${r.captured} failed=${r.failed} skipped=${r.skipped}`))
+        .catch((e) => console.error('[snapshot]', e instanceof Error ? e.message : e));
+    setInterval(run, snapshotMin * 60_000).unref();
+    setTimeout(run, 60_000).unref(); // first run once deps settle
+    console.log(`[aros-platform] store snapshotter enabled (every ${snapshotMin}m)`);
+  }
 });
 
 function shutdown(): void {

@@ -50,25 +50,45 @@ Server helper `getTenantStoreSummary(tenantId)`:
   off `tenant_connectors` (not the old `tenants.pos_system` guess) and, when
   connected, fills real `todaySales` + `lowStock` + a `dataSource:{live:true,…}`
   marker; otherwise the honest "Connect your store" zeros.
-- **Endpoint** `GET /api/store/summary` — **added here.** `{ connected, summary
-  }` for any surface (dashboard already uses the shared helper; the agent tool
-  below calls this).
-- **Agent tool** — *remaining, out of repo.* The agent runs in `shre-router`
-  (proxied via `/v1/*`). Register one tool there, e.g. `get_store_summary`,
-  that calls `GET https://app.aros.live/api/store/summary` with the tenant's
-  bearer, so non-demo chat answers from real numbers instead of `demoMode`
-  sample data. This repo exposes exactly the endpoint it needs.
-- **Sync cache** — *scale path.* Live pull + TTL is correct for one store /
-  low traffic. For many stores or historical trends (e.g. real
-  `changePercent`), add a scheduled job that snapshots `fetchStoreSummary`
-  into a `store_snapshots` table and have the dashboard/agent read that. The
-  `TaskScheduler` in `tasks/scheduler.ts` is the natural host (it is not
-  currently started).
+- **Endpoint** `GET /api/store/summary` — two auth paths:
+  - **user path** — a tenant's own Supabase bearer → only their own tenant
+    (dashboard uses the shared helper directly);
+  - **service path** — a trusted internal caller (shre-router) presents the
+    service token (`AROS_SERVICE_TOKEN`) + `X-Service-Source: shre-router` + an
+    explicit `?tenantId=` (must be a UUID). This endpoint is a *trusted data
+    provider*, not the tenant-authorization boundary: the caller (router) must
+    have already authorized the user for that tenant. Fail-closed (no token, no
+    service path); every service read is audit-logged; token compare is
+    timing-safe.
+- **Agent** — the router's `data-source-resolver` `aros` branch now pre-fetches
+  the tenant's summary from the service path and injects it (fenced, data-only)
+  into the system prompt (inert unless `AROS_APP_URL` + `AROS_SERVICE_TOKEN` are
+  set). Gated by `canAccessData(agentId, tenantId, 'aros', '*')`; the fetch only
+  fires for a genuine tenant **UUID** (never a prompt-derived store slug), so a
+  crafted prompt cannot pull a foreign tenant's data. Non-demo AROS chat answers
+  from real numbers.
+- **Warehouse (`store_snapshots`)** — **added here.** A scheduled snapshotter
+  (`captureStoreSnapshots`, env-gated by `STORE_SNAPSHOT_INTERVAL_MIN`, off by
+  default) pulls each connected connector's summary and upserts one row per
+  tenant per `business_date` into `store_snapshots` (aros Supabase). This gives
+  the self-serve path **history** — so it stops being live-pull-only and
+  converges with the warehouse-backed internal stores. `changePercent` is now
+  computed from the same-weekday-last-week snapshot (`weekOverWeekChange`),
+  null until a week of history exists.
+- **CortexDB bridge** — **added here** (`connectors/cortex-bridge.ts`). Each
+  snapshot is optionally replicated into the shared CortexDB warehouse as an
+  `aros_store_snapshot` record (via the SDK `cortex.write` client — WAL-backed,
+  circuit-broken), so self-serve connector data reaches the same cross-platform
+  analytics/RAG (`/v1/rag/context`, `rapidrms.branches`) the internal stores
+  get. **Opt-in** via `CORTEX_URL` / `AROS_CORTEX_BRIDGE`; **fire-and-forget**
+  — a warehouse outage can never block or break the primary Supabase snapshot.
+  The aros app stays authoritative; CortexDB is a downstream analytics replica.
 
 ## What is deliberately NOT done yet
-- `changePercent` is `null` — a real comparison needs the prior-period pull
-  (doubles latency + shape risk); belongs with the snapshot cache.
 - Azure SQL / Verifone summaries — need per-deployment mapping.
+- A CortexDB-side reader/schema for `aros_store_snapshot` + surfacing it in the
+  agent's `fetchCortexAnalytics` RAG path (the write side is wired; the read
+  side is a CortexDB-repo change, validated against a live warehouse).
 - `connectors/storepulse-link.ts` is superseded by DB-backed `tenant_connectors`
   and remains dead; fold its "which connectors serve this tenant" intent into
   `getTenantStoreSummary` if StorePulse needs it, rather than reviving the
