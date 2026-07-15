@@ -323,7 +323,7 @@ function MetricCard({
         <>
           <p className="aros-metric">{value}</p>
           {sub && (
-            <p style={{ fontSize: 13, color: subColor || '#64748B', marginTop: 4, fontWeight: 500 }}>
+            <p style={{ fontSize: 13, color: subColor || '#334155', marginTop: 4, fontWeight: 600 }}>
               {sub}
             </p>
           )}
@@ -349,7 +349,7 @@ function SectionCard({
       {(eyebrow || action) && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 6 }}>
           {eyebrow ? (
-            <div style={{ fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#64748B' }}>{eyebrow}</div>
+            <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#334155' }}>{eyebrow}</div>
           ) : <span />}
           {action}
         </div>

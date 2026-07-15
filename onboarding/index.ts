@@ -51,7 +51,7 @@ export function initOnboarding(tenantId: string): OnboardingState {
     nodeConfigs: {},
     discoveredStores: [],
     selectedStoreIds: [],
-    modelConfig: { provider: 'ollama' },
+    modelConfig: { provider: 'aum', model: 'shre-70b', endpoint: 'http://127.0.0.1:5480/v1' },
     selectedAgents: [],
   };
 }
@@ -68,7 +68,7 @@ export function initAddWorkspace(tenantId: string, workspaceId?: string): Onboar
     nodeConfigs: {},
     discoveredStores: [],
     selectedStoreIds: [],
-    modelConfig: { provider: 'ollama' },
+    modelConfig: { provider: 'aum', model: 'shre-70b', endpoint: 'http://127.0.0.1:5480/v1' },
     selectedAgents: [],
   };
 }
@@ -237,7 +237,7 @@ export function canAdvance(state: OnboardingState): boolean {
       return state.selectedStoreIds.length > 0;
 
     case 'model':
-      if (state.modelConfig.provider === 'ollama') return true;
+      if (state.modelConfig.provider === 'aum' || state.modelConfig.provider === 'ollama') return true;
       return !!state.modelConfig.apiKey;
 
     case 'agents':

@@ -328,7 +328,6 @@ export function BillingPage() {
       setError('No workspace found.');
       return;
     }
-
     const tenantId = tenant.id;
     let cancelled = false;
 

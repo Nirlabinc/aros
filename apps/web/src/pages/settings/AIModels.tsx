@@ -4,10 +4,11 @@
  * AROS never transmits keys to any external server.
  */
 import React, { useState, useEffect } from 'react';
+import { DEFAULT_MODEL } from '../../model-defaults';
 
 interface ModelProvider {
   id: string;
-  provider: 'openai' | 'anthropic' | 'google' | 'ollama' | 'custom';
+  provider: 'openai' | 'anthropic' | 'google' | 'ollama' | 'aum' | 'custom';
   label: string;
   model: string;
   apiKey?: string;
@@ -23,9 +24,18 @@ const PROVIDER_PRESETS = [
   { provider: 'custom' as const, label: 'Custom (OpenAI-compatible)', placeholder: 'API key (optional)', defaultModel: '', docs: '' },
 ];
 
+const LOCAL_DEFAULT: ModelProvider = {
+  id: 'local-default',
+  provider: 'aum',
+  label: DEFAULT_MODEL.label,
+  model: DEFAULT_MODEL.id,
+  endpoint: DEFAULT_MODEL.endpoint,
+  isActive: true,
+};
+
 export default function AIModelsSettings() {
-  const [providers, setProviders] = useState<ModelProvider[]>([]);
-  const [activeId, setActiveId] = useState<string>('');
+  const [providers, setProviders] = useState<ModelProvider[]>([LOCAL_DEFAULT]);
+  const [activeId, setActiveId] = useState<string>(LOCAL_DEFAULT.id);
   const [adding, setAdding] = useState(false);
   const [newProvider, setNewProvider] = useState<string>('anthropic');
   const [newKey, setNewKey] = useState('');
@@ -37,8 +47,12 @@ export default function AIModelsSettings() {
   useEffect(() => {
     fetch('/api/settings/models')
       .then(r => r.json())
-      .then(d => { setProviders(d.providers || []); setActiveId(d.active || ''); })
-      .catch(() => { /* not yet configured */ });
+      .then(d => {
+        const configured = d.providers?.length ? d.providers : [LOCAL_DEFAULT];
+        setProviders(configured);
+        setActiveId(d.active || configured[0].id);
+      })
+      .catch(() => { /* Local model remains the safe default. */ });
   }, []);
 
   async function save(updated: ModelProvider[], active: string) {
@@ -93,7 +107,7 @@ export default function AIModelsSettings() {
     <div style={{ maxWidth: 640, padding: '24px' }}>
       <h2 style={{ color: '#e2e8f0', marginBottom: 4 }}>AI Models</h2>
       <p style={{ color: '#64748b', fontSize: 13, marginBottom: 24 }}>
-        AROS requires you to bring your own model API keys. Keys are stored locally and never transmitted to any server.
+        Local inference is the default. You can opt into Claude, ChatGPT, Gemini, or another provider for this workspace.
       </p>
 
       {providers.length === 0 && (

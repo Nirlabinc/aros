@@ -57,7 +57,8 @@ const MODEL_FRIENDLY_NAMES: Record<string, string> = {
   'anthropic/claude-opus-4-6': 'Smart Analyzer',
   'openai/gpt-4o': 'AI Assistant Pro',
   'openai/gpt-4o-mini': 'Quick Responder',
-  'ollama/shre-ft': 'Local AI',
+  'aum/shre-70b': 'AUM (Local)',
+  'ollama/shre-ft': 'AUM (legacy local)',
 };
 
 function friendlyModelName(model: string): string {

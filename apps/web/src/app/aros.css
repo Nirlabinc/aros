@@ -58,10 +58,10 @@
   gap: 8px;
   padding: 10px 12px;
   border-radius: 8px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.86);
   text-decoration: none;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   transition: background 0.15s, color 0.15s;
 }
 
@@ -99,6 +99,8 @@
 /* ─── Dashboard ──────────────────────────────────────────── */
 .aros-dashboard {
   max-width: 1100px;
+  color: var(--aros-color-text, #0F172A);
+  font-weight: 500;
 }
 
 .aros-human-grid {
@@ -133,8 +135,9 @@
 }
 
 .aros-dashboard > p {
-  color: #64748B;
+  color: #334155;
   font-size: 14px;
+  font-weight: 600;
   margin-bottom: 24px;
 }
 
@@ -155,8 +158,8 @@
 
 .aros-card h3 {
   font-size: 13px;
-  font-weight: 500;
-  color: #64748B;
+  font-weight: 700;
+  color: #334155;
   margin-bottom: 8px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -225,12 +228,14 @@
 .aros-activity-text {
   font-size: 14px;
   color: var(--aros-color-text, #0F172A);
+  font-weight: 500;
   line-height: 1.4;
 }
 
 .aros-activity-time {
   font-size: 12px;
-  color: #94A3B8;
+  color: #475569;
+  font-weight: 600;
   margin-top: 2px;
 }
 

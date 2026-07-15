@@ -1,11 +1,13 @@
 import { useState, FormEvent } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { safeReturnTo } from '../app-registry';
 
 export function Login() {
   const { signIn } = useAuth();
   const params = new URLSearchParams(window.location.search);
   const justRegistered = params.get('registered') === 'true';
   const prefillEmail = params.get('email') || '';
+  const returnTo = safeReturnTo(params.get('returnTo'));
   const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -22,7 +24,7 @@ export function Login() {
         setError(err);
         return;
       }
-      window.location.href = '/';
+      window.location.href = returnTo;
     } catch {
       setError('Network error. Please try again.');
     } finally {
@@ -91,7 +93,7 @@ export function Login() {
 
           <p style={styles.footer}>
             Don't have an account?{' '}
-            <a href="/signup" style={styles.link}>Create one</a>
+            <a href={`/signup?returnTo=${encodeURIComponent(returnTo)}`} style={styles.link}>Create one</a>
           </p>
         </div>
 

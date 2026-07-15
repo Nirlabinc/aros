@@ -1,4 +1,5 @@
 import { useState, FormEvent } from 'react';
+import { safeReturnTo } from '../app-registry';
 
 const API_BASE = (window as any).__AROS_API_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
@@ -31,6 +32,7 @@ function validatePhone(phone: string): boolean {
 }
 
 export function Signup() {
+  const returnTo = safeReturnTo(new URLSearchParams(window.location.search).get('returnTo'));
   const [step, setStep] = useState<Step>('form');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -100,7 +102,7 @@ export function Signup() {
       }
 
       // Account created with email auto-confirmed server-side — go to login
-      window.location.href = `/login?registered=true&email=${encodeURIComponent(email)}`;
+      window.location.href = `/login?registered=true&email=${encodeURIComponent(email)}&returnTo=${encodeURIComponent(returnTo)}`;
       return;
     } catch {
       setError('Network error. Please try again.');

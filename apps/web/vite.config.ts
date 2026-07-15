@@ -57,6 +57,22 @@ export default defineConfig(({ command, mode }) => {
     },
     build: {
       outDir: 'dist',
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return undefined;
+            if (id.includes('@supabase') || id.includes('@realtime-js') || id.includes('@postgrest-js') || id.includes('@gotrue-js') || id.includes('@storage-js')) {
+              return 'supabase';
+            }
+            if (id.includes('framer-motion') || id.includes('motion-dom') || id.includes('motion-utils')) {
+              return 'motion';
+            }
+            if (id.includes('react-router')) return 'router';
+            if (id.includes('react') || id.includes('scheduler')) return 'react';
+            return 'vendor';
+          },
+        },
+      },
     },
   };
 });

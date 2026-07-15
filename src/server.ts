@@ -41,7 +41,8 @@ import {
 } from './human-state.js';
 import { createTask } from '../tasks/store.js';
 import type { TaskPriority } from '../tasks/types.js';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual, randomBytes } from 'node:crypto';
+import { DEFAULT_MODEL } from './model-defaults.js';
 import { testConnection as testRapidRmsConnector } from '../connectors/rapidrms-api.js';
 import { testConnection as testAzureDbConnector } from '../connectors/azure-db.js';
 import { testConnection as testVerifoneConnector } from '../connectors/verifone/connector.js';
@@ -967,6 +968,19 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
       storeCount,
     });
     const tenantId = ensured.tenantId;
+    const modelEnrollmentToken = randomBytes(32).toString('base64url');
+    const modelEnrollmentHash = createHash('sha256').update(modelEnrollmentToken).digest('hex');
+    const { error: modelError } = await supabase.from('tenant_resources').upsert({
+      tenant_id: tenantId, kind: 'model', provider: DEFAULT_MODEL.provider, name: DEFAULT_MODEL.label,
+      status: 'configuring', created_by: userId, capabilities: ['chat.completions'],
+      config: { modelId: DEFAULT_MODEL.id, endpoint: DEFAULT_MODEL.endpoint, local: true },
+    }, { onConflict: 'tenant_id,kind,name' });
+    if (modelError) console.error('[signup] Default model provisioning failed:', modelError.message);
+    const { error: enrollmentError } = await supabase.from('model_enrollments').insert({
+      tenant_id: tenantId, model_id: DEFAULT_MODEL.id, token_hash: modelEnrollmentHash,
+      created_by: userId, expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    if (enrollmentError) console.error('[signup] Model enrollment provisioning failed:', enrollmentError.message);
 
     // 6. Audit log
     await auditLog({
@@ -990,6 +1004,7 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
         plan: 'free',
         licenseKey: ensured.licenseKey,
       },
+      model: { ...DEFAULT_MODEL, status: 'configuring', enrollmentToken: modelEnrollmentToken, expiresIn: 86_400 },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Signup failed';
@@ -1367,6 +1382,56 @@ async function handleAppEntitlement(req: IncomingMessage, res: ServerResponse, a
     console.error('[app.entitlement]', message);
     json(res, 500, { error: message });
   }
+}
+
+const RESOURCE_KINDS = new Set(['channel', 'pos', 'app', 'agent', 'skill', 'model']);
+
+async function handleTenantResources(req: IncomingMessage, res: ServerResponse, kind: string, id?: string): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!RESOURCE_KINDS.has(kind)) return json(res, 400, { error: 'Invalid resource kind' });
+  const supabase = createSupabaseAdmin();
+  if (req.method === 'GET') {
+    const { data, error } = await supabase.from('tenant_resources').select('*').eq('tenant_id', auth.tenantId).eq('kind', kind).order('name');
+    return error ? json(res, 500, { error: error.message }) : json(res, 200, { resources: data || [] });
+  }
+  if (!['owner', 'admin'].includes(auth.role)) return json(res, 403, { error: 'Workspace admin access required' });
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON body' });
+  const name = typeof body.name === 'string' ? body.name.trim().slice(0, 120) : '';
+  if (!name) return json(res, 400, { error: 'name is required' });
+  const config = body.config && typeof body.config === 'object' ? body.config : {};
+  if (/"(password|apikey|api_key|token|secret)"\s*:/.test(JSON.stringify(config).toLowerCase())) return json(res, 400, { error: 'Submit only a vault reference, never raw credentials.' });
+  const allowedStatus = new Set(['inactive', 'configuring', 'active', 'degraded', 'failed']);
+  const record = { tenant_id: auth.tenantId, kind, name, provider: typeof body.provider === 'string' ? body.provider.slice(0, 80) : null, status: allowedStatus.has(String(body.status)) ? body.status : 'inactive', config, store_ids: Array.isArray(body.storeIds) ? body.storeIds : [], capabilities: Array.isArray(body.capabilities) ? body.capabilities.map(String) : [], health: body.health && typeof body.health === 'object' ? body.health : {}, created_by: auth.userId };
+  const query = id ? supabase.from('tenant_resources').update(record).eq('id', id).eq('tenant_id', auth.tenantId).eq('kind', kind).select().single() : supabase.from('tenant_resources').insert(record).select().single();
+  const { data, error } = await query;
+  if (error) return json(res, error.code === '23505' ? 409 : 500, { error: error.message });
+  await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: id ? 'resource.updated' : 'resource.created', resource: `${kind}:${data.id}`, detail: { name, status: record.status }, ip: getClientIp(req) });
+  json(res, id ? 200 : 201, { resource: data });
+}
+
+async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, appId?: string): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const supabase = createSupabaseAdmin();
+  if (req.method === 'GET') {
+    const [{ data: apps, error }, { data: grants }] = await Promise.all([supabase.from('platform_apps').select('*').order('name'), supabase.from('marketplace_app_entitlements').select('app_key,status,service_config').eq('tenant_id', auth.tenantId)]);
+    return error ? json(res, 500, { error: error.message }) : json(res, 200, { apps: apps || [], grants: grants || [] });
+  }
+  if (!appId) return json(res, 400, { error: 'app id required' });
+  if (!['owner', 'admin'].includes(auth.role)) return json(res, 403, { error: 'Workspace admin access required' });
+  const { data: app } = await supabase.from('platform_apps').select('id,required_scopes,status').eq('id', appId).single();
+  if (!app) return json(res, 404, { error: 'App not found' });
+  if (app.status === 'planned') return json(res, 409, { error: 'This app is not available yet' });
+  const body = await parseJsonBody(req) || {};
+  const requested = Array.isArray(body.scopes) ? body.scopes.map(String) : app.required_scopes;
+  const allowed = new Set<string>(app.required_scopes || []);
+  if (requested.some((scope: string) => !allowed.has(scope))) return json(res, 400, { error: 'Scope is not registered for this app' });
+  const { data, error } = await supabase.from('marketplace_app_entitlements').upsert({ tenant_id: auth.tenantId, app_key: appId, status: 'active', source: 'aros-app-catalog', enabled_by: auth.userId, enabled_at: new Date().toISOString(), disabled_at: null, service_config: { scopes: requested } }, { onConflict: 'tenant_id,app_key' }).select().single();
+  if (error) return json(res, 500, { error: error.message });
+  await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'app.granted', resource: `app:${appId}`, detail: { scopes: requested }, ip: getClientIp(req) });
+  json(res, 200, { grant: data });
 }
 
 // ── Dashboard ───────────────────────────────────────────────────
@@ -2458,6 +2523,12 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (appEntitlementMatch && method === 'GET') {
     return handleAppEntitlement(req, res, decodeURIComponent(appEntitlementMatch[1]));
   }
+
+  const resourceMatch = pathname.match(/^\/api\/resources\/(channel|pos|app|agent|skill|model)(?:\/([0-9a-f-]+))?$/);
+  if (resourceMatch && ['GET', 'POST', 'PUT'].includes(method)) return handleTenantResources(req, res, resourceMatch[1], resourceMatch[2]);
+  if (pathname === '/api/apps' && method === 'GET') return handlePlatformApps(req, res);
+  const appGrantMatch = pathname.match(/^\/api\/apps\/([a-z0-9-]+)\/grant$/);
+  if (appGrantMatch && method === 'POST') return handlePlatformApps(req, res, appGrantMatch[1]);
 
   // ── Lead capture (public, no auth) ──────────────────────
   if (url === '/api/leads' && method === 'POST') {

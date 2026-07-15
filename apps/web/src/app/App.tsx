@@ -20,6 +20,11 @@ import { ConnectStorePage } from '../pages/connect/ConnectStorePage';
 import { ConnectStoreBanner } from '../components/ConnectStoreBanner';
 import { ResetPassword } from '../pages/ResetPassword';
 import { VerifyEmail } from '../pages/VerifyEmail';
+import { ConnectionsHub } from '../pages/settings/ConnectionsHub';
+import { AdministrationPage } from '../pages/settings/AdministrationPage';
+import AIModelsSettings from '../pages/settings/AIModels';
+import { CapabilityCatalog } from '../pages/settings/CapabilityCatalog';
+import { ConnectionHealth } from '../pages/settings/ConnectionHealth';
 
 const MARKETPLACE_ADMIN_URL = (window as any).__MARKETPLACE_URL__
   ? `${(window as any).__MARKETPLACE_URL__}/admin`
@@ -190,6 +195,20 @@ function AuthenticatedRoutes({ path, isAdmin, onboarded }: { path: string; isAdm
       </div>
     );
   }
+
+  const setupRoute = path.startsWith('/stores') ? <ConnectionsHub kind="pos" />
+    : path.startsWith('/apps') ? <ConnectionsHub kind="app" />
+    : path.startsWith('/channels') ? <CapabilityCatalog kind="channels" />
+    : path.startsWith('/agents') ? <CapabilityCatalog kind="agents" />
+    : path.startsWith('/skills') ? <CapabilityCatalog kind="skills" />
+    : path.startsWith('/models') ? <AIModelsSettings />
+    : path.startsWith('/connection-health') ? <ConnectionHealth />
+    : path.startsWith('/settings') ? <AdministrationPage section="settings" />
+    : path.startsWith('/profile') ? <AdministrationPage section="profile" />
+    : path.startsWith('/users') ? <AdministrationPage section="users" />
+    : path.startsWith('/workspace') ? <AdministrationPage section="workspace" />
+    : null;
+  if (setupRoute) return <div className="aros-app"><Sidebar /><main className="aros-main">{setupRoute}</main><ArosChat /></div>;
 
   // Marketplace
   if (path.startsWith('/marketplace')) {

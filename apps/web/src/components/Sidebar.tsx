@@ -51,19 +51,30 @@ export function Sidebar() {
           <TenantPicker />
         </div>
         <nav className="aros-nav">
-          {/* Journey order: operate → connect data → extend → manage account. */}
-          <a href="/dashboard" className={`aros-nav-item${path.startsWith('/dashboard') || path === '/' ? ' active' : ''}`} onClick={close}>Dashboard</a>
-          <a href="/connect" className={`aros-nav-item${path.startsWith('/connect') ? ' active' : ''}`} onClick={close}>Connect Store</a>
-          <a href="/human" className={`aros-nav-item${path.startsWith('/human') ? ' active' : ''}`} onClick={close}>Human OS</a>
-          {config.features?.marketplace && <a href="/marketplace" className={`aros-nav-item${path.startsWith('/marketplace') ? ' active' : ''}`} onClick={close}>Marketplace</a>}
-          {config.features?.marketplace && <a href="/developers" className={`aros-nav-item${path.startsWith('/developers') ? ' active' : ''}`} onClick={close}>Developers</a>}
-          <a href="/billing" className={`aros-nav-item${path.startsWith('/billing') ? ' active' : ''}`} onClick={close}>Billing</a>
-          <a href="/costs" className={`aros-nav-item${path.startsWith('/costs') ? ' active' : ''}`} onClick={close}>Costs</a>
-          {/* /analytics, /updates, /settings intentionally removed until their
-              pages have routes — dead links silently rendered the Dashboard. */}
+          <div className="aros-nav-label">Workspace</div>
+          <Nav href="/dashboard" label="Chat" icon="◈" path={path} onClick={close} />
+          <Nav href="/channels" label="Channels" icon="⌁" path={path} onClick={close} />
+          <Nav href="/stores" label="Stores & POS" icon="▣" path={path} onClick={close} />
+          <Nav href="/apps" label="Apps" icon="⌁" path={path} onClick={close} />
+          <Nav href="/agents" label="Agents" icon="◎" path={path} onClick={close} />
+          <Nav href="/skills" label="Skills" icon="✣" path={path} onClick={close} />
+          <Nav href="/models" label="Models" icon="✦" path={path} onClick={close} />
+          <Nav href="/connection-health" label="Connection health" icon="◉" path={path} onClick={close} />
+          <div className="aros-nav-label">Administration</div>
+          <Nav href="/settings" label="Settings" icon="⚙" path={path} onClick={close} />
+          <Nav href="/profile" label="Profile" icon="○" path={path} onClick={close} />
+          <Nav href="/billing" label="Cost & billing" icon="$" path={path} onClick={close} />
+          <Nav href="/users" label="Users" icon="♙" path={path} onClick={close} />
+          <Nav href="/workspace" label="Workspace" icon="◇" path={path} onClick={close} />
+          {config.features?.marketplace && <Nav href="/marketplace" label="Marketplace" icon="＋" path={path} onClick={close} />}
           {isAdmin && <a href="/admin" className="aros-nav-item" onClick={close}>Admin</a>}
         </nav>
       </aside>
     </>
   );
+}
+
+function Nav({ href, label, icon, path, onClick }: { href: string; label: string; icon: string; path: string; onClick: () => void }) {
+  const active = path === href || path.startsWith(`${href}/`);
+  return <a href={href} className={`aros-nav-item${active ? ' active' : ''}`} onClick={onClick}><span className="nav-icon">{icon}</span>{label}</a>;
 }

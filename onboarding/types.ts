@@ -95,7 +95,7 @@ export interface DiscoveredStore {
 // ── AI Model ──────────────────────────────────────────────────────
 
 export interface ModelConfig {
-  provider: 'ollama' | 'anthropic' | 'openai' | 'custom';
+  provider: 'aum' | 'ollama' | 'anthropic' | 'openai' | 'custom';
   model?: string;
   apiKey?: string;
   endpoint?: string;
