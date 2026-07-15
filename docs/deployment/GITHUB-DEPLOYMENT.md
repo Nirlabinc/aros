@@ -1,5 +1,23 @@
 # GitHub Deployment Status
 
+## Direct SSH deployment (preferred when CI is unavailable)
+
+Production can be deployed without GitHub or GitHub Actions from an exact,
+committed local snapshot:
+
+```powershell
+.\deploy\hostinger\deploy-direct.ps1 -Ref live/direct
+```
+
+The command sends a temporary git bundle over SSH, validates production runtime
+ownership, installs dependencies, builds, applies the setup migration, restarts
+PM2, and gates success on both `/health` and `/readyz`. If any gated step fails,
+the remote script restores and rebuilds the previous commit. Runtime-owned
+`.env`, `data/`, and `mib007-live/` content is never included in the bundle.
+
+The working tree must be clean so an uncommitted file can never leak into a
+release or make the deployed snapshot irreproducible.
+
 This repo now includes a baseline workflow at:
 
 - `.github/workflows/deploy.yml`
