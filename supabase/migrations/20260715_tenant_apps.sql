@@ -1,11 +1,10 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- DRAFT — do not apply until design PR approved
--- (shreai docs/projects/APP-FACTORY-TENANT-SUBSTRATE.md, branch
---  feat/tenant-app-substrate). Rebase onto latest main + prod catchup
--- before applying; launch.sh never runs migrations — staged apply only.
--- ═══════════════════════════════════════════════════════════════════════════
 -- AROS Tenant Apps Registry — App Factory Phase 2
--- 2026-07-15
+-- 2026-07-15 (finalized; founder decisions DECIDED 2026-07-15 — see
+-- shreai docs/projects/APP-FACTORY-TENANT-SUBSTRATE.md §6)
+--
+-- Staged apply only: rebase onto latest main + prod catchup before applying;
+-- launch.sh never runs migrations.
 --
 -- Per-tenant GENERATED apps (built by the software factory), hosted on
 -- *.apps.aros.live. Mirrors the conventions of 20260424_multi_tenant.sql:
@@ -17,6 +16,16 @@
 -- Two tables:
 --   tenant_apps  — the registry (one row per generated app per tenant)
 --   app_events   — append-only lifecycle audit (INSERT-only, service-role)
+--
+-- Promote policy (DECIDED 2026-07-15), enforced by trigger below:
+--   * draft → preview: AUTO — service_role only, and only after a
+--     'smoke_passed' event exists for the app (build pipeline callback).
+--   * preview → live: ALWAYS human-approved — executed by the deploy
+--     pipeline (service_role) but REQUIRES metadata.approved_by = uuid of
+--     the approving human, which is recorded as the actor in app_events.
+--
+-- Billing (DECIDED 2026-07-15): build credits (metered LLM spend) + monthly
+-- per-app hosting fee; preview containers are free.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 -- ── 1. tenant_apps ─────────────────────────────────────────────────────────
@@ -39,6 +48,14 @@ CREATE TABLE IF NOT EXISTS public.tenant_apps (
   -- (app-<subdomain>) that nginx resolves dynamically.
   subdomain text NOT NULL,
   created_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  -- Billing (DECIDED 2026-07-15): credits + hosting.
+  --   hosting_fee_cents  — monthly per-app hosting fee, charged only while
+  --                        status = 'live' (previews are free); 0 = not yet
+  --                        priced / included in plan.
+  --   build_credits_used — cumulative metered LLM spend (credits) consumed
+  --                        by factory builds/rebuilds of this app.
+  hosting_fee_cents integer NOT NULL DEFAULT 0,
+  build_credits_used bigint NOT NULL DEFAULT 0,
   promoted_at timestamptz,
   retired_at timestamptz,
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -54,6 +71,8 @@ CREATE TABLE IF NOT EXISTS public.tenant_apps (
   -- Schema-per-app namespace: app_<8-hex>, derived from id at creation
   CONSTRAINT tenant_apps_db_schema_check
     CHECK (db_schema ~ '^app_[a-z0-9_]{4,48}$'),
+  CONSTRAINT tenant_apps_hosting_fee_check CHECK (hosting_fee_cents >= 0),
+  CONSTRAINT tenant_apps_build_credits_check CHECK (build_credits_used >= 0),
   CONSTRAINT tenant_apps_unique_slug UNIQUE (tenant_id, slug),
   CONSTRAINT tenant_apps_unique_subdomain UNIQUE (subdomain),
   CONSTRAINT tenant_apps_unique_db_schema UNIQUE (db_schema)
@@ -111,15 +130,30 @@ CREATE TRIGGER app_events_no_update
 
 -- ── 3. Lifecycle transition guard + auto-audit ─────────────────────────────
 -- Legal transitions: draft→preview→live→retired, preview→draft (rework),
--- draft/preview→retired (abandon). Transitions INTO or OUT OF 'live' are
--- reserved for the deploy pipeline (service_role) or direct operator SQL —
--- an owner clicking around the UI can never self-promote to prod.
+-- draft/preview→retired (abandon).
+--
+-- Promote policy (DECIDED 2026-07-15):
+--   * draft → preview  — AUTO on smoke pass: only the deploy pipeline
+--     (service_role) may perform it, and only after a 'smoke_passed'
+--     app_events row exists for the app. No human in the loop by design —
+--     preview carries no production traffic.
+--   * preview → live   — ALWAYS human-approved: executed by the pipeline
+--     (service_role) but NEW.metadata->>'approved_by' MUST carry the uuid of
+--     the approving human; it is recorded as the actor of the 'promoted'
+--     event. A tenant admin with a stolen anon-key session cannot
+--     self-promote; a pipeline without an operator approval cannot either.
+--   * live → retired   — deploy pipeline only (container teardown must
+--     accompany the row change).
 -- Every status change is recorded in app_events automatically.
 CREATE OR REPLACE FUNCTION public.tenant_apps_guard_transition()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
   is_service boolean :=
     COALESCE(auth.jwt() ->> 'role', '') = 'service_role' OR auth.uid() IS NULL;
+  approver uuid;
+  evt text := 'status_changed';
+  evt_actor uuid;
+  evt_actor_type text;
 BEGIN
   IF NEW.status = OLD.status THEN
     RETURN NEW;
@@ -133,17 +167,53 @@ BEGIN
     RAISE EXCEPTION 'illegal tenant_apps transition % -> %', OLD.status, NEW.status;
   END IF;
 
-  IF (NEW.status = 'live' OR OLD.status = 'live') AND NOT is_service THEN
-    RAISE EXCEPTION 'transition %% live requires the deploy pipeline (service role)';
+  -- draft → preview: auto-promote, service_role only, gated on smoke pass.
+  IF OLD.status = 'draft' AND NEW.status = 'preview' THEN
+    IF NOT is_service THEN
+      RAISE EXCEPTION 'draft -> preview is performed by the build pipeline (service role) on smoke pass';
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM public.app_events
+      WHERE app_id = NEW.id AND event = 'smoke_passed'
+    ) THEN
+      RAISE EXCEPTION 'draft -> preview requires a smoke_passed event (auto-promote on smoke pass only)';
+    END IF;
+  END IF;
+
+  -- preview → live: pipeline executes, human approves — both are required.
+  IF OLD.status = 'preview' AND NEW.status = 'live' THEN
+    IF NOT is_service THEN
+      RAISE EXCEPTION 'preview -> live is executed by the deploy pipeline (service role)';
+    END IF;
+    approver := NULLIF(NEW.metadata ->> 'approved_by', '')::uuid;
+    IF approver IS NULL THEN
+      RAISE EXCEPTION 'preview -> live requires a human approver (metadata.approved_by = auth.users uuid)';
+    END IF;
+    evt := 'promoted';
+    evt_actor := approver;
+    evt_actor_type := 'user';
+  END IF;
+
+  -- live → retired: pipeline only (teardown accompanies the row change).
+  IF OLD.status = 'live' AND NEW.status = 'retired' AND NOT is_service THEN
+    RAISE EXCEPTION 'live -> retired is executed by the deploy pipeline (service role)';
   END IF;
 
   IF NEW.status = 'live'    THEN NEW.promoted_at = now(); END IF;
-  IF NEW.status = 'retired' THEN NEW.retired_at  = now(); END IF;
+  IF NEW.status = 'retired' THEN NEW.retired_at  = now(); evt := 'retired'; END IF;
 
-  INSERT INTO public.app_events (app_id, tenant_id, event, from_status, to_status, actor, actor_type)
+  IF evt_actor_type IS NULL THEN
+    evt_actor := auth.uid();
+    evt_actor_type := CASE WHEN is_service THEN 'service' ELSE 'user' END;
+  END IF;
+
+  INSERT INTO public.app_events (app_id, tenant_id, event, from_status, to_status, actor, actor_type, detail)
   VALUES (
-    NEW.id, NEW.tenant_id, 'status_changed', OLD.status, NEW.status,
-    auth.uid(), CASE WHEN is_service THEN 'service' ELSE 'user' END
+    NEW.id, NEW.tenant_id, evt, OLD.status, NEW.status, evt_actor, evt_actor_type,
+    jsonb_strip_nulls(jsonb_build_object(
+      'image_version', NEW.image_version,
+      'approved_by', approver
+    ))
   );
 
   RETURN NEW;
