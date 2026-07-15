@@ -772,6 +772,43 @@ async function handleOnboardingComplete(req: IncomingMessage, res: ServerRespons
 
     if (progressError) throw progressError;
 
+    // Ensure the tenant has at least one store. The edge/connector flow binds
+    // activation codes + POS connections to a store id (stores.id), so the
+    // connect-POS onboarding step needs one to attach to. Reuse an existing
+    // store if present; otherwise create a default. Non-fatal — onboarding still
+    // completes if store creation fails (the step can create one later).
+    let storeId: string | null = null;
+    try {
+      const { data: existing } = await supabase
+        .from('stores')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .limit(1)
+        .maybeSingle();
+      if (existing?.id) {
+        storeId = existing.id as string;
+      } else {
+        const addr = address
+          ? [address.street, address.city, address.state, address.zip].filter(Boolean).join(', ')
+          : null;
+        const { data: created, error: storeError } = await supabase
+          .from('stores')
+          .insert({
+            tenant_id: tenantId,
+            name: storeName || companyName || 'Main Store',
+            slug: 'main',
+            address: addr,
+            metadata: { industry: industry ?? null, created_via: 'onboarding' },
+          })
+          .select('id')
+          .single();
+        if (storeError) console.error('[onboarding/complete] store create', storeError.message);
+        else storeId = (created?.id as string) ?? null;
+      }
+    } catch (storeErr) {
+      console.error('[onboarding/complete] store ensure', storeErr instanceof Error ? storeErr.message : storeErr);
+    }
+
     await auditLog({
       tenantId,
       userId: user.id,
@@ -781,7 +818,7 @@ async function handleOnboardingComplete(req: IncomingMessage, res: ServerRespons
       ip: getClientIp(req),
     });
 
-    json(res, 200, { completed: true });
+    json(res, 200, { completed: true, storeId });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to complete onboarding';
     console.error('[onboarding/complete]', message);
