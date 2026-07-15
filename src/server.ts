@@ -47,6 +47,7 @@ import { testConnection as testAzureDbConnector } from '../connectors/azure-db.j
 import { testConnection as testVerifoneConnector } from '../connectors/verifone/connector.js';
 import { setTenantSecret, storeCredential, deleteCredential } from '../connectors/vault-ref.js';
 import { fetchStoreSummary, type StoreSummary } from '../connectors/data-service.js';
+import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
 import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
 
 const PORT = 5457;
@@ -1702,6 +1703,17 @@ async function captureStoreSnapshots(): Promise<{ captured: number; failed: numb
       }, { onConflict: 'tenant_id,business_date' });
       if (upErr) throw new Error(upErr.message);
       storeSummaryCache.delete(tenantId); // fresh data on next read
+      // Replicate into the shared CortexDB warehouse (opt-in, fire-and-forget).
+      void replicateSnapshotToCortex({
+        tenantId,
+        connectorId: row.id,
+        businessDate: today,
+        revenue: summary.todaySales.revenue,
+        transactions: summary.todaySales.transactions,
+        lowStockCount: summary.lowStock.count,
+        source: summary.source,
+        partial: summary.partial,
+      });
       captured++;
     } catch (err) {
       failed++;

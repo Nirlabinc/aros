@@ -65,14 +65,21 @@ Server helper `getTenantStoreSummary(tenantId)`:
   the self-serve path **history** — so it stops being live-pull-only and
   converges with the warehouse-backed internal stores. `changePercent` is now
   computed from the same-weekday-last-week snapshot (`weekOverWeekChange`),
-  null until a week of history exists. A downstream bridge could replicate
-  these snapshots into cortexdb for cross-platform analytics/RAG parity with
-  the internal `rapidrms.branches` path — deliberately left as a separate step
-  (avoids coupling the Supabase-backed app to cortexdb).
+  null until a week of history exists.
+- **CortexDB bridge** — **added here** (`connectors/cortex-bridge.ts`). Each
+  snapshot is optionally replicated into the shared CortexDB warehouse as an
+  `aros_store_snapshot` record (via the SDK `cortex.write` client — WAL-backed,
+  circuit-broken), so self-serve connector data reaches the same cross-platform
+  analytics/RAG (`/v1/rag/context`, `rapidrms.branches`) the internal stores
+  get. **Opt-in** via `CORTEX_URL` / `AROS_CORTEX_BRIDGE`; **fire-and-forget**
+  — a warehouse outage can never block or break the primary Supabase snapshot.
+  The aros app stays authoritative; CortexDB is a downstream analytics replica.
 
 ## What is deliberately NOT done yet
 - Azure SQL / Verifone summaries — need per-deployment mapping.
-- cortexdb bridge for the self-serve snapshots (cross-platform analytics).
+- A CortexDB-side reader/schema for `aros_store_snapshot` + surfacing it in the
+  agent's `fetchCortexAnalytics` RAG path (the write side is wired; the read
+  side is a CortexDB-repo change, validated against a live warehouse).
 - `connectors/storepulse-link.ts` is superseded by DB-backed `tenant_connectors`
   and remains dead; fold its "which connectors serve this tenant" intent into
   `getTenantStoreSummary` if StorePulse needs it, rather than reviving the
