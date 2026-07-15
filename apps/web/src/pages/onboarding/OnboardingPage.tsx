@@ -78,6 +78,9 @@ export function OnboardingPage() {
   const [posConnected, setPosConnected] = useState(false);
   const [posLoading, setPosLoading] = useState(false);
   const [posError, setPosError] = useState('');
+  const [edgeProducts, setEdgeProducts] = useState<string[]>(['aros']);
+  const [deploymentMode, setDeploymentMode] = useState<'existing-computer' | 'managed-edge'>('existing-computer');
+  const [remoteCommanderAccess, setRemoteCommanderAccess] = useState(false);
 
   async function completeOnboarding(input?: {
     companyName?: string;
@@ -192,19 +195,7 @@ export function OnboardingPage() {
     setCompletionError('');
 
     if (planId === 'free') {
-      setLoading(true);
-      try {
-        await completeOnboarding({
-          companyName: tenant?.name || user?.user_metadata?.company || 'My Store',
-          storeName: tenant?.name || user?.user_metadata?.company || 'My Store',
-          storeCount: 1,
-          industry: 'convenience',
-        });
-        window.location.href = '/dashboard';
-      } catch (err) {
-        setCompletionError(err instanceof Error ? err.message : 'Could not complete onboarding. Please try again.');
-        setLoading(false);
-      }
+      setStep('business-setup');
       return;
     }
 
@@ -277,7 +268,11 @@ export function OnboardingPage() {
         },
         // connectorId is an optional pos_connections UUID, not a provider name.
         // First-time setup binds this short-lived code directly to the store.
-        body: JSON.stringify({ storeId, expiresInMinutes: 60 }),
+        body: JSON.stringify({
+          storeId,
+          expiresInMinutes: 60,
+          setup: { products: edgeProducts, deploymentMode, remoteCommanderAccess },
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Could not generate an activation code.');
@@ -315,6 +310,7 @@ export function OnboardingPage() {
   }, [step, activation, posConnected, storeId, session]);
 
   const stepIndex = ['verify-email', 'choose-plan', 'payment', 'business-setup', 'connect-pos', 'complete'].indexOf(step);
+  const progressIndex = stepIndex <= 0 ? 0 : stepIndex <= 2 ? 1 : stepIndex === 3 ? 2 : 3;
 
   return (
     <div style={styles.wrapper}>
@@ -328,19 +324,19 @@ export function OnboardingPage() {
         {/* Progress */}
         {step !== 'complete' && (
           <div style={styles.progress}>
-            {['Verify Email', 'Choose Plan', 'Setup Business'].map((label, i) => (
+            {['Verify Email', 'Choose Plan', 'Setup Business', 'Connect Store'].map((label, i) => (
               <div key={label} style={styles.progressStep}>
                 <div style={{
                   ...styles.progressDot,
-                  background: i <= (stepIndex > 2 ? 2 : stepIndex) ? '#3b5bdb' : '#e5e7eb',
-                  color: i <= (stepIndex > 2 ? 2 : stepIndex) ? '#fff' : '#9ca3af',
+                  background: i <= progressIndex ? '#3b5bdb' : '#e5e7eb',
+                  color: i <= progressIndex ? '#fff' : '#9ca3af',
                 }}>
-                  {i < (stepIndex > 2 ? 3 : stepIndex) ? '✓' : i + 1}
+                  {i < progressIndex ? '✓' : i + 1}
                 </div>
                 <span style={{
                   fontSize: 12,
-                  color: i <= (stepIndex > 2 ? 2 : stepIndex) ? '#1a1a2e' : '#9ca3af',
-                  fontWeight: i === (stepIndex > 2 ? 2 : stepIndex) ? 700 : 400,
+                  color: i <= progressIndex ? '#1a1a2e' : '#9ca3af',
+                  fontWeight: i === progressIndex ? 700 : 400,
                 }}>{label}</span>
               </div>
             ))}
@@ -636,8 +632,38 @@ export function OnboardingPage() {
                       small edge app on an on-site computer. Generate an activation
                       code, install the app, and paste the code to link it.
                     </p>
+                    <div style={styles.setupGroup}>
+                      <div style={styles.setupTitle}>1. Choose what this computer will run</div>
+                      {[
+                        ['aros', 'AROS Edge', 'Secure sync, health monitoring, and workspace connection'],
+                        ['cstoresku', 'CStoreSKU', 'Local Commander reports and operational tools'],
+                      ].map(([id, label, hint]) => (
+                        <label key={id} style={styles.choiceRow}>
+                          <input type="checkbox" checked={edgeProducts.includes(id)} onChange={(e) => setEdgeProducts((current) => e.target.checked ? [...new Set([...current, id])] : current.filter((item) => item !== id))} />
+                          <span><strong>{label}</strong><small style={styles.choiceHint}>{hint}</small></span>
+                        </label>
+                      ))}
+                    </div>
+                    <div style={styles.setupGroup}>
+                      <div style={styles.setupTitle}>2. Choose where the edge runs</div>
+                      <label style={styles.choiceRow}>
+                        <input type="radio" name="deployment" checked={deploymentMode === 'existing-computer'} onChange={() => setDeploymentMode('existing-computer')} />
+                        <span><strong>This store computer</strong><small style={styles.choiceHint}>Recommended when it stays on and can reach Commander.</small></span>
+                      </label>
+                      <label style={styles.choiceRow}>
+                        <input type="radio" name="deployment" checked={deploymentMode === 'managed-edge'} onChange={() => setDeploymentMode('managed-edge')} />
+                        <span><strong>Managed AROS edge computer</strong><small style={styles.choiceHint}>We provision a dedicated device for the store LAN.</small></span>
+                      </label>
+                    </div>
+                    <div style={styles.setupGroup}>
+                      <div style={styles.setupTitle}>3. Optional remote Commander access</div>
+                      <label style={styles.choiceRow}>
+                        <input type="checkbox" checked={remoteCommanderAccess} onChange={(e) => setRemoteCommanderAccess(e.target.checked)} />
+                        <span><strong>Enable protected remote administration</strong><small style={styles.choiceHint}>Creates a workspace-only Cloudflare Access route after approval. Commander is never exposed directly.</small></span>
+                      </label>
+                    </div>
                     {posError && <div style={styles.error}>{posError}</div>}
-                    <button type="button" onClick={startVerifoneConnect} disabled={posLoading || !storeId} style={styles.button}>
+                    <button type="button" onClick={startVerifoneConnect} disabled={posLoading || !storeId || edgeProducts.length === 0} style={styles.button}>
                       {posLoading ? 'Generating…' : 'Get activation code'}
                     </button>
                     {!storeId && (
@@ -660,7 +686,14 @@ export function OnboardingPage() {
                       </li>
                       <li>In the setup wizard, enter your Commander IP (usually <code>192.168.31.11</code>) and credentials — they stay on-site.</li>
                       <li>Paste the activation code above to link it to this store.</li>
+                      <li>Choose <strong>{edgeProducts.includes('aros') && edgeProducts.includes('cstoresku') ? 'AROS + CStoreSKU' : edgeProducts.includes('cstoresku') ? 'CStoreSKU' : 'AROS Edge'}</strong> in the installer.</li>
+                      <li>Validate a closed business period before automatic sync begins.</li>
                     </ol>
+                    {remoteCommanderAccess && (
+                      <div style={{ fontSize: 12, color: '#1e40af', background: '#eff6ff', borderRadius: 8, padding: 10 }}>
+                        Remote administration remains pending until a workspace administrator approves its Cloudflare Access hostname and allowed users.
+                      </div>
+                    )}
                     <div style={{ fontSize: 12, color: '#6b7280', background: '#f9fafb', borderRadius: 8, padding: 10 }}>
                       Don't want to manage a computer? <strong>We can host the edge for you</strong> — reply to your welcome email and we'll set up a managed device.
                     </div>
@@ -875,6 +908,18 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     gap: 4,
   },
+  setupGroup: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 10,
+    border: '1px solid #e5e7eb',
+    borderRadius: 12,
+    padding: 14,
+    background: '#f9fafb',
+  },
+  setupTitle: { fontSize: 13, fontWeight: 800, color: '#1a1a2e' },
+  choiceRow: { display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 13, color: '#374151', cursor: 'pointer' },
+  choiceHint: { display: 'block', color: '#6b7280', marginTop: 2, lineHeight: 1.4 },
   planGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
