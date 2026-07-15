@@ -805,6 +805,8 @@ async function ensureSignupTenant(
     tenant_id: ensuredTenantId,
     user_id: input.userId,
     role: 'owner',
+    is_default: true,
+    status: 'active',
   });
 
   await supabase.from('onboarding_progress').upsert({

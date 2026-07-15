@@ -6,7 +6,7 @@ interface ProtectedRouteProps {
 }
 
 export function ProtectedRoute({ children }: ProtectedRouteProps) {
-  const { session, memberships, loading } = useAuth();
+  const { session, memberships, loading, membershipError, refreshMemberships } = useAuth();
   const path = window.location.pathname;
 
   if (loading) {
@@ -21,6 +21,20 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
   if (!session) {
     window.location.href = '/login';
     return null;
+  }
+
+  if (membershipError) {
+    return (
+      <div style={styles.wrapper} role="alert">
+        <div style={styles.errorCard}>
+          <h1 style={styles.errorTitle}>We couldn’t load your workspace</h1>
+          <p style={styles.errorText}>{membershipError}</p>
+          <button type="button" style={styles.retryButton} onClick={() => void refreshMemberships()}>
+            Retry
+          </button>
+        </div>
+      </div>
+    );
   }
 
   // New user with no tenant memberships — funnel through onboarding
@@ -55,6 +69,10 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#6b7280',
     fontWeight: 500,
   },
+  errorCard: { maxWidth: 440, padding: 32, margin: 20, textAlign: 'center', background: '#fff', borderRadius: 16, boxShadow: '0 12px 36px rgba(15, 23, 42, 0.12)' },
+  errorTitle: { margin: '0 0 12px', fontSize: 22, color: '#1a1a2e' },
+  errorText: { margin: '0 0 20px', fontSize: 14, lineHeight: 1.6, color: '#6b7280' },
+  retryButton: { border: 0, borderRadius: 8, padding: '10px 20px', background: '#3b5bdb', color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer' },
 };
 
 if (typeof document !== 'undefined' && !document.getElementById('protected-route-styles')) {
