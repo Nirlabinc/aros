@@ -102,6 +102,9 @@ export function Signup() {
       }
 
       // Account created with email auto-confirmed server-side — go to login
+      if (data.model?.enrollmentToken) {
+        sessionStorage.setItem('aros-model-enrollment-token', String(data.model.enrollmentToken));
+      }
       window.location.href = `/login?registered=true&email=${encodeURIComponent(email)}&returnTo=${encodeURIComponent(returnTo)}`;
       return;
     } catch {
