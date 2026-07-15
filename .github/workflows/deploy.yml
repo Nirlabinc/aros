@@ -102,8 +102,14 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
 
-          pm2 describe aros-prod >/dev/null 2>&1 || { echo "Missing PM2 app: aros-prod"; exit 1; }
-          pm2 restart aros-prod
+          # Schema changes are fail-loud: never restart code against an older DB.
+          set -a
+          source /opt/aros-platform/.env
+          set +a
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260715_setup_resources.sql
+
+          pm2 describe aros-platform >/dev/null 2>&1 || { echo "Missing PM2 app: aros-platform"; exit 1; }
+          pm2 restart aros-platform
           pm2 save
           EOS
 
