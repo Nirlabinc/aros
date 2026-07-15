@@ -20,11 +20,11 @@ import { ConnectStorePage } from '../pages/connect/ConnectStorePage';
 import { ConnectStoreBanner } from '../components/ConnectStoreBanner';
 import { ResetPassword } from '../pages/ResetPassword';
 import { VerifyEmail } from '../pages/VerifyEmail';
-import { ConnectionsHub } from '../pages/settings/ConnectionsHub';
 import { AdministrationPage } from '../pages/settings/AdministrationPage';
 import AIModelsSettings from '../pages/settings/AIModels';
 import { CapabilityCatalog } from '../pages/settings/CapabilityCatalog';
 import { ConnectionHealth } from '../pages/settings/ConnectionHealth';
+import { PlatformAppsPage } from '../pages/settings/PlatformAppsPage';
 
 const MARKETPLACE_ADMIN_URL = (window as any).__MARKETPLACE_URL__
   ? `${(window as any).__MARKETPLACE_URL__}/admin`
@@ -200,7 +200,7 @@ function AuthenticatedRoutes({ path, isAdmin, onboarded }: { path: string; isAdm
   // persists multiple tenant accounts, and performs real provider tests; the
   // generic connections dialog is reserved for app grants/OAuth connections.
   const setupRoute = path.startsWith('/stores') ? <ConnectStorePage onboarded />
-    : path.startsWith('/apps') ? <ConnectionsHub kind="app" />
+    : path.startsWith('/apps') ? <PlatformAppsPage />
     : path.startsWith('/channels') ? <CapabilityCatalog kind="channels" />
     : path.startsWith('/agents') ? <CapabilityCatalog kind="agents" />
     : path.startsWith('/skills') ? <CapabilityCatalog kind="skills" />
