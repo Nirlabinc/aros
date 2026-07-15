@@ -1,50 +1,9 @@
-import { useState, useRef, useEffect, type FormEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, type FormEvent } from 'react';
 import { useWhitelabel } from '../whitelabel/WhitelabelProvider';
-
-// ---------------------------------------------------------------------------
-// Theme palettes (shre-chat style)
-// ---------------------------------------------------------------------------
-
-const SC_DARK = {
-  bg1: '#0d0d0f', bg2: '#161618', bg3: '#1e1e22',
-  bgInput: 'rgba(255,255,255,0.06)', bgHover: 'rgba(255,255,255,0.06)',
-  msgUser: 'rgba(99,141,255,0.10)', msgAi: 'rgba(255,255,255,0.045)',
-  text1: '#ececf1', text2: '#a1a1aa', text3: '#6b6b76',
-  border1: 'rgba(255,255,255,0.1)', border2: 'rgba(255,255,255,0.065)',
-  accent: '#638dff', accentSoft: 'rgba(99,141,255,0.14)',
-};
-
-const SC_LIGHT = {
-  bg1: '#f5f5f7', bg2: '#ffffff', bg3: '#eeeef0',
-  bgInput: 'rgba(0,0,0,0.04)', bgHover: 'rgba(0,0,0,0.05)',
-  msgUser: 'rgba(79,110,220,0.09)', msgAi: 'rgba(0,0,0,0.035)',
-  text1: '#1a1a1e', text2: '#52525b', text3: '#71717a',
-  border1: 'rgba(0,0,0,0.12)', border2: 'rgba(0,0,0,0.08)',
-  accent: '#4f6edc', accentSoft: 'rgba(79,110,220,0.10)',
-};
-
-// ---------------------------------------------------------------------------
-// Lightweight markdown
-// ---------------------------------------------------------------------------
-
-function renderMarkdown(text: string): string {
-  return text
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/__(.+?)__/g, '<strong>$1</strong>')
-    .replace(/(?<!\w)\*([^*\n]+?)\*(?!\w)/g, '<em>$1</em>')
-    .replace(/(?<!\w)_([^_\n]+?)_(?!\w)/g, '<em>$1</em>')
-    .replace(/`([^`\n]+?)`/g, '<code style="background:rgba(128,128,128,0.15);padding:1px 4px;border-radius:3px;font-size:0.9em">$1</code>')
-    .replace(/\[([^\]]+?)\]\(([^)]+?)\)/g, (_m, t, u) => {
-      const s = u.trim().toLowerCase();
-      if (s.startsWith('javascript:') || s.startsWith('data:') || s.startsWith('vbscript:')) return t;
-      return `<a href="${u}" target="_blank" rel="noopener noreferrer" style="text-decoration:underline">${t}</a>`;
-    })
-    .replace(/^### (.+)$/gm, '<strong style="font-size:1.05em">$1</strong>')
-    .replace(/^## (.+)$/gm, '<strong style="font-size:1.1em">$1</strong>')
-    .replace(/^# (.+)$/gm, '<strong style="font-size:1.15em">$1</strong>')
-    .replace(/^[\-\*] (.+)$/gm, '\u2022 $1');
-}
+import { useChatTheme } from './chatTheme';
+import { ChatMessageRenderer } from './ChatMessageRenderer';
+import { useCanvas } from './CanvasContext';
+import { itemsFromMessages } from './canvas';
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -78,10 +37,8 @@ const ROUTER_URL = import.meta.env.VITE_ROUTER_URL || '';
 
 export function ArosChat() {
   const { config } = useWhitelabel();
-  // Detect theme from whitelabel config background color
-  const bgColor = config.theme?.colors?.background || '#ffffff';
-  const isLight = bgColor.toLowerCase() === '#ffffff' || bgColor.toLowerCase() === '#fff' || bgColor.startsWith('rgb(255');
-  const c = isLight ? SC_LIGHT : SC_DARK;
+  const c = useChatTheme();
+  const canvas = useCanvas();
 
   const greeting = config.agent.greeting ?? 'What do you need?';
   const [messages, setMessages] = useState<Message[]>(() => loadMessages(greeting));
@@ -94,6 +51,35 @@ export function ArosChat() {
   const [userNearBottom, setUserNearBottom] = useState(true);
 
   useEffect(() => { persistMessages(messages); }, [messages]);
+
+  // Publish the concierge's mib-widget results to the data canvas. A NEW
+  // widget auto-opens the docked canvas on desktop; mobile only pins it (its
+  // overlay would cover the chat). The count ref starts null so restoring a
+  // persisted transcript never auto-opens — only fresh answers do.
+  const { setItems: setCanvasItems, setOpen: setCanvasOpen, setSelectedId: setCanvasSelectedId } = canvas;
+  const canvasCountRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (sending) return;
+    const items = itemsFromMessages(messages);
+    setCanvasItems(items);
+    const prev = canvasCountRef.current;
+    canvasCountRef.current = items.length;
+    if (items.length === 0 || prev === null || items.length <= prev) return;
+    setCanvasSelectedId(items[items.length - 1].id);
+    if (window.matchMedia('(min-width: 768px)').matches) setCanvasOpen(true);
+  }, [messages, sending, setCanvasItems, setCanvasOpen, setCanvasSelectedId]);
+
+  const openWidgetOnCanvas = useCallback(
+    (messageIndex: number, widgetIndex: number) => {
+      const item = itemsFromMessages(messages).find(
+        (entry) => entry.messageIndex === messageIndex && entry.widgetIndex === widgetIndex,
+      );
+      if (!item) return;
+      setCanvasSelectedId(item.id);
+      setCanvasOpen(true);
+    },
+    [messages, setCanvasOpen, setCanvasSelectedId],
+  );
 
   useEffect(() => {
     if (userNearBottom) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -213,6 +199,23 @@ export function ArosChat() {
             <div style={{ fontSize: 13, fontWeight: 600, color: c.text1 }}>{agentName}</div>
             <div style={{ fontSize: 10, color: c.text3 }}>Online</div>
           </div>
+          {canvas.items.length > 0 && (
+            <button
+              onClick={() => { canvas.setOpen(!canvas.open); canvas.setFocus(false); }}
+              title={canvas.open ? 'Hide the data canvas' : `Data canvas (${canvas.items.length})`}
+              aria-pressed={canvas.open}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4, height: 28, padding: '0 8px', borderRadius: 6,
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                color: canvas.open ? c.accent : c.text3, fontSize: 11, fontFamily: 'inherit', transition: 'background 150ms',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = c.bgHover; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+              {canvas.items.length}
+            </button>
+          )}
           {messages.length > 1 && (
             <button
               onClick={clearChat}
@@ -282,7 +285,11 @@ export function ArosChat() {
                   {isUser ? (
                     <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{msg.content}</span>
                   ) : (
-                    <span style={{ wordBreak: 'break-word' }} dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                    <ChatMessageRenderer
+                      content={msg.content}
+                      palette={c}
+                      onOpenWidget={(widgetIndex) => openWidgetOnCanvas(i, widgetIndex)}
+                    />
                   )}
                 </div>
                 {isUser && (

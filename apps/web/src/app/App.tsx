@@ -1,7 +1,7 @@
 import { WhitelabelProvider } from '../whitelabel/WhitelabelProvider';
 import { AuthProvider, useAuth as useSupabaseAuth, type Tenant } from '../contexts/AuthContext';
-import { ArosChat } from '../aros-ai/ArosChat';
-import { Sidebar } from '../components/Sidebar';
+import { CanvasProvider } from '../aros-ai/CanvasContext';
+import { Shell } from '../components/Shell';
 import { Dashboard } from '../components/Dashboard';
 import { ProtectedRoute } from '../components/ProtectedRoute';
 import { OnboardingPage } from '../pages/onboarding/OnboardingPage';
@@ -167,41 +167,17 @@ function AuthenticatedRoutes({ path, isAdmin, onboarded }: { path: string; isAdm
 
   // Developers portal
   if (path.startsWith('/developers') || path.startsWith('/submit-plugin')) {
-    return (
-      <div className="aros-app">
-        <Sidebar />
-        <main className="aros-main">
-          <DeveloperPortal />
-        </main>
-        <ArosChat />
-      </div>
-    );
+    return <Shell><DeveloperPortal /></Shell>;
   }
 
   // Billing
   if (path.startsWith('/billing')) {
-    return (
-      <div className="aros-app">
-        <Sidebar />
-        <main className="aros-main">
-          <BillingPage />
-        </main>
-        <ArosChat />
-      </div>
-    );
+    return <Shell><BillingPage /></Shell>;
   }
 
   // Costs
   if (path.startsWith('/costs')) {
-    return (
-      <div className="aros-app">
-        <Sidebar />
-        <main className="aros-main">
-          <CostsPage />
-        </main>
-        <ArosChat />
-      </div>
-    );
+    return <Shell><CostsPage /></Shell>;
   }
 
   const setupRoute = path.startsWith('/stores') ? <ConnectionsHub kind="pos" />
@@ -216,43 +192,23 @@ function AuthenticatedRoutes({ path, isAdmin, onboarded }: { path: string; isAdm
     : path.startsWith('/users') ? <AdministrationPage section="users" />
     : path.startsWith('/workspace') ? <AdministrationPage section="workspace" />
     : null;
-  if (setupRoute) return <div className="aros-app"><Sidebar /><main className="aros-main">{setupRoute}</main><ArosChat /></div>;
+  if (setupRoute) return <Shell>{setupRoute}</Shell>;
 
   // Marketplace
   if (path.startsWith('/marketplace')) {
-    return (
-      <div className="aros-app">
-        <Sidebar />
-        <main className="aros-main">
-          <MarketplacePage />
-        </main>
-        <ArosChat />
-      </div>
-    );
+    return <Shell><MarketplacePage /></Shell>;
   }
 
   // Dashboard (default for logged-in users)
   if (path.startsWith('/human')) {
-    return (
-      <div className="aros-app">
-        <Sidebar />
-        <main className="aros-main">
-          <Dashboard />
-        </main>
-        <ArosChat />
-      </div>
-    );
+    return <Shell><Dashboard /></Shell>;
   }
 
   return (
-    <div className="aros-app">
-      <Sidebar />
-      <main className="aros-main">
-        <ConnectStoreBanner />
-        <Dashboard />
-      </main>
-      <ArosChat />
-    </div>
+    <Shell>
+      <ConnectStoreBanner />
+      <Dashboard />
+    </Shell>
   );
 }
 
@@ -260,7 +216,9 @@ export function App() {
   return (
     <WhitelabelProvider>
       <AuthProvider>
-        <AppContent />
+        <CanvasProvider>
+          <AppContent />
+        </CanvasProvider>
       </AuthProvider>
     </WhitelabelProvider>
   );
