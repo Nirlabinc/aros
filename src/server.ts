@@ -55,7 +55,10 @@ import { handleEdgeProvisioningRequest } from './edge/provisioning-http.js';
 import { EdgeProvisioningService } from './edge/provisioning.js';
 import { SupabaseEdgeProvisioningRepository } from './edge/supabase-provisioning-repository.js';
 
-const PORT = 5457;
+const PORT = Number(process.env.PORT || 5457);
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+  throw new Error('PORT must be an integer between 1 and 65535');
+}
 const startedAt = new Date().toISOString();
 const SHRE_METER_URL = process.env.SHRE_METER_URL || 'http://127.0.0.1:5495';
 const SHRE_TASKS_URL = process.env.SHRE_TASKS_URL || 'http://127.0.0.1:5460';
