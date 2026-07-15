@@ -41,7 +41,7 @@ import {
 } from './human-state.js';
 import { createTask } from '../tasks/store.js';
 import type { TaskPriority } from '../tasks/types.js';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { testConnection as testRapidRmsConnector } from '../connectors/rapidrms-api.js';
 import { testConnection as testAzureDbConnector } from '../connectors/azure-db.js';
 import { testConnection as testVerifoneConnector } from '../connectors/verifone/connector.js';
@@ -1650,13 +1650,20 @@ function readServiceToken(): string {
   return '';
 }
 
-/** Length-checked constant-time-ish comparison — avoids early-exit token oracles. */
+/**
+ * Timing-safe token comparison. Hashes both sides to a fixed 32 bytes first,
+ * so timingSafeEqual never throws on length mismatch AND no length is leaked.
+ */
 function tokensMatch(a: string, b: string): boolean {
-  if (!a || !b || a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+  if (!a || !b) return false;
+  const ha = createHash('sha256').update(a).digest();
+  const hb = createHash('sha256').update(b).digest();
+  return timingSafeEqual(ha, hb);
 }
+
+/** Callers permitted to use the service path — spoofable header, allow-listed for audit clarity. */
+const ALLOWED_SERVICE_SOURCES = new Set(['shre-router']);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function handleStoreSummary(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // ── Service-to-service path ──────────────────────────────────
@@ -1668,13 +1675,30 @@ async function handleStoreSummary(req: IncomingMessage, res: ServerResponse): Pr
   // boundary — so the service path never runs off an end-user's identity.
   const serviceToken = readServiceToken();
   const presentedToken = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-  const claimsService = Boolean(req.headers['x-service-source']);
+  const rawSource = req.headers['x-service-source'];
+  const serviceSource = Array.isArray(rawSource) ? rawSource[0] : rawSource;
+  const claimsService = Boolean(serviceSource) && ALLOWED_SERVICE_SOURCES.has(String(serviceSource));
   if (serviceToken && claimsService && tokensMatch(presentedToken, serviceToken)) {
     const tenantId = getRequestUrl(req).searchParams.get('tenantId');
     if (!tenantId) {
       return json(res, 400, { error: 'tenantId query param required for service requests' });
     }
+    // Defence-in-depth: only real tenant UUIDs. A non-UUID id (e.g. a POS
+    // store slug 'client-2' that the router might derive from prompt text)
+    // can never reach a tenant's data through this path.
+    if (!UUID_RE.test(tenantId)) {
+      return json(res, 400, { error: 'tenantId must be a valid tenant UUID' });
+    }
     const summary = await getTenantStoreSummary(tenantId);
+    // Audit every service-path read — the service token is powerful (any
+    // tenant); make its use traceable (source + tenant, never the token).
+    void auditLog({
+      tenantId,
+      action: 'store.summary.service_read',
+      resource: tenantId,
+      detail: { source: String(serviceSource) },
+      ip: getClientIp(req),
+    });
     return json(res, 200, summary ? { connected: true, summary } : { connected: false, summary: null });
   }
 
