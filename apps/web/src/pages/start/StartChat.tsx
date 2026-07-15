@@ -13,7 +13,8 @@ import { useState, useRef, useEffect, type FormEvent } from 'react';
  * from there to /onboarding (plan + business setup) once the user is sold.
  */
 
-const ROUTER_URL = (import.meta as any).env?.VITE_ROUTER_URL || '/api';
+// /api/v1/* remains proxied server-side for already-shipped bundles.
+const ROUTER_URL = (import.meta as any).env?.VITE_ROUTER_URL || '';
 const DEMO_SESSION_KEY = 'aros-demo-session';
 const INTENT_KEY = 'aros-intent';
 

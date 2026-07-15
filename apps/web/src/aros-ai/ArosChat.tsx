@@ -73,7 +73,8 @@ function persistMessages(msgs: Message[]) {
 
 const QUICK_ACTIONS = ['Show today\'s sales', 'Check low inventory', 'Reorder recommendations'];
 
-const ROUTER_URL = import.meta.env.VITE_ROUTER_URL || '/api';
+// /api/v1/* remains proxied server-side for already-shipped bundles.
+const ROUTER_URL = import.meta.env.VITE_ROUTER_URL || '';
 
 export function ArosChat() {
   const { config } = useWhitelabel();

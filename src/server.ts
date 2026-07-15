@@ -805,6 +805,8 @@ async function ensureSignupTenant(
     tenant_id: ensuredTenantId,
     user_id: input.userId,
     role: 'owner',
+    is_default: true,
+    status: 'active',
   });
 
   await supabase.from('onboarding_progress').upsert({
@@ -2034,6 +2036,11 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
       history: [],
       nextCheck: null,
     });
+  }
+
+  if (pathname.startsWith('/api/v1/')) {
+    req.url = pathname.slice('/api'.length) + requestUrl.search;
+    return proxyRequest(req, res, SHRE_ROUTER_URL);
   }
 
   if (pathname.startsWith('/v1/') && !pathname.startsWith('/v1/traces/')) {
