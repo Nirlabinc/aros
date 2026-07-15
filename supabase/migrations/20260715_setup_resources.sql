@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS public.model_credentials (
   revoked_at timestamptz, UNIQUE (tenant_id, key_alias)
 );
 ALTER TABLE public.model_credentials ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS model_credentials_select_member ON public.model_credentials;
 CREATE POLICY model_credentials_select_member ON public.model_credentials FOR SELECT USING (
   tenant_id IN (SELECT tenant_id FROM public.tenant_members WHERE user_id = auth.uid() AND status = 'active')
 );
