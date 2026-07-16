@@ -59,6 +59,7 @@ export function Sidebar() {
           <Nav href="/agents" label="Agents" icon="◎" path={path} onClick={close} />
           <Nav href="/skills" label="Skills" icon="✣" path={path} onClick={close} />
           <Nav href="/models" label="Models" icon="✦" path={path} onClick={close} />
+          <Nav href="/computers" label="Computers" icon="▣" path={path} onClick={close} />
           <Nav href="/connection-health" label="Connection health" icon="◉" path={path} onClick={close} />
           <div className="aros-nav-label">Administration</div>
           <Nav href="/settings" label="Settings" icon="⚙" path={path} onClick={close} />

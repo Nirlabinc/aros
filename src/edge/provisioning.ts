@@ -5,6 +5,8 @@ export interface ProvisioningAuth { tenantId: string; userId: string; role: stri
 export interface ActivationCodeInput { storeId: string; connectorId?: string; expiresInMinutes?: number }
 export interface EdgeDeviceView {
   id: string; storeId: string; connectorId: string | null; provider: string; machineId: string;
+  deviceName: string; operatingSystem: string | null; architecture: string | null;
+  serviceVersion: string | null; connectorVersion: string | null;
   status: string; lastHeartbeatAt: string | null; createdAt: string; revokedAt: string | null;
   latestHeartbeat?: Record<string, unknown> | null;
 }

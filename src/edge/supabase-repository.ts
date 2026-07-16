@@ -1,13 +1,16 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { EventBatchRequest, HeartbeatRequest } from './contracts.js';
+import type { ActivationRequest, EventBatchRequest, HeartbeatRequest } from './contracts.js';
 import type { DeviceConfiguration, DeviceIdentity, EdgeRepository, Enrollment } from './service.js';
 
 export class SupabaseEdgeRepository implements EdgeRepository {
   constructor(private readonly db: SupabaseClient) {}
 
-  async consumeActivation(codeHash: string, machineId: string, deviceId: string, tokenHash: string): Promise<Enrollment | null> {
+  async consumeActivation(codeHash: string, input: ActivationRequest, deviceId: string, tokenHash: string): Promise<Enrollment | null> {
     const { data, error } = await this.db.rpc('consume_edge_activation', {
-      p_code_hash: codeHash, p_machine_id: machineId, p_device_id: deviceId, p_token_hash: tokenHash,
+      p_code_hash: codeHash, p_machine_id: input.machineId, p_device_id: deviceId, p_token_hash: tokenHash,
+      p_device_name: input.machineId, p_operating_system: input.operatingSystem,
+      p_architecture: input.architecture, p_service_version: input.serviceVersion,
+      p_connector_version: input.connectorVersion,
     });
     if (error) throw error;
     const row = data?.[0];
@@ -28,7 +31,10 @@ export class SupabaseEdgeRepository implements EdgeRepository {
       device_id: device.deviceId, tenant_id: device.tenantId, store_id: device.storeId, payload: heartbeat,
     });
     if (error) throw error;
-    await this.db.from('edge_devices').update({ last_heartbeat_at: new Date().toISOString(), status: heartbeat.commanderReachable ? 'online' : 'degraded' }).eq('id', device.deviceId);
+    await this.db.from('edge_devices').update({
+      last_heartbeat_at: new Date().toISOString(), status: heartbeat.commanderReachable ? 'online' : 'degraded',
+      service_version: heartbeat.serviceVersion, connector_version: heartbeat.connectorVersion,
+    }).eq('id', device.deviceId);
   }
 
   async persistBatch(device: DeviceIdentity, batch: EventBatchRequest) {

@@ -23,13 +23,16 @@ export class SupabaseEdgeProvisioningRepository implements EdgeProvisioningRepos
     return data.id as string;
   }
   async listDevices(tenantId: string, storeId?: string): Promise<EdgeDeviceView[]> {
-    let query = this.db.from('edge_devices').select('id,store_id,connector_id,provider,machine_id,status,last_heartbeat_at,created_at,revoked_at,edge_device_heartbeats(payload,received_at)').eq('tenant_id', tenantId);
+    let query = this.db.from('edge_devices').select('id,store_id,connector_id,provider,machine_id,device_name,operating_system,architecture,service_version,connector_version,status,last_heartbeat_at,created_at,revoked_at,edge_device_heartbeats(payload,received_at)').eq('tenant_id', tenantId);
     if (storeId) query = query.eq('store_id', storeId);
     const { data, error } = await query.order('created_at', { ascending: false }).order('received_at', { referencedTable: 'edge_device_heartbeats', ascending: false }).limit(1, { referencedTable: 'edge_device_heartbeats' });
     if (error) throw error;
     return (data ?? []).map((row: any) => ({
       id: row.id, storeId: row.store_id, connectorId: row.connector_id, provider: row.provider,
-      machineId: row.machine_id, status: row.status, lastHeartbeatAt: row.last_heartbeat_at,
+      machineId: row.machine_id, deviceName: row.device_name || row.machine_id,
+      operatingSystem: row.operating_system, architecture: row.architecture,
+      serviceVersion: row.service_version, connectorVersion: row.connector_version,
+      status: row.status, lastHeartbeatAt: row.last_heartbeat_at,
       createdAt: row.created_at, revokedAt: row.revoked_at,
       latestHeartbeat: row.edge_device_heartbeats?.[0]?.payload ?? null,
     }));

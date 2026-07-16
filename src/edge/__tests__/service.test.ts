@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { EdgeService, hashSecret, type DeviceIdentity, type EdgeRepository } from '../service.js';
-import type { EventBatchRequest, HeartbeatRequest } from '../contracts.js';
+import type { ActivationRequest, EventBatchRequest, HeartbeatRequest } from '../contracts.js';
 
 class FakeRepository implements EdgeRepository {
   used = false; revoked = false; heartbeat?: HeartbeatRequest; keys = new Set<string>();
   activationMachine?: string; tokenSequence = 0;
   device: DeviceIdentity = { deviceId:'device', tenantId:'tenant', storeId:'store', provider:'verifone' };
-  async consumeActivation(codeHash:string, machine:string, _deviceId:string, _tokenHash:string) {
+  async consumeActivation(codeHash:string, input:ActivationRequest, _deviceId:string, _tokenHash:string) {
+    const machine = input.machineId;
     if (codeHash !== hashSecret('one-time')) return null;
     if (this.used && machine !== this.activationMachine) return null;
     this.used = true; this.activationMachine = machine;

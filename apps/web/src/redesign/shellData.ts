@@ -6,7 +6,7 @@
 
 export type SectionKey =
   | 'chat' | 'stores' | 'marketplace' | 'apps' | 'connectors' | 'plugins' | 'skills' | 'agents'
-  | 'models' | 'permissions' | 'health' | 'team' | 'billing' | 'usage' | 'settings';
+  | 'models' | 'devices' | 'permissions' | 'health' | 'team' | 'billing' | 'usage' | 'settings';
 
 export interface NavItem { key: SectionKey; label: string; glyph: string; count?: number; }
 
@@ -20,6 +20,7 @@ export const PRIMARY_NAV: NavItem[] = [
   { key: 'skills', label: 'Skills', glyph: 'Sk', count: 5 },
   { key: 'agents', label: 'Agents', glyph: 'Ag', count: 5 },
   { key: 'models', label: 'Models', glyph: 'M' },
+  { key: 'devices', label: 'Computers', glyph: 'PC' },
   { key: 'permissions', label: 'Permissions', glyph: 'P' },
   { key: 'health', label: 'Connection Health', glyph: 'H' },
 ];
@@ -157,6 +158,12 @@ export const SECTIONS: Record<Exclude<SectionKey, 'chat'>, SectionSpec> = {
       { mark: 'OL', title: 'Ollama (local)', sub: 'Self-hosted models', ...rowStatus(s('off', 'Available')), action: 'Connect' },
     ],
   },
+  devices: {
+    eyebrow: 'Node ecosystem',
+    lead: 'Enrolled computers contribute securely through device-scoped identities. Review operating system, versions, last login, heartbeat, and recent activity.',
+    stats: [{ value: 0, label: 'Enrolled' }, { value: 0, label: 'Active now' }, { value: 0, label: 'Needs attention' }],
+    note: { title: 'No computers enrolled', body: 'Enroll a computer from a store connection and its live device inventory will appear here.' },
+  },
   health: {
     eyebrow: 'Observability', primaryCta: 'Run all checks',
     lead: 'Live status of every connected register, app, model, and sync job — with the failing ones surfaced first so nothing quietly breaks.',
@@ -251,7 +258,7 @@ export const STORES_SCOPE = ['Main St', 'Oak Ave', '3rd St Express', 'Harbor', '
 
 export const SECTION_TITLES: Record<SectionKey, string> = {
   chat: 'Concierge', stores: 'Stores', marketplace: 'Marketplace', apps: 'Apps', connectors: 'Connectors', plugins: 'Plugins', skills: 'Skills', agents: 'Agents',
-  models: 'Models', permissions: 'Permissions', health: 'Connection Health',
+  models: 'Models', devices: 'Computers', permissions: 'Permissions', health: 'Connection Health',
   team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings',
 };
 

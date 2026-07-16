@@ -25,6 +25,7 @@ import { AdministrationPage } from '../pages/settings/AdministrationPage';
 import AIModelsSettings from '../pages/settings/AIModels';
 import { CapabilityCatalog } from '../pages/settings/CapabilityCatalog';
 import { ConnectionHealth } from '../pages/settings/ConnectionHealth';
+import { DevicesPage } from '../redesign/pages/admin';
 import { centralIdentityOnly } from '../lib/supabase';
 import { AppShell } from '../redesign/AppShell';
 
@@ -204,6 +205,7 @@ function AuthenticatedRoutes({ path, isAdmin, onboarded }: { path: string; isAdm
     : path.startsWith('/agents') ? <CapabilityCatalog kind="agents" />
     : path.startsWith('/skills') ? <CapabilityCatalog kind="skills" />
     : path.startsWith('/models') ? <AIModelsSettings />
+    : path.startsWith('/computers') ? <DevicesPage />
     : path.startsWith('/connection-health') ? <ConnectionHealth />
     : path.startsWith('/settings') ? <AdministrationPage section="settings" />
     : path.startsWith('/profile') ? <AdministrationPage section="profile" />

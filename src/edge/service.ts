@@ -8,7 +8,7 @@ export interface DeviceConfiguration {
 }
 
 export interface EdgeRepository {
-  consumeActivation(codeHash: string, machineId: string, deviceId: string, tokenHash: string): Promise<Enrollment | null>;
+  consumeActivation(codeHash: string, input: ActivationRequest, deviceId: string, tokenHash: string): Promise<Enrollment | null>;
   findDeviceByToken(tokenHash: string): Promise<DeviceIdentity | null>;
   recordHeartbeat(device: DeviceIdentity, heartbeat: HeartbeatRequest): Promise<void>;
   persistBatch(device: DeviceIdentity, batch: EventBatchRequest): Promise<Array<{ eventId: string; status: 'accepted' | 'duplicate' }>>;
@@ -23,7 +23,7 @@ export class EdgeService {
   async activate(input: ActivationRequest) {
     const deviceId = randomUUID();
     const secret = randomBytes(32).toString('base64url');
-    const enrollment = await this.repository.consumeActivation(hashSecret(input.activationCode), input.machineId, deviceId, hashSecret(secret));
+    const enrollment = await this.repository.consumeActivation(hashSecret(input.activationCode), input, deviceId, hashSecret(secret));
     if (!enrollment) return null;
     return {
       apiVersion: '2026-07-15', deviceId: enrollment.deviceId, storeId: enrollment.storeId,

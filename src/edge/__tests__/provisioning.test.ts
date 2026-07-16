@@ -31,8 +31,8 @@ describe('EdgeProvisioningService', () => {
   it('lists and summarizes devices only inside the authenticated tenant', async () => {
     const repo=new Repository();
     repo.devices.push(
-      {tenantId:'tenant-a',id:'a',storeId:'store-a',connectorId:null,provider:'verifone',machineId:'mac',status:'online',lastHeartbeatAt:'now',createdAt:'now',revokedAt:null,latestHeartbeat:{commanderReachable:true,lastCloudUpload:'now'}},
-      {tenantId:'tenant-b',id:'b',storeId:'store-b',connectorId:null,provider:'verifone',machineId:'other',status:'online',lastHeartbeatAt:'now',createdAt:'now',revokedAt:null},
+      {tenantId:'tenant-a',id:'a',storeId:'store-a',connectorId:null,provider:'verifone',machineId:'mac',deviceName:'Store Mac',operatingSystem:'macOS',architecture:'arm64',serviceVersion:'1',connectorVersion:'1',status:'online',lastHeartbeatAt:'now',createdAt:'now',revokedAt:null,latestHeartbeat:{commanderReachable:true,lastCloudUpload:'now'}},
+      {tenantId:'tenant-b',id:'b',storeId:'store-b',connectorId:null,provider:'verifone',machineId:'other',deviceName:'Other',operatingSystem:'Windows',architecture:'x64',serviceVersion:'1',connectorVersion:'1',status:'online',lastHeartbeatAt:'now',createdAt:'now',revokedAt:null},
     );
     const service=new EdgeProvisioningService(repo);
     expect((await service.listDevices(owner)).map(d=>d.id)).toEqual(['a']);
