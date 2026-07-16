@@ -24,6 +24,12 @@ const EXTERNAL_INTELLIGENCE_REQUEST = /\b(weather|forecast|temperature|news|head
 
 type ActiveAgent = { name: string; capabilities: string[] };
 
+/** Humanize a router agentId for the message meta line ("aros-agent" → "Store Operations"). */
+function agentLabel(id: string): string {
+  const KNOWN: Record<string, string> = { 'aros-agent': 'Store Operations', storepulse: 'StorePulse Analyst', 'chain-operator': 'Chain Operator', 'cpg-analyst': 'CPG Analyst' };
+  return KNOWN[id] || id.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
 function customerFacingReply(reply: string): string {
   const cleaned = reply.includes('</think>') ? reply.split('</think>').pop()!.trim() : reply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   if (/\btool\s+[\w.-]+\s+failed\b|\bfailed on all paths\b|\bweb_fetch\b|\baccess control\b/i.test(cleaned)) {
@@ -115,7 +121,13 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
       if (!rawReply) throw new Error('The model returned an unsupported response.');
       const reply = customerFacingReply(rawReply);
       if (!reply) throw new Error('The model returned no customer-facing answer.');
-      setMessages(prev => [...prev, { from: 'shre', text: reply, meta: data?.model ? `${data.model} · via Shre` : 'Shre · Local' }]);
+      // Attribution: the router returns _shre.{decisionTrace.agentId, toolsUsed, model} — surface it.
+      const shre = data?._shre || data?.metadata || {};
+      const agent = shre?.decisionTrace?.agentId || data?.agent || shre?.agent;
+      const tools: string[] = Array.isArray(shre?.toolsUsed) ? shre.toolsUsed.map(String) : [];
+      const label = agent && agent !== 'main' ? agentLabel(agent) : 'Shre';
+      const model = data?.model || shre?.model;
+      setMessages(prev => [...prev, { from: 'shre', text: reply, meta: model ? `${label} · ${model}` : 'Shre · Local', agent, tools }]);
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Unknown chat error';
       setMessages(prev => [...prev, { from: 'shre', text: `I couldn’t complete that request (${detail}). Try again in a moment.`, meta: 'Shre · Local' }]);
@@ -135,7 +147,12 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
               <div className="aros-msg__bubble">
                 {m.from === 'me' ? m.text : <ChatMessageRenderer content={m.text} palette={palette} />}
               </div>
-              {m.meta && <div className="aros-msg__meta">{m.meta}</div>}
+              {m.meta && (
+                <div className="aros-msg__meta">
+                  {m.meta}
+                  {m.tools && m.tools.length > 0 && <span className="aros-msg__tools" title={`Tools used: ${m.tools.join(', ')}`}> · {m.tools.join(' · ')}</span>}
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -164,11 +181,13 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
           />
           <button className="aros-send" type="submit" aria-label="Send" disabled={sending || !draft.trim()}>↑</button>
         </form>
-        <div className="aros-suggest">
-          {SUGGESTIONS.map(sg => (
-            <button key={sg} type="button" className="aros-suggest__btn" onClick={() => send(sg)} disabled={sending}>{sg}</button>
-          ))}
-        </div>
+        {!messages.some(m => m.from === 'me') && (
+          <div className="aros-suggest">
+            {SUGGESTIONS.map(sg => (
+              <button key={sg} type="button" className="aros-suggest__btn" onClick={() => send(sg)} disabled={sending}>{sg}</button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

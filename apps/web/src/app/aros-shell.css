@@ -131,6 +131,7 @@
 .aros-msg--me .aros-msg__bubble { background: var(--inv); color: var(--inv-ink); border-color: var(--inv); box-shadow: none; }
 .aros-msg--me .aros-msg__av { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--line); }
 .aros-msg__meta { font-size: 11px; color: var(--ink-3); margin-top: 7px; font-family: 'JetBrains Mono', monospace; }
+.aros-msg__tools { opacity: 0.75; }
 .aros-msg__typing { display: inline-flex; gap: 5px; align-items: center; }
 .aros-msg__typing span { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); animation: aros-typing 1.2s infinite ease-in-out; }
 .aros-msg__typing span:nth-child(2) { animation-delay: 0.15s; }
@@ -166,13 +167,17 @@
   transition: background 0.15s, box-shadow 0.15s;
 }
 .aros-send:hover { background: var(--accent-2); box-shadow: var(--shadow-btn-hover); }
-.aros-suggest { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.aros-suggest__btn {
-  padding: 7px 13px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface-2);
-  color: var(--ink-2); font-family: inherit; font-size: 12.5px; cursor: pointer;
-  transition: border-color 0.13s, color 0.13s;
+.aros-suggest {
+  display: flex; gap: 6px; flex-wrap: nowrap; overflow-x: auto; margin-top: 8px;
+  scrollbar-width: none;
 }
-.aros-suggest__btn:hover { border-color: var(--accent); color: var(--ink); }
+.aros-suggest::-webkit-scrollbar { display: none; }
+.aros-suggest__btn {
+  padding: 4px 10px; border: 1px solid transparent; border-radius: 14px; background: none;
+  color: var(--ink-3); font-family: inherit; font-size: 11.5px; cursor: pointer; white-space: nowrap;
+  transition: border-color 0.13s, color 0.13s, background 0.13s;
+}
+.aros-suggest__btn:hover { border-color: var(--line); background: var(--surface-2); color: var(--ink); }
 
 /* ---- generic section panels (Skills / Agents / etc.) --------------------- */
 .aros-panel { flex: 1; overflow-y: auto; padding: 26px; }
