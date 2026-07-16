@@ -31,7 +31,7 @@ const PATH_TO_SECTION: Record<string, Exclude<SectionKey, 'chat'>> = {
   '/workspace': 'settings', '/marketplace': 'apps', '/channels': 'apps',
 };
 const SECTION_TO_PATH: Partial<Record<SectionKey, string>> = {
-  stores: '/stores', apps: '/apps', skills: '/skills', agents: '/agents',
+  stores: '/stores', apps: '/marketplace', skills: '/skills', agents: '/agents',
   models: '/models', health: '/connection-health', settings: '/settings',
   billing: '/billing', usage: '/costs', team: '/users', permissions: '/permissions',
 };

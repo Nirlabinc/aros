@@ -13,7 +13,7 @@ export interface NavItem { key: SectionKey; label: string; glyph: string; count?
 export const PRIMARY_NAV: NavItem[] = [
   { key: 'chat', label: 'Chat', glyph: 'C' },
   { key: 'stores', label: 'Stores', glyph: 'St' },
-  { key: 'apps', label: 'Apps', glyph: 'Ap' },
+  { key: 'apps', label: 'Marketplace', glyph: 'Mk' },
   { key: 'skills', label: 'Skills', glyph: 'Sk', count: 5 },
   { key: 'agents', label: 'Agents', glyph: 'Ag', count: 5 },
   { key: 'models', label: 'Models', glyph: 'M' },
@@ -242,7 +242,7 @@ export const POS_PROVIDERS: PosProvider[] = [
 export const STORES_SCOPE = ['Main St', 'Oak Ave', '3rd St Express', 'Harbor', 'Elm St Express'];
 
 export const SECTION_TITLES: Record<SectionKey, string> = {
-  chat: 'Concierge', stores: 'Stores', apps: 'Apps', skills: 'Skills', agents: 'Agents',
+  chat: 'Concierge', stores: 'Stores', apps: 'Marketplace', skills: 'Skills', agents: 'Agents',
   models: 'Models', permissions: 'Permissions', health: 'Connection Health',
   team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings',
 };
