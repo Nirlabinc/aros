@@ -213,12 +213,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const data = await res.json();
       if (!res.ok) return { error: data.error || 'Login failed' };
       if (data.session?.access_token && data.session?.refresh_token) {
-        await supabase.auth.setSession({
+        const { error } = await supabase.auth.setSession({
           access_token: data.session.access_token,
           refresh_token: data.session.refresh_token,
         });
+        return { error: error?.message ?? null };
       }
-      return { error: null };
+
+      // Some legacy /api/login deployments authenticate with a server cookie
+      // but do not return the Supabase tokens this SPA needs for ProtectedRoute.
+      // Require a browser session before reporting success, otherwise the
+      // dashboard redirect immediately bounces back to the login screen.
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      return { error: error?.message ?? null };
     } catch {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       return { error: error?.message ?? null };
