@@ -40,7 +40,7 @@ export function IntelligencePage({ kind, onBrowse }: { kind: IntelligenceKind; o
 
   return <div className="rsx-panel">
     <div className="rsx-panel__head"><div><div className="rsx-panel__eyebrow">{copy.eyebrow}</div><p className="rsx-panel__lead">{copy.lead}</p></div>{onBrowse && kind !== 'model' && <div className="rsx-section-actions"><button className="rsx-panel__cta" type="button" onClick={onBrowse}>Browse Marketplace</button></div>}</div>
-    {!loading && items.length > 0 && <label className="rsx-form__field"><span className="rsx-form__label">Search</span><input className="rsx-form__input" value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${kind}s`} /></label>}
+    {!loading && items.length > 0 && <label className="rsx-form__field rsx-search-block"><span className="rsx-form__label">Search</span><input className="rsx-form__input" value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${kind}s`} /></label>}
     {error && <div className="rsx-note" role="alert"><div className="rsx-note__title">Needs attention</div><div className="rsx-note__body">{error}</div></div>}
     {loading ? <StatePanel title="Loading…" detail={`Checking the live ${kind} service.`} />
       : error && items.length === 0 ? <StatePanel title={`Could not load ${kind}s`} detail={error} action={() => void load()} />

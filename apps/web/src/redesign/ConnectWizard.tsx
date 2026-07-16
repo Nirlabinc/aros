@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { POS_PROVIDERS, type PosProvider } from './shellData';
 
-const STEP_LABELS = ['PROVIDER', 'CONNECT', 'SCOPE', 'REVIEW'];
+const STEP_LABELS = ['PROVIDER', 'CONNECT', 'SCOPE', 'REVIEW', 'PAIR EDGE'];
 const API_BASE = (window as any).__AROS_API_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
 
@@ -21,6 +21,7 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
   const [accessMode, setAccessMode] = useState<'read' | 'read_write'>('read');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [edgeActivation, setEdgeActivation] = useState<{ activationCode: string; expiresAt: string } | null>(null);
   const provider = POS_PROVIDERS.find(p => p.id === providerId) || null;
 
   const authHeaders = useCallback((): Record<string, string> => ({
@@ -59,6 +60,10 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
       });
       const saved = await saveRes.json().catch(() => ({}));
       if (!saveRes.ok) throw new Error(saved.error || `Could not save connector (HTTP ${saveRes.status})`);
+      if (provider.id === 'verifone') {
+        if (!saved.edgeActivation?.activationCode) throw new Error('The store was saved, but an Edge pairing code could not be created.');
+        setEdgeActivation(saved.edgeActivation); setStep(5); return;
+      }
       // Cloud APIs can be tested here. Commander is LAN-only and is verified
       // by the paired Edge Relay on the store computer.
       if (saved.connector?.id && provider.id !== 'verifone') {
@@ -77,6 +82,7 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
   }
 
   function next() {
+    if (step === 5) { onDone({ name: String(values.storeName).trim(), connected: false }); return; }
     if (step < 4) { setStep(step + 1); return; }
     void submit();
   }
@@ -90,9 +96,9 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
         </div>
 
         <div className="rsx-modal__steps">
-          <span className="rsx-modal__stepno">STEP {step} OF 4 · {STEP_LABELS[step - 1]}</span>
+          <span className="rsx-modal__stepno">STEP {step} OF {provider?.id === 'verifone' ? 5 : 4} · {STEP_LABELS[step - 1]}</span>
           <div className="rsx-modal__track">
-            {[1, 2, 3, 4].map(n => <span key={n} className={`rsx-modal__seg ${n <= step ? 'is-on' : ''}`} />)}
+            {(provider?.id === 'verifone' ? [1, 2, 3, 4, 5] : [1, 2, 3, 4]).map(n => <span key={n} className={`rsx-modal__seg ${n <= step ? 'is-on' : ''}`} />)}
           </div>
         </div>
 
@@ -171,14 +177,15 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
               {error && <div className="aros-auth__error" style={{ marginTop: 14 }}>{error}</div>}
             </>
           )}
+          {step === 5 && provider?.id === 'verifone' && edgeActivation && <><h3 className="rsx-modal__h">Pair AROS Edge</h3><p className="rsx-modal__p">Use this one-time code on the store computer. It expires {new Date(edgeActivation.expiresAt).toLocaleString()}.</p><div className="rsx-edge-code">{edgeActivation.activationCode}</div><ol className="rsx-edge-steps"><li>On the store computer, open the <a href="/verifone/download.html" target="_blank" rel="noreferrer">Edge Relay installer</a>.</li><li>Install AROS Edge and enter this pairing code.</li><li>In the local setup page, enter Commander IP and credentials and select the local reporting database if CStoreSKU uses one.</li><li>Run the Commander test and initial read-only sync. This store changes from Pending to Connected after Edge reports healthy.</li></ol><div className="rsx-note"><div className="rsx-note__body">The store computer makes the outbound encrypted connection. Commander and its database are never exposed directly through Cloudflare.</div></div></>}
         </div>
 
         <div className="rsx-modal__foot">
-          {step > 1
+          {step > 1 && step < 5
             ? <button className="rsx-modal__back" onClick={() => setStep(step - 1)} disabled={busy}>← Back</button>
             : <span />}
           <button className="rsx-modal__next" disabled={!canNext || busy} onClick={next}>
-            {busy ? 'Connecting…' : step < 4 ? 'Continue' : `Connect ${provider?.name || ''}`}
+            {busy ? 'Connecting…' : step === 5 ? 'Finish' : step < 4 ? 'Continue' : provider?.id === 'verifone' ? 'Create store & pairing code' : `Connect ${provider?.name || ''}`}
           </button>
         </div>
       </div>

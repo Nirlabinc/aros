@@ -2107,6 +2107,23 @@ async function handleConnectorsCreate(req: IncomingMessage, res: ServerResponse)
 
     if (error) throw error;
 
+    let store: { id: string; name: string } | null = null;
+    let edgeActivation: { activationCode: string; expiresAt: string; storeId: string } | null = null;
+    if (type === 'verifone-commander') {
+      const storeName = typeof config.storeName === 'string' && config.storeName.trim() ? config.storeName.trim() : name;
+      const storeNumber = typeof config.storeNumber === 'string' ? config.storeNumber.trim() : '';
+      const slugPart = (storeNumber || storeName).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 42) || data.id.slice(0, 8);
+      const { data: storeRow, error: storeError } = await supabase.from('stores').upsert({
+        tenant_id: auth.tenantId, name: storeName, slug: `verifone-${slugPart}`,
+        pos_provider: 'verifone-commander', pos_external_id: data.id,
+        metadata: { tenantConnectorId: data.id, storeNumber: storeNumber || null }, updated_at: new Date().toISOString(),
+      }, { onConflict: 'tenant_id,slug' }).select('id,name').single();
+      if (storeError) throw new Error(`Store mapping failed: ${storeError.message}`);
+      store = storeRow;
+      const activation = await new EdgeProvisioningService(new SupabaseEdgeProvisioningRepository(supabase)).createActivationCode(auth, { storeId: storeRow.id, expiresInMinutes: 60 });
+      edgeActivation = { activationCode: activation.activationCode, expiresAt: activation.expiresAt, storeId: storeRow.id };
+    }
+
     await auditLog({
       tenantId: auth.tenantId,
       userId: auth.userId,
@@ -2116,7 +2133,7 @@ async function handleConnectorsCreate(req: IncomingMessage, res: ServerResponse)
       ip: getClientIp(req),
     });
 
-    json(res, 200, { ok: true, connector: data });
+    json(res, 200, { ok: true, connector: data, store, edgeActivation });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to save connector';
     console.error('[connectors.create]', message);
