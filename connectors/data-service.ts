@@ -40,10 +40,16 @@ export interface ConnectorRecord {
 
 function toRows(payload: unknown): Array<Record<string, unknown>> {
   if (Array.isArray(payload)) return payload as Array<Record<string, unknown>>;
+  if (typeof payload === 'string') {
+    const text = payload.trim();
+    if (!text) return [];
+    try { return toRows(JSON.parse(text)); } catch { return []; }
+  }
   if (payload && typeof payload === 'object') {
     const obj = payload as Record<string, unknown>;
     for (const key of ['data', 'Data', 'Rows', 'rows', 'Result', 'result', 'Items', 'items', 'value']) {
-      if (Array.isArray(obj[key])) return obj[key] as Array<Record<string, unknown>>;
+      const rows = toRows(obj[key]);
+      if (rows.length > 0) return rows;
     }
   }
   return [];
@@ -72,7 +78,7 @@ function pickStr(row: Record<string, unknown>, names: string[]): string | null {
 // defensive design means an unrecognized shape yields an empty (partial)
 // section, never a wrong number — safe to ship, refine once a real tenant
 // connects.
-const REVENUE_FIELDS = ['Total', 'NetSales', 'NetTotal', 'GrandTotal', 'SalesAmount', 'Amount', 'TotalAmount', 'BillAmount', 'bill_amount'];
+const REVENUE_FIELDS = ['Total', 'NetSales', 'NetTotal', 'GrandTotal', 'SalesAmount', 'Amount', 'TotalAmount', 'BillAmount', 'billAmount', 'subTotal', 'grandTotal', 'bill_amount'];
 const SALES_DATE_FIELDS = ['InvoiceDate', 'invoiceDate', 'invoice_date', 'CreatedDate', 'createdDate', 'BusinessDate', 'business_date', 'Date', 'date'];
 const INVOICE_FIELDS = ['InvoiceNo', 'invoiceNo', 'invoice_no', 'InvoiceNumber', 'TransactionId', 'transaction_id'];
 const QTY_FIELDS = ['OnHand', 'QtyOnHand', 'Quantity', 'Qty', 'StockOnHand', 'CurrentStock'];
