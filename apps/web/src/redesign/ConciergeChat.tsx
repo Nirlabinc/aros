@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, FormEvent } from 'react';
 import { CONCIERGE_SEED, SUGGESTIONS, type ChatMsg } from './shellData';
 import { useDemo } from './data';
+import { useAuth } from '../contexts/AuthContext';
 import { branding } from './branding';
 import { ChatMessageRenderer, type ChatPalette } from '../aros-ai/ChatMessageRenderer';
 import { itemsFromMessages, type CanvasWidgetItem } from '../aros-ai/canvas';
@@ -25,6 +26,7 @@ const ROUTER_URL = (import.meta as any).env?.VITE_ROUTER_URL || '';
  */
 export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, initial, onCanvasItems }: { onConnect?: () => void; onConnectApps?: () => void; seed?: string; focusOnMount?: boolean; initial?: ChatMsg[]; onCanvasItems?: (items: CanvasWidgetItem[]) => void }) {
   const demo = useDemo();
+  const { session, tenant } = useAuth();
   const mark = branding().concierge.charAt(0).toUpperCase();
   const palette = warmPalette();
   const [messages, setMessages] = useState<ChatMsg[]>(initial && initial.length ? initial : demo ? CONCIERGE_SEED : []);
@@ -50,15 +52,21 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
     try {
       const res = await fetch(`${ROUTER_URL}/v1/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json', 'x-channel': 'aros',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          ...(tenant?.id ? { 'x-aros-tenant-id': tenant.id, 'X-Workspace-ID': tenant.id } : {}),
+        },
         body: JSON.stringify({ agentId: 'aros-agent', messages: [{ role: 'user', content: q }], stream: false }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const reply = data.response || data.message || data.content || 'No response received.';
-      setMessages(prev => [...prev, { from: 'shre', text: reply, meta: 'Shre · Local' }]);
-    } catch {
-      setMessages(prev => [...prev, { from: 'shre', text: 'I couldn’t reach the store brain just now. Try again in a moment — your stores and data are unaffected.', meta: 'Shre · Local' }]);
+      const reply = [data?.response, data?.message?.content, data?.message, data?.content].find(value => typeof value === 'string' && value.trim());
+      if (!reply) throw new Error('The model returned an unsupported response.');
+      setMessages(prev => [...prev, { from: 'shre', text: reply, meta: data?.model ? `${data.model} · via Shre` : 'Shre · Local' }]);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Unknown chat error';
+      setMessages(prev => [...prev, { from: 'shre', text: `I couldn’t complete that request (${detail}). Try again in a moment.`, meta: 'Shre · Local' }]);
     } finally {
       setSending(false);
     }
