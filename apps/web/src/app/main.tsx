@@ -5,6 +5,7 @@ import './aros-design.css';
 import './aros-shell.css';
 import './aros-shell2.css';
 import './setup-flow.css';
+import './edi.css';
 import { App } from './App';
 
 createRoot(document.getElementById('root')!).render(

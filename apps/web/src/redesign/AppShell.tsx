@@ -7,6 +7,7 @@ import { StoresPage, AppsPage } from './pages/connections';
 import {
   BillingPage, UsagePage, TeamPage, SettingsPage, PermissionsPage, ConnectionHealthPage, DevicesPage,
 } from './pages/admin';
+import { EdiInvoices } from './pages/EdiInvoices';
 import { ConnectWizard } from './ConnectWizard';
 import { Canvas } from './Canvas';
 import { Home } from './Home';
@@ -27,6 +28,7 @@ const PATH_TO_SECTION: Record<string, Exclude<SectionKey, 'chat'>> = {
   '/stores': 'stores', '/apps': 'apps', '/skills': 'skills', '/agents': 'agents',
   '/models': 'models', '/computers': 'devices', '/connection-health': 'health', '/settings': 'settings',
   '/permissions': 'permissions',
+  '/edi-invoices': 'edi-invoices',
   '/profile': 'settings', '/billing': 'billing', '/costs': 'usage', '/users': 'team',
   '/workspace': 'settings', '/marketplace': 'apps', '/channels': 'apps',
 };
@@ -34,6 +36,7 @@ const SECTION_TO_PATH: Partial<Record<SectionKey, string>> = {
   stores: '/stores', apps: '/apps', skills: '/skills', agents: '/agents',
   models: '/models', devices: '/computers', health: '/connection-health', settings: '/settings',
   billing: '/billing', usage: '/costs', team: '/users', permissions: '/permissions',
+  'edi-invoices': '/edi-invoices',
 };
 
 function routeState(path = window.location.pathname): { mode: 'home' | 'chat' | 'app'; section: Exclude<SectionKey, 'chat'> } {
@@ -143,6 +146,7 @@ export function AppShell() {
     if (section === 'billing') return <BillingPage />;
     if (section === 'usage') return <UsagePage />;
     if (section === 'settings') return <SettingsPage />;
+    if (section === 'edi-invoices') return <EdiInvoices />;
     if (section === 'skills' || section === 'agents' || section === 'models') {
       const kind = section === 'skills' ? 'skill' : section === 'agents' ? 'agent' : 'model';
       return <IntelligencePage kind={kind} />;

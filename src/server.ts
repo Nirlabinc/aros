@@ -47,6 +47,15 @@ import { testConnection as testRapidRmsConnector } from '../connectors/rapidrms-
 import { testConnection as testAzureDbConnector } from '../connectors/azure-db.js';
 import { testConnection as testVerifoneConnector } from '../connectors/verifone/connector.js';
 import { setTenantSecret, storeCredential, deleteCredential } from '../connectors/vault-ref.js';
+import type { RapidRmsSession } from '../connectors/types.js';
+import {
+  buildEdiSession,
+  resolveEdiBaseUrl,
+  listEdiFiles,
+  uploadEdi,
+  getEdiItems,
+  revertEdi,
+} from '../connectors/rapidrms-edi.js';
 import { fetchStoreSalesRange, fetchStoreSummary, type StoreSummary } from '../connectors/data-service.js';
 import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
 import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
@@ -2501,6 +2510,154 @@ async function handleConnectorsDelete(req: IncomingMessage, res: ServerResponse)
   }
 }
 
+// ── RapidRMS EDI (native invoice API — SAME login as the connector) ──────
+// EDI reuses the tenant's existing 'rapidrms-api' connector row: its clientId +
+// stored email/password. The end user never handles the RapidRMS token — the
+// server re-authenticates on their behalf (against the resolved EDI base URL,
+// staging by default) for each request and discards the derived vault refs
+// after. No new connector type is needed; no schema change.
+
+/** Whether per-request EDI base-URL overrides are honored (dev/non-prod only). */
+function ediOverrideAllowed(): boolean {
+  return process.env.NODE_ENV !== 'production';
+}
+
+/**
+ * Resolve the caller's tenant RapidRMS connector, build a short-lived EDI
+ * session against the resolved (staging-by-default) base URL, run `fn`, and
+ * always tear down the temporary credential refs. Throws a caller-friendly
+ * error when no RapidRMS connector is configured.
+ */
+async function withTenantEdiSession<T>(
+  tenantId: string,
+  apiUrlOverride: string | null,
+  fn: (session: RapidRmsSession, ediBaseUrl: string) => Promise<T>,
+): Promise<T> {
+  const supabase = createSupabaseAdmin();
+  const { data: rows } = await supabase
+    .from('tenant_connectors')
+    .select(`${CONNECTOR_COLUMNS}, credentials_encrypted`)
+    .eq('tenant_id', tenantId)
+    .eq('type', 'rapidrms-api')
+    .order('status', { ascending: true }) // 'connected' sorts before pending/error
+    .limit(5);
+  const row = (rows ?? []).find((r) => r.status === 'connected') ?? (rows ?? [])[0];
+  if (!row) throw new Error('No RapidRMS connection is configured for this workspace');
+
+  ensureConnectorCrypto();
+  const secrets = JSON.parse(decryptValue(row.credentials_encrypted)) as Record<string, string>;
+  const config = (row.config ?? {}) as Record<string, unknown>;
+  const clientId = String(config.clientId || '');
+  if (!clientId) throw new Error('RapidRMS connection is missing its Client ID');
+
+  setTenantSecret(vaultSecretFor(tenantId));
+  const emailRef = await storeCredential(`${row.id}:edi:email`, secrets.email ?? '');
+  const passwordRef = await storeCredential(`${row.id}:edi:password`, secrets.password ?? '');
+  try {
+    const ediBaseUrl = resolveEdiBaseUrl(apiUrlOverride, { allowOverride: ediOverrideAllowed() });
+    const session = await buildEdiSession({
+      clientId,
+      sessionTimeout: Number(config.sessionTimeout) || 420,
+      emailRef,
+      passwordRef,
+      ediBaseUrl,
+    });
+    return await fn(session, ediBaseUrl);
+  } finally {
+    await Promise.all([emailRef, passwordRef].map((ref) => deleteCredential(ref).catch(() => {})));
+  }
+}
+
+function ediErrorStatus(message: string): number {
+  return /no rapidrms connection|missing its client id/i.test(message) ? 409 : 502;
+}
+
+async function handleEdiList(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const override = ediOverrideAllowed() ? getRequestUrl(req).searchParams.get('apiUrl') : null;
+  try {
+    const files = await withTenantEdiSession(auth.tenantId, override, (session) => listEdiFiles(session));
+    json(res, 200, { files });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to list EDI invoices';
+    console.error('[edi.list]', message);
+    json(res, ediErrorStatus(message), { error: message });
+  }
+}
+
+async function handleEdiUpload(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+  const ediUpload = body.EDIUpload;
+  const items = body.EDIReceiveItem;
+  if (!isRecord(ediUpload)) return json(res, 400, { error: 'Missing required field: EDIUpload' });
+  if (!Array.isArray(items)) return json(res, 400, { error: 'Missing required field: EDIReceiveItem (array)' });
+  const override = ediOverrideAllowed() && typeof body.apiUrl === 'string' ? body.apiUrl : null;
+
+  try {
+    const result = await withTenantEdiSession(auth.tenantId, override, (session) =>
+      uploadEdi(session, { EDIUpload: ediUpload as any, EDIReceiveItem: items as any }),
+    );
+    await auditLog({
+      tenantId: auth.tenantId, userId: auth.userId, action: 'edi.uploaded', resource: 'rapidrms-edi',
+      detail: { status: result.status, receiveId: result.data ?? null, items: items.length }, ip: getClientIp(req),
+    });
+    json(res, 200, { status: result.status, message: result.message, receiveId: result.data ?? null });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to upload EDI invoice';
+    console.error('[edi.upload]', message);
+    json(res, ediErrorStatus(message), { error: message });
+  }
+}
+
+async function handleEdiItems(req: IncomingMessage, res: ServerResponse, receiveId: number): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const override = ediOverrideAllowed() ? getRequestUrl(req).searchParams.get('apiUrl') : null;
+  try {
+    const items = await withTenantEdiSession(auth.tenantId, override, (session) => getEdiItems(session, receiveId));
+    json(res, 200, { items });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to load EDI invoice items';
+    console.error('[edi.items]', message);
+    json(res, ediErrorStatus(message), { error: message });
+  }
+}
+
+async function handleEdiRevert(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+  const receiveId = Number(body.receiveId);
+  const branchId = Number(body.branchId);
+  if (!Number.isFinite(receiveId) || receiveId <= 0) return json(res, 400, { error: 'Valid receiveId is required' });
+  if (!Number.isFinite(branchId) || branchId <= 0) return json(res, 400, { error: 'Valid branchId is required' });
+  const override = ediOverrideAllowed() && typeof body.apiUrl === 'string' ? body.apiUrl : null;
+
+  try {
+    const result = await withTenantEdiSession(auth.tenantId, override, (session) =>
+      revertEdi(session, { receiveId, branchId }),
+    );
+    await auditLog({
+      tenantId: auth.tenantId, userId: auth.userId, action: 'edi.reverted', resource: 'rapidrms-edi',
+      detail: { status: result.status, receiveId, branchId }, ip: getClientIp(req),
+    });
+    json(res, 200, { status: result.status, message: result.message });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to revert EDI invoice';
+    console.error('[edi.revert]', message);
+    json(res, ediErrorStatus(message), { error: message });
+  }
+}
+
 async function handleHumanConnectors(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const auth = await authenticateRequest(req);
   if (!auth) {
@@ -2898,6 +3055,21 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (pathname === '/api/connectors' && method === 'DELETE') {
     return handleConnectorsDelete(req, res);
+  }
+
+  // ── RapidRMS EDI invoices (reuses the tenant's rapidrms-api connector login) ──
+  if (pathname === '/api/rapidrms/edi' && method === 'GET') {
+    return handleEdiList(req, res);
+  }
+  if (pathname === '/api/rapidrms/edi' && method === 'POST') {
+    return handleEdiUpload(req, res);
+  }
+  if (pathname === '/api/rapidrms/edi/revert' && method === 'POST') {
+    return handleEdiRevert(req, res);
+  }
+  const ediItemsMatch = pathname.match(/^\/api\/rapidrms\/edi\/(\d+)$/);
+  if (ediItemsMatch && method === 'GET') {
+    return handleEdiItems(req, res, Number(ediItemsMatch[1]));
   }
 
   // Live store data read-back — consumed by the dashboard and by the agent's
