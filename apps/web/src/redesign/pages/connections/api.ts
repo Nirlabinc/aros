@@ -29,7 +29,7 @@ export type AppGrant = {
   enabled_at?: string | null;
 };
 
-export type StoreSyncJob = { id: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; progress: number; from_date: string; to_date: string; days_synced: number; last_error?: string | null };
+export type StoreSyncJob = { id: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; progress: number; from_date: string; to_date: string; days_synced: number; rows_imported?: number; last_error?: string | null };
 
 const apiBase = () => (window as Window & { __AROS_API_URL__?: string }).__AROS_API_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');

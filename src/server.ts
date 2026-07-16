@@ -2233,7 +2233,12 @@ async function handleStoreSync(req: IncomingMessage, res: ServerResponse): Promi
   const supabase = createSupabaseAdmin();
   if (req.method === 'GET') {
     const { data, error } = await supabase.from('store_sync_jobs').select('id,connector_id,from_date,to_date,cursor_date,chunk_days,status,progress,days_synced,last_error,started_at,completed_at,created_at,updated_at').eq('tenant_id', auth.tenantId).order('created_at', { ascending: false }).limit(20);
-    return error ? json(res, 500, { error: error.message }) : json(res, 200, { jobs: data || [] });
+    if (error) return json(res, 500, { error: error.message });
+    const jobs = await Promise.all((data || []).map(async job => {
+      const { count } = await supabase.from('store_snapshots').select('business_date', { count: 'exact', head: true }).eq('tenant_id', auth.tenantId).eq('connector_id', job.connector_id).gte('business_date', job.from_date).lte('business_date', job.to_date);
+      return { ...job, rows_imported: count || 0 };
+    }));
+    return json(res, 200, { jobs });
   }
   if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
   const body = await parseJsonBody(req);

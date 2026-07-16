@@ -6,9 +6,9 @@ const API_BASE = (window as any).__AROS_API_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
 
 const ACTIVE_TENANT_STORAGE_KEY = 'aros.activeTenantId';
-const MEMBERSHIP_FETCH_TIMEOUT_MS = 5000;
-const MEMBERSHIP_FETCH_ATTEMPTS = 3;
-const MEMBERSHIP_RETRY_DELAYS_MS = [300, 900];
+const MEMBERSHIP_FETCH_TIMEOUT_MS = 12000;
+const MEMBERSHIP_FETCH_ATTEMPTS = 2;
+const MEMBERSHIP_RETRY_DELAYS_MS = [500];
 
 export interface Tenant {
   id: string;
@@ -57,31 +57,25 @@ function sleep(ms: number): Promise<void> {
 async function fetchMemberships(userId: string): Promise<TenantMembership[]> {
   let lastError: unknown;
   for (let attempt = 0; attempt < MEMBERSHIP_FETCH_ATTEMPTS; attempt += 1) {
-    let timeoutId: number | undefined;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), MEMBERSHIP_FETCH_TIMEOUT_MS);
     try {
     const query = supabase
       .from('tenant_members')
       .select('tenant_id, role, is_default, status, tenant:tenants(*)')
       .eq('user_id', userId)
-      .eq('status', 'active');
-    const { data, error } = await Promise.race([
-      query,
-      new Promise<{ data: null; error: Error }>((resolve) => {
-        timeoutId = window.setTimeout(
-          () => resolve({ data: null, error: new Error('Membership lookup timed out') }),
-          MEMBERSHIP_FETCH_TIMEOUT_MS,
-        );
-      }),
-    ]);
-    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      .eq('status', 'active')
+      .abortSignal(controller.signal);
+    const { data, error } = await query;
+    window.clearTimeout(timeoutId);
     if (error) throw error;
     if (!data) throw new Error('Membership lookup returned no result');
     return (data as unknown as TenantMembership[]).filter((m) => !!m.tenant);
     } catch (error) {
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-      lastError = error;
+      window.clearTimeout(timeoutId);
+      lastError = controller.signal.aborted ? new Error('Membership lookup timed out') : error;
       const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
-      const message = error instanceof Error ? error.message : String(error);
+      const message = lastError instanceof Error ? lastError.message : String(lastError);
       if (code === '42703' || code.startsWith('PGRST2')) {
         console.error(`[AuthContext] Supabase schema drift (${code}): tenant membership query failed. Apply the production schema catch-up.`, error);
       } else {
