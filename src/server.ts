@@ -1219,6 +1219,67 @@ function canManageMarketplace(role: string): boolean {
   return ['owner', 'admin'].includes(role);
 }
 
+const PROVISIONING_MANIFESTS: Record<string, string> = {
+  'rapidrms-api': 'connector.rapidrms-api.v1',
+  'verifone-commander': 'connector.verifone-commander.v1',
+  'azure-db': 'connector.azure-db.v1',
+};
+
+async function applyProvisioning(input: {
+  tenantId: string; sourceKind: 'connector' | 'app' | 'plugin'; sourceId: string;
+  sourceKey: string; activate: boolean; actor: string;
+}): Promise<{ applied: boolean; result?: unknown }> {
+  const manifestKey = input.sourceKind === 'connector'
+    ? PROVISIONING_MANIFESTS[input.sourceKey]
+    : `${input.sourceKind}.${normalizeAppKey(input.sourceKey)}.v1`;
+  if (!manifestKey) return { applied: false };
+  const { data, error } = await createSupabaseAdmin().rpc('apply_provisioning_manifest', {
+    p_tenant_id: input.tenantId, p_source_kind: input.sourceKind, p_source_id: input.sourceId,
+    p_manifest_key: manifestKey, p_activate: input.activate, p_actor: input.actor,
+  });
+  // Apps/plugins may be entitled before their provisioning manifest ships.
+  // Missing manifests remain an explicit no-op; all other database failures
+  // fail the lifecycle operation rather than leaving partial resources.
+  if (error?.code === 'P0002') return { applied: false };
+  if (error) throw new Error(`Resource provisioning failed: ${error.message}`);
+  return { applied: true, result: data };
+}
+
+async function handleProvisioningReconcile(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+  const sourceKind = body.sourceKind === 'connector' ? 'connector' : body.sourceKind === 'plugin' ? 'plugin' : body.sourceKind === 'app' ? 'app' : null;
+  const sourceId = typeof body.sourceId === 'string' ? body.sourceId.trim() : '';
+  if (!sourceKind || !sourceId) return json(res, 400, { error: 'sourceKind and sourceId are required' });
+  const supabase = createSupabaseAdmin();
+  try {
+    let sourceKey = sourceId;
+    let activate = false;
+    if (sourceKind === 'connector') {
+      const { data } = await supabase.from('tenant_connectors').select('id,type,status').eq('tenant_id', auth.tenantId).eq('id', sourceId).maybeSingle();
+      if (!data) return json(res, 404, { error: 'Connector not found' });
+      sourceKey = data.type;
+      activate = data.status === 'connected';
+    } else {
+      const appKey = normalizeAppKey(sourceId);
+      const { data } = await supabase.from('marketplace_app_entitlements').select('app_key,status,source').eq('tenant_id', auth.tenantId).eq('app_key', appKey).maybeSingle();
+      if (!data) return json(res, 404, { error: 'Entitlement not found' });
+      sourceKey = data.app_key;
+      activate = data.status === 'active';
+      if (sourceKind === 'plugin' && data.source !== 'plugin') return json(res, 409, { error: 'Entitlement is not a plugin source' });
+    }
+    const provisioning = await applyProvisioning({ tenantId: auth.tenantId, sourceKind, sourceId, sourceKey, activate, actor: auth.userId });
+    await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'provisioning.reconciled', resource: `${sourceKind}:${sourceId}`, detail: { activate, applied: provisioning.applied }, ip: getClientIp(req) });
+    json(res, 200, { ok: true, desiredState: activate ? 'active' : 'inactive', provisioning });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Provisioning reconciliation failed';
+    json(res, 500, { error: message });
+  }
+}
+
 function normalizeAppKey(raw: unknown): string {
   const value = String(raw ?? '').trim().toLowerCase();
   const aliases: Record<string, string> = {
@@ -1299,6 +1360,8 @@ async function handleMarketplaceInstall(req: IncomingMessage, res: ServerRespons
 
     if (error) throw error;
 
+    const provisioning = await applyProvisioning({ tenantId: auth.tenantId, sourceKind: 'app', sourceId: appKey, sourceKey: appKey, activate: true, actor: auth.userId });
+
     await auditLog({
       tenantId: auth.tenantId,
       userId: auth.userId,
@@ -1308,7 +1371,7 @@ async function handleMarketplaceInstall(req: IncomingMessage, res: ServerRespons
       ip: getClientIp(req),
     });
 
-    json(res, 200, { ok: true, entitlement: data });
+    json(res, 200, { ok: true, entitlement: data, provisioning });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to install marketplace app';
     console.error('[marketplace.install]', message);
@@ -1339,6 +1402,8 @@ async function handleMarketplaceDisable(req: IncomingMessage, res: ServerRespons
 
     if (error) throw error;
 
+    const provisioning = await applyProvisioning({ tenantId: auth.tenantId, sourceKind: 'app', sourceId: appKey, sourceKey: appKey, activate: false, actor: auth.userId });
+
     await auditLog({
       tenantId: auth.tenantId,
       userId: auth.userId,
@@ -1348,7 +1413,7 @@ async function handleMarketplaceDisable(req: IncomingMessage, res: ServerRespons
       ip: getClientIp(req),
     });
 
-    json(res, 200, { ok: true, entitlement: data });
+    json(res, 200, { ok: true, entitlement: data, provisioning });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to disable marketplace app';
     console.error('[marketplace.disable]', message);
@@ -2135,11 +2200,15 @@ async function handleConnectorsTest(req: IncomingMessage, res: ServerResponse): 
       })
       .eq('id', row.id);
 
+    const provisioning = result.success
+      ? await applyProvisioning({ tenantId: auth.tenantId, sourceKind: 'connector', sourceId: row.id, sourceKey: row.type, activate: true, actor: auth.userId })
+      : { applied: false };
+
     // A newly-connected (or newly-broken) connector should reflect on the
     // dashboard immediately, not after the summary TTL expires.
     storeSummaryCache.delete(auth.tenantId);
 
-    json(res, 200, { ok: true, result });
+    json(res, 200, { ok: true, result, provisioning });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Connection test failed';
     console.error('[connectors.test]', message);
@@ -2180,6 +2249,9 @@ async function handleConnectorsDelete(req: IncomingMessage, res: ServerResponse)
 
   try {
     const supabase = createSupabaseAdmin();
+    const { data: connector } = await supabase.from('tenant_connectors').select('id,type').eq('tenant_id', auth.tenantId).eq('id', id).single();
+    if (!connector) return json(res, 404, { error: 'Connector not found' });
+    const provisioning = await applyProvisioning({ tenantId: auth.tenantId, sourceKind: 'connector', sourceId: connector.id, sourceKey: connector.type, activate: false, actor: auth.userId });
     const { error } = await supabase
       .from('tenant_connectors')
       .delete()
@@ -2199,7 +2271,7 @@ async function handleConnectorsDelete(req: IncomingMessage, res: ServerResponse)
       ip: getClientIp(req),
     });
 
-    json(res, 200, { ok: true });
+    json(res, 200, { ok: true, provisioning });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to remove connector';
     console.error('[connectors.delete]', message);
@@ -2603,6 +2675,9 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (pathname === '/api/connectors' && method === 'DELETE') {
     return handleConnectorsDelete(req, res);
+  }
+  if (pathname === '/api/provisioning/reconcile' && method === 'POST') {
+    return handleProvisioningReconcile(req, res);
   }
 
   // Live store data read-back — consumed by the dashboard and by the agent's

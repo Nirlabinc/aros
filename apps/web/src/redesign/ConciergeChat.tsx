@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { branding } from './branding';
 import { ChatMessageRenderer, type ChatPalette } from '../aros-ai/ChatMessageRenderer';
 import { itemsFromMessages, type CanvasWidgetItem } from '../aros-ai/canvas';
+import { saveChatConversation } from './chatHistory';
 
 /** Warm ChatPalette pulled from the live design tokens so the shared mib-widget
  *  renderer matches the current (light/dark) theme. */
@@ -35,6 +36,7 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
   const [sending, setSending] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const conversationId = useRef(typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `chat-${Date.now()}`);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, sending]);
   // Derive canvas items from the transcript via the shared mib-widget contract.
@@ -43,6 +45,7 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (seed) { setDraft(seed); inputRef.current?.focus({ preventScroll: true }); } }, [seed]);
   useEffect(() => { if (focusOnMount) inputRef.current?.focus({ preventScroll: true }); }, [focusOnMount]);
+  useEffect(() => { if (!demo) saveChatConversation(tenant?.id, conversationId.current, messages); }, [demo, messages, tenant?.id]);
 
   async function send(text: string) {
     const q = text.trim();

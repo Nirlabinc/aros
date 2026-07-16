@@ -4,6 +4,7 @@ import {
   SECTIONS, USER as DEMO_USER, CONVERSATIONS as DEMO_CONVERSATIONS, SUGGESTIONS,
   type SectionSpec, type SectionKey, type Row, type Card, type Status, type Conversation, type ChatMsg,
 } from './shellData';
+import { loadChatHistory, subscribeChatHistory } from './chatHistory';
 
 // ============================================================================
 // Live vs demo data. THE GUARANTEE: demo content (persona, figures, sample
@@ -251,9 +252,17 @@ export function useCanvasDemo(): boolean { return useDemo(); }
 
 export function useConversations(): { list: Conversation[]; demo: boolean } {
   const demo = useDemo();
+  const { tenant } = useAuth();
+  const [list, setList] = useState<Conversation[]>(() => demo ? DEMO_CONVERSATIONS : loadChatHistory(tenant?.id));
+  useEffect(() => {
+    if (demo) { setList(DEMO_CONVERSATIONS); return; }
+    const refresh = () => setList(loadChatHistory(tenant?.id));
+    refresh();
+    return subscribeChatHistory(tenant?.id, refresh);
+  }, [demo, tenant?.id]);
   // Live conversation history endpoint isn't available yet — empty until wired,
   // so no demo threads leak into a live build.
-  return { list: demo ? DEMO_CONVERSATIONS : [], demo };
+  return { list, demo };
 }
 
 export type { SectionSpec, ChatMsg };

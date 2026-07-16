@@ -20,7 +20,11 @@ export type PlatformApp = {
   required_scopes?: string[] | null;
   url?: string | null;
   icon?: string | null;
+  repo?: string | null;
+  vault_namespace?: string | null;
 };
+
+export type CapabilityResource = { id: string; name: string; provider?: string | null; status?: string | null; capabilities?: string[] | null };
 
 export type AppGrant = {
   app_key: string;
@@ -73,8 +77,13 @@ export async function removeStore(auth: AuthScope, id: string): Promise<void> {
 }
 
 export async function listApps(auth: AuthScope): Promise<{ apps: PlatformApp[]; grants: AppGrant[] }> {
-  const data = await request<{ apps?: PlatformApp[]; grants?: AppGrant[] }>('/api/apps', auth);
-  return { apps: data.apps || [], grants: data.grants || [] };
+  const data = await request<{ apps?: Array<PlatformApp & { launch_url?: string | null }>; grants?: AppGrant[] }>('/api/apps', auth);
+  return { apps: (data.apps || []).map(app => ({ ...app, url: app.url || app.launch_url || null })), grants: data.grants || [] };
+}
+
+export async function listCapabilityResources(auth: AuthScope, kind: 'skill' | 'agent'): Promise<CapabilityResource[]> {
+  const data = await request<{ resources?: CapabilityResource[] }>(`/api/resources/${kind}`, auth);
+  return data.resources || [];
 }
 
 export async function grantApp(auth: AuthScope, app: PlatformApp): Promise<void> {
