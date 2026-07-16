@@ -6,7 +6,7 @@
 
 export type SectionKey =
   | 'chat' | 'stores' | 'marketplace' | 'apps' | 'connectors' | 'plugins' | 'skills' | 'agents'
-  | 'models' | 'devices' | 'permissions' | 'health' | 'team' | 'billing' | 'usage' | 'settings'
+  | 'models' | 'devices' | 'permissions' | 'health' | 'documents' | 'team' | 'billing' | 'usage' | 'settings'
   | 'edi-invoices';
 
 export interface NavItem { key: SectionKey; label: string; glyph: string; count?: number; }
@@ -27,6 +27,7 @@ export const PRIMARY_NAV: NavItem[] = [
 ];
 
 export const WORKSPACE_NAV: NavItem[] = [
+  { key: 'documents', label: 'Documents', glyph: 'Dc' },
   { key: 'edi-invoices', label: 'EDI Invoices', glyph: 'ED' },
   { key: 'team', label: 'Team', glyph: 'Tm' },
   { key: 'billing', label: 'Billing', glyph: 'Bi' },
@@ -186,6 +187,10 @@ export const SECTIONS: Record<Exclude<SectionKey, 'chat'>, SectionSpec> = {
       { mark: 'GM', title: 'Gmail connector', sub: 'Not connected', ...rowStatus(s('off', 'Down')), action: 'Connect' },
     ],
   },
+  documents: {
+    eyebrow: 'Documents',
+    lead: 'Store, organize, and share your workspace files — folders, uploads, and secure links.',
+  },
   permissions: {
     eyebrow: 'Governance',
     lead: 'Control what each role and agent may read and change — scoped by workspace, connection, store, capability, and action. Write actions are always approval-gated.',
@@ -270,7 +275,7 @@ export const STORES_SCOPE = ['Main St', 'Oak Ave', '3rd St Express', 'Harbor', '
 export const SECTION_TITLES: Record<SectionKey, string> = {
   chat: 'Concierge', stores: 'Stores', marketplace: 'Marketplace', apps: 'Apps', connectors: 'Connectors', plugins: 'Plugins', skills: 'Skills', agents: 'Agents',
   models: 'Models', devices: 'Computers', permissions: 'Permissions', health: 'Connection Health',
-  team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings', 'edi-invoices': 'EDI Invoices',
+  documents: 'Documents', team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings', 'edi-invoices': 'EDI Invoices',
 };
 
 function rowStatus([status, statusLabel]: [Status, string]) { return { status, statusLabel }; }

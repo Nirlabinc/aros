@@ -58,6 +58,7 @@ import {
 } from '../connectors/rapidrms-edi.js';
 import { fetchStoreSalesRange, fetchStoreSummary, type StoreSummary } from '../connectors/data-service.js';
 import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
+import { proxyToMib } from '../connectors/mib-documents.js';
 import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
 import { handleEdgeRequest } from './edge/http.js';
 import { handleEdgeProvisioningRequest } from './edge/provisioning-http.js';
@@ -1504,6 +1505,9 @@ async function handleMarketplaceInstall(req: IncomingMessage, res: ServerRespons
 
     if (error) throw error;
 
+    // Auto-assign the per-tenant MIB Documents token on activation.
+    if (appKey === DOCUMENTS_APP_KEY) await provisionDocumentsAccess(supabase, auth.tenantId);
+
     await auditLog({
       tenantId: auth.tenantId,
       userId: auth.userId,
@@ -1649,6 +1653,8 @@ async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, app
   const activationState = storeIds.length ? 'ready' : 'needs_store';
   const { data, error } = await supabase.from('marketplace_app_entitlements').upsert({ tenant_id: auth.tenantId, app_key: appId, status: 'active', source: 'aros-app-catalog', enabled_by: auth.userId, enabled_at: new Date().toISOString(), disabled_at: null, service_config: { scopes: requested, storeIds, activationState } }, { onConflict: 'tenant_id,app_key' }).select().single();
   if (error) return json(res, 500, { error: error.message });
+  // Auto-assign the per-tenant MIB Documents token on activation.
+  if (appId === DOCUMENTS_APP_KEY) await provisionDocumentsAccess(supabase, auth.tenantId);
   const appCapabilities: Record<string, string[]> = {
     storepulse: ['stores.read', 'pos.sales.read', 'pos.inventory.read', 'connection.health.read'],
   };
@@ -2978,6 +2984,218 @@ function timeAgo(isoDate: string): string {
 
 // ── Request Handler ─────────────────────────────────────────────
 
+// ── Documents (MIB Drive proxy) ──────────────────────────────────
+// AROS consumes MIB's document-storage service. Every request is authenticated
+// here, mapped tenant → MIB workspace, then forwarded to MIB with a PER-TENANT
+// service token (see connectors/mib-documents.ts). The browser only ever talks
+// to these clean /api/documents/* paths — never to MIB directly, and never
+// carries the token itself.
+//
+// The per-tenant token is minted/assigned when the Documents app is activated
+// for the tenant (provisionDocumentsAccess, called from both activation paths)
+// and persisted — encrypted — on the tenant's marketplace entitlement row.
+
+const DOCUMENTS_APP_KEY = 'documents';
+
+async function resolveMibWorkspaceId(tenantId: string): Promise<string | null> {
+  // Prefer a per-tenant mapping stored on the tenant row; fall back to a single
+  // workspace env for single-tenant dev. A not-yet-migrated `mib_workspace_id`
+  // column simply yields the env fallback rather than erroring.
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data } = await supabase.from('tenants').select('mib_workspace_id').eq('id', tenantId).maybeSingle();
+    const mapped = (data as { mib_workspace_id?: string | null } | null)?.mib_workspace_id;
+    if (mapped) return mapped;
+  } catch {
+    // Column/table access failed — fall through to the env fallback.
+  }
+  return process.env.MIB_DOCS_WORKSPACE_ID || null;
+}
+
+/**
+ * Mint (or return the existing) per-tenant MIB Documents access token and
+ * persist it — encrypted — on the tenant's Documents entitlement. Idempotent:
+ * a second call reuses the stored token. Called from the app-activation paths.
+ *
+ * NOTE: the minted token must also be registered with MIB so its `/drive/*`
+ * guard accepts it (token hash → workspace). That MIB-side registration is the
+ * documented integration seam and is a no-op here — see report §3.
+ */
+async function provisionDocumentsAccess(
+  supabase: ReturnType<typeof createSupabaseAdmin>,
+  tenantId: string,
+): Promise<void> {
+  const { data: row } = await supabase
+    .from('marketplace_app_entitlements')
+    .select('service_config')
+    .eq('tenant_id', tenantId)
+    .eq('app_key', DOCUMENTS_APP_KEY)
+    .maybeSingle();
+
+  const cfg: Record<string, unknown> = isRecord(row?.service_config) ? { ...row!.service_config } : {};
+  if (
+    typeof cfg.mibServiceTokenEnc === 'string' && cfg.mibServiceTokenEnc &&
+    typeof cfg.mibWorkspaceId === 'string' && cfg.mibWorkspaceId &&
+    cfg.mibTokenRegistered === true
+  ) {
+    return; // already provisioned and registered with MIB
+  }
+
+  const workspaceId = await resolveMibWorkspaceId(tenantId);
+  if (!workspaceId) {
+    // Can't scope a token without a workspace mapping. In dev, set
+    // MIB_DOCS_WORKSPACE_ID; in prod, provision the MIB workspace first.
+    console.warn('[documents] activation for tenant %s has no MIB workspace mapping — token not minted', tenantId);
+    return;
+  }
+
+  ensureConnectorCrypto();
+  // Reuse an already-minted token (e.g. a prior activation whose MIB registration
+  // failed) so we don't orphan token hashes in MIB; otherwise mint a fresh one.
+  let token: string | null = null;
+  if (typeof cfg.mibServiceTokenEnc === 'string' && cfg.mibServiceTokenEnc) {
+    try { token = decryptValue(cfg.mibServiceTokenEnc); } catch { token = null; }
+  }
+  if (!token) {
+    token = randomBytes(32).toString('base64url');
+    cfg.mibServiceTokenEnc = encryptValue(token);
+  }
+  cfg.mibWorkspaceId = workspaceId;
+
+  // Register the token's hash with MIB so its /drive/* auth bridge accepts this
+  // per-tenant token and scopes the actor to `workspaceId`. Idempotent on hash.
+  const registered = await registerMibDocsToken(token, workspaceId);
+  cfg.mibTokenRegistered = registered;
+
+  await supabase
+    .from('marketplace_app_entitlements')
+    .update({ service_config: cfg })
+    .eq('tenant_id', tenantId)
+    .eq('app_key', DOCUMENTS_APP_KEY);
+
+  if (!registered) {
+    console.warn(
+      '[documents] MIB token registration failed for tenant %s — /drive access will not work until a re-activation registers successfully (check MIB_DOCS_BASE_URL / MIB_DOCS_ADMIN_TOKEN)',
+      tenantId,
+    );
+  }
+}
+
+/**
+ * Register a minted per-tenant token's SHA-256 hash with MIB's document
+ * service-token registry, using the trusted mib007 admin token. Idempotent on
+ * the hash. Returns false (and logs) when MIB is unreachable or unconfigured, so
+ * activation still persists the token and retries registration on the next call.
+ */
+async function registerMibDocsToken(token: string, workspaceId: string): Promise<boolean> {
+  const base = process.env.MIB_DOCS_BASE_URL;
+  const adminToken = process.env.MIB_DOCS_ADMIN_TOKEN || process.env.MIB_DOCS_SERVICE_TOKEN;
+  if (!base || !adminToken) {
+    console.warn('[documents] MIB_DOCS_BASE_URL / MIB_DOCS_ADMIN_TOKEN not set — cannot register per-tenant token with MIB');
+    return false;
+  }
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  try {
+    const res = await fetch(`${base.replace(/\/+$/, '')}/api/drive/service-tokens/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ tokenHash, workspaceId, label: 'aros-documents' }),
+    });
+    if (!res.ok) {
+      console.warn('[documents] MIB service-token register returned HTTP %s', res.status);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[documents] MIB service-token register failed:', err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
+/**
+ * Resolve the per-tenant MIB workspace + service token for a document request.
+ * Returns null when the tenant has not activated Documents (→ 409).
+ */
+async function resolveMibDocsAccess(tenantId: string): Promise<{ workspaceId: string; serviceToken: string } | null> {
+  // Preferred: the per-tenant token minted at Documents activation.
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data } = await supabase
+      .from('marketplace_app_entitlements')
+      .select('status, service_config')
+      .eq('tenant_id', tenantId)
+      .eq('app_key', DOCUMENTS_APP_KEY)
+      .maybeSingle();
+    if (data && data.status === 'active' && isRecord(data.service_config)) {
+      const cfg = data.service_config as Record<string, unknown>;
+      const enc = typeof cfg.mibServiceTokenEnc === 'string' ? cfg.mibServiceTokenEnc : '';
+      const ws = typeof cfg.mibWorkspaceId === 'string' ? cfg.mibWorkspaceId : '';
+      if (enc && ws) {
+        ensureConnectorCrypto();
+        const token = decryptValue(enc);
+        if (token) return { workspaceId: ws, serviceToken: token };
+      }
+    }
+  } catch {
+    // fall through to the dev fallback
+  }
+
+  // DEV fallback: a single shared token + workspace via env (single-tenant dev).
+  const devToken = process.env.MIB_DOCS_SERVICE_TOKEN || '';
+  if (devToken) {
+    const devWs = await resolveMibWorkspaceId(tenantId);
+    if (devWs) return { workspaceId: devWs, serviceToken: devToken };
+  }
+  return null;
+}
+
+/** Translate a clean /api/documents/* sub-path to the MIB drive route. */
+function mapDocumentsRoute(method: string, sub: string): string | null {
+  const m = method.toUpperCase();
+
+  // Collections — MIB expects the workspace in the path ({ws} filled by caller).
+  if (sub === '/tree' && m === 'GET') return '/api/workspaces/{ws}/drive/folders/tree';
+  if (sub === '/folders' && (m === 'GET' || m === 'POST')) return '/api/workspaces/{ws}/drive/folders';
+  if (sub === '/files' && (m === 'GET' || m === 'POST')) return '/api/workspaces/{ws}/drive/files';
+  if (sub === '/shares' && (m === 'GET' || m === 'POST')) return '/api/workspaces/{ws}/drive/shares';
+  const revoke = sub.match(/^\/shares\/([^/]+)\/revoke$/);
+  if (revoke && m === 'POST') return `/api/workspaces/{ws}/drive/shares/${encodeURIComponent(revoke[1])}/revoke`;
+
+  // Per-item — MIB derives the workspace from the X-Workspace-ID header.
+  const folderId = sub.match(/^\/folders\/([^/]+)$/);
+  if (folderId && ['GET', 'PATCH', 'DELETE'].includes(m)) return `/api/drive/folders/${encodeURIComponent(folderId[1])}`;
+  const fileContent = sub.match(/^\/files\/([^/]+)\/content$/);
+  if (fileContent && m === 'GET') return `/api/drive/files/${encodeURIComponent(fileContent[1])}/content`;
+  const fileId = sub.match(/^\/files\/([^/]+)$/);
+  if (fileId && ['GET', 'PATCH', 'DELETE'].includes(m)) return `/api/drive/files/${encodeURIComponent(fileId[1])}`;
+
+  return null;
+}
+
+const DOC_WRITE_METHODS = new Set(['POST', 'PATCH', 'DELETE']);
+
+async function handleDocuments(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  const access = await resolveMibDocsAccess(auth.tenantId);
+  if (!access) return json(res, 409, { error: 'Activate the Documents app for this workspace to use document storage' });
+
+  const url = getRequestUrl(req);
+  const sub = url.pathname.replace(/^\/api\/documents/, '') || '/';
+  const method = req.method ?? 'GET';
+
+  const template = mapDocumentsRoute(method, sub);
+  if (!template) return json(res, 404, { error: 'Unknown documents route' });
+
+  const upstreamPath = template.replace('{ws}', encodeURIComponent(access.workspaceId));
+  await proxyToMib(req, res, { method, upstreamPath, search: url.search, workspaceId: access.workspaceId, serviceToken: access.serviceToken });
+
+  if (DOC_WRITE_METHODS.has(method.toUpperCase()) && res.statusCode < 400) {
+    void auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: `documents.${method.toLowerCase()}`, resource: sub, ip: getClientIp(req) });
+  }
+}
+
 async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? '/';
   const requestUrl = getRequestUrl(req);
@@ -3226,6 +3444,11 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   }
   if (pathname === '/api/store/sync' && (method === 'GET' || method === 'POST')) {
     return handleStoreSync(req, res);
+  }
+
+  // ── Documents (MIB Drive proxy, authenticated) ───────────
+  if (pathname === '/api/documents' || pathname.startsWith('/api/documents/')) {
+    return handleDocuments(req, res);
   }
 
   if (pathname === '/api/marketplace/entitlements' && method === 'GET') {

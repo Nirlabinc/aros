@@ -7,6 +7,7 @@ import { StoresPage, AppsPage } from './pages/connections';
 import {
   BillingPage, UsagePage, TeamPage, SettingsPage, PermissionsPage, ConnectionHealthPage, DevicesPage,
 } from './pages/admin';
+import { DocumentsPage } from './pages/Documents';
 import { EdiInvoices } from './pages/EdiInvoices';
 import { ConnectWizard } from './ConnectWizard';
 import { Canvas } from './Canvas';
@@ -27,7 +28,7 @@ const PlusIcon = () => (<svg width="15" height="15" viewBox="0 0 24 24" fill="no
 const PATH_TO_SECTION: Record<string, Exclude<SectionKey, 'chat'>> = {
   '/stores': 'stores', '/apps': 'apps', '/skills': 'skills', '/agents': 'agents',
   '/models': 'models', '/computers': 'devices', '/connection-health': 'health', '/settings': 'settings',
-  '/permissions': 'permissions',
+  '/permissions': 'permissions', '/documents': 'documents',
   '/edi-invoices': 'edi-invoices',
   '/profile': 'settings', '/billing': 'billing', '/costs': 'usage', '/users': 'team',
   '/workspace': 'settings', '/marketplace': 'apps', '/channels': 'apps',
@@ -35,7 +36,7 @@ const PATH_TO_SECTION: Record<string, Exclude<SectionKey, 'chat'>> = {
 const SECTION_TO_PATH: Partial<Record<SectionKey, string>> = {
   stores: '/stores', apps: '/apps', skills: '/skills', agents: '/agents',
   models: '/models', devices: '/computers', health: '/connection-health', settings: '/settings',
-  billing: '/billing', usage: '/costs', team: '/users', permissions: '/permissions',
+  billing: '/billing', usage: '/costs', team: '/users', permissions: '/permissions', documents: '/documents',
   'edi-invoices': '/edi-invoices',
 };
 
@@ -136,6 +137,7 @@ export function AppShell() {
   };
   const title = mode === 'chat' ? 'Concierge' : mode === 'home' ? 'Home' : SECTION_TITLES[section];
   const renderSection = () => {
+    if (section === 'documents') return <DocumentsPage />;
     if (demo) return <SectionPanel section={section} onConnect={openWizard} />;
     if (section === 'stores') return <StoresPage onConnect={openWizard} />;
     if (section === 'apps') return <AppsPage />;
