@@ -2236,6 +2236,24 @@ async function handleConnectorsTest(req: IncomingMessage, res: ServerResponse): 
   }
 }
 
+async function handleModelRouting(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  try {
+    const response = await fetch(`${SHRE_ROUTER_URL}/v1/models`, { signal: AbortSignal.timeout(8_000) });
+    if (!response.ok) throw new Error(`Model gateway returned HTTP ${response.status}`);
+    const payload = await response.json() as { models?: Array<Record<string, unknown>>; data?: Array<Record<string, unknown>> };
+    const source = Array.isArray(payload.models) && payload.models.length ? payload.models : Array.isArray(payload.data) ? payload.data : [];
+    const availableModels = source.filter(item => item.connected !== false).map(item => ({
+      id: String(item.id || ''), name: String(item.name || item.id || ''), provider: String(item.provider || item.owned_by || String(item.id || '').split('/')[0] || 'unknown'),
+      connected: item.connected !== false, status: item.connected === false ? 'unavailable' : 'available', note: typeof item.note === 'string' ? item.note : undefined,
+    })).filter(item => item.id && item.name);
+    json(res, 200, { defaultModel: 'auto', availableModels });
+  } catch (error) {
+    json(res, 502, { error: error instanceof Error ? error.message : 'Model gateway unavailable' });
+  }
+}
+
 async function handleConnectorsUpdate(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const auth = await authenticateRequest(req);
   if (!auth) return json(res, 401, { error: 'Authentication required' });
@@ -2713,6 +2731,9 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   // store-data tool (registered on shre-router; see docs/store-data-flow.md).
   if (pathname === '/api/store/summary' && method === 'GET') {
     return handleStoreSummary(req, res);
+  }
+  if (pathname === '/api/gateway/model-routing' && method === 'GET') {
+    return handleModelRouting(req, res);
   }
 
   if (pathname === '/api/marketplace/entitlements' && method === 'GET') {

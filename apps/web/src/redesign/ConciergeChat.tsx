@@ -34,6 +34,8 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
   const [messages, setMessages] = useState<ChatMsg[]>(initial && initial.length ? initial : demo ? CONCIERGE_SEED : []);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [models, setModels] = useState<Array<{ id: string; name: string; provider: string }>>([]);
+  const [selectedModel, setSelectedModel] = useState('auto');
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const conversationId = useRef(typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `chat-${Date.now()}`);
@@ -45,6 +47,11 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (seed) { setDraft(seed); inputRef.current?.focus({ preventScroll: true }); } }, [seed]);
   useEffect(() => { if (focusOnMount) inputRef.current?.focus({ preventScroll: true }); }, [focusOnMount]);
+  useEffect(() => {
+    if (!session?.access_token) return;
+    fetch('/api/gateway/model-routing', { headers: { Authorization: `Bearer ${session.access_token}`, ...(tenant?.id ? { 'x-aros-tenant-id': tenant.id } : {}) } })
+      .then(response => response.ok ? response.json() : Promise.reject()).then(data => setModels(Array.isArray(data.availableModels) ? data.availableModels : [])).catch(() => setModels([]));
+  }, [session?.access_token, tenant?.id]);
   useEffect(() => { if (!demo) saveChatConversation(tenant?.id, conversationId.current, messages); }, [demo, messages, tenant?.id]);
 
   async function send(text: string) {
@@ -57,7 +64,7 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
       const res = await fetch(`${ROUTER_URL}/v1/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}), ...(tenant?.id ? { 'x-aros-tenant-id': tenant.id } : {}) },
-        body: JSON.stringify({ agentId: 'aros-agent', tenantId: tenant?.id, workspaceId: tenant?.id, messages: [...messages.map(m => ({ role: m.from === 'me' ? 'user' : 'assistant', content: m.text })), { role: 'user', content: q }], stream: false }),
+        body: JSON.stringify({ agentId: 'aros-agent', model: selectedModel, tenantId: tenant?.id, workspaceId: tenant?.id, messages: [...messages.map(m => ({ role: m.from === 'me' ? 'user' : 'assistant', content: m.text })), { role: 'user', content: q }], stream: false }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -95,6 +102,7 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
       </div>
 
       <div className="aros-composer">
+        <label className="aros-model-picker"><span>Model</span><select value={selectedModel} onChange={event => setSelectedModel(event.target.value)}><option value="auto">Auto · best available</option>{models.map(model => <option key={model.id} value={model.id}>{model.name} · {model.provider}</option>)}</select></label>
         <div className="aros-chips">
           {connections.total === 0 && <button className="aros-chip" type="button" onClick={onConnect}><span className="aros-chip__dot" />Connect Store</button>}
           <button className="aros-chip" type="button" onClick={onConnectApps}><span className="aros-chip__dot" />Marketplace</button>

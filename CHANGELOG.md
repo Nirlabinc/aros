@@ -6,6 +6,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 ### Changed
+- Models now load from the live Shre router catalog, and chat supports explicit Auto, Claude, OpenAI, Gemini, and other connected model selection.
 - Commander setup now creates the canonical store mapping and a one-time Edge pairing code in the same flow.
 - Reworked Verifone Commander onboarding as an Edge-first flow with required store name, optional store number, LAN/Edge guidance, and no misleading cloud-side direct test.
 - Added confirmation before removing a store/POS connection.
