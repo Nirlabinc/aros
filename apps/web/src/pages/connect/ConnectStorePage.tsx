@@ -271,8 +271,8 @@ export function ConnectStorePage({ onboarded }: { onboarded: boolean }) {
         </section>
 
         <p style={s.skip}>
-          Not ready? <a href={onboarded ? '/dashboard' : '/start'} style={s.skipLink}>
-            {onboarded ? 'Back to dashboard' : 'Keep exploring with sample data'}
+          Not ready? <a href={onboarded ? '/dashboard' : '/onboarding'} style={s.skipLink}>
+            {onboarded ? 'Back to dashboard' : 'Back to setup'}
           </a>
         </p>
       </div>

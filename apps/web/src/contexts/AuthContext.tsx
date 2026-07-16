@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import type { User, Session } from '@supabase/supabase-js';
 import { centralIdentityOnly, supabase } from '../lib/supabase';
+import { fetchOnboardingStatus, type ModelChoice } from '../onboarding/api';
 
 const API_BASE = (window as any).__AROS_API_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
@@ -40,6 +41,13 @@ interface AuthContextValue {
   tenant: Tenant | null;
   loading: boolean;
   membershipError: string | null;
+  /** Persisted onboarding_progress.step (resumable, cross-device). Null until loaded. */
+  onboardingStep: number | null;
+  /** Persisted onboarding_progress.step_data (e.g. the chosen model). */
+  onboardingStepData: { model?: ModelChoice; [key: string]: unknown };
+  /** True while the resumable onboarding progress is being resolved. */
+  onboardingLoading: boolean;
+  refreshOnboarding: () => Promise<void>;
   selectTenant: (tenantId: string) => void;
   refreshMemberships: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
@@ -110,6 +118,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [loading, setLoading] = useState(true);
   const [membershipError, setMembershipError] = useState<string | null>(null);
+  const [onboardingStep, setOnboardingStep] = useState<number | null>(null);
+  const [onboardingStepData, setOnboardingStepData] = useState<{ model?: ModelChoice; [key: string]: unknown }>({});
+  const [onboardingLoading, setOnboardingLoading] = useState(false);
+
+  const refreshOnboarding = useCallback(async () => {
+    // Central-identity workspaces are always treated as onboarded; there is no
+    // Supabase-backed progress row to resolve.
+    if (centralIdentityOnly || !tenant?.id || !session?.access_token) {
+      setOnboardingStep(null);
+      setOnboardingStepData({});
+      setOnboardingLoading(false);
+      return;
+    }
+    if (tenant.onboarding_completed) {
+      setOnboardingStep(null);
+      setOnboardingStepData({});
+      setOnboardingLoading(false);
+      return;
+    }
+    setOnboardingLoading(true);
+    const status = await fetchOnboardingStatus({ accessToken: session.access_token, tenantId: tenant.id });
+    // Fall back to step 1 (a genuinely new workspace) when the status endpoint
+    // is unreachable, rather than blocking the journey.
+    setOnboardingStep(status ? status.step : 1);
+    setOnboardingStepData(status ? status.stepData : {});
+    setOnboardingLoading(false);
+  }, [tenant?.id, tenant?.onboarding_completed, session?.access_token]);
+
+  useEffect(() => {
+    void refreshOnboarding();
+  }, [refreshOnboarding]);
 
   const hydrateUser = useCallback(async (s: Session | null) => {
     setSession(s);
@@ -274,6 +313,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         tenant,
         loading,
         membershipError,
+        onboardingStep,
+        onboardingStepData,
+        onboardingLoading,
+        refreshOnboarding,
         selectTenant,
         refreshMemberships,
         signIn,
