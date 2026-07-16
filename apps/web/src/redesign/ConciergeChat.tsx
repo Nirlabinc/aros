@@ -61,8 +61,10 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const reply = [data?.response, data?.message?.content, data?.message, data?.content].find(value => typeof value === 'string' && value.trim());
-      if (!reply) throw new Error('The model returned an unsupported response.');
+      const rawReply = [data?.response, data?.message?.content, data?.message, data?.content].find(value => typeof value === 'string' && value.trim());
+      if (!rawReply) throw new Error('The model returned an unsupported response.');
+      const reply = rawReply.includes('</think>') ? rawReply.split('</think>').pop()!.trim() : rawReply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      if (!reply) throw new Error('The model returned no customer-facing answer.');
       setMessages(prev => [...prev, { from: 'shre', text: reply, meta: data?.model ? `${data.model} · via Shre` : 'Shre · Local' }]);
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Unknown chat error';
