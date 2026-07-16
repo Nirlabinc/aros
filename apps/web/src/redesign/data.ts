@@ -21,6 +21,24 @@ export function useDemo(): boolean {
   return !session;
 }
 
+export function useConnectionSummary(): { total: number; healthy: number; loading: boolean } {
+  const { session, tenant } = useAuth();
+  const demo = useDemo();
+  const [summary, setSummary] = useState({ total: 0, healthy: 0, loading: !demo });
+  useEffect(() => {
+    if (demo) { setSummary({ total: 5, healthy: 5, loading: false }); return; }
+    let alive = true;
+    setSummary(current => ({ ...current, loading: true }));
+    getJson('/api/connectors', session, tenant).then(data => {
+      if (!alive) return;
+      const connectors = Array.isArray(data?.connectors) ? data.connectors : [];
+      setSummary({ total: connectors.length, healthy: connectors.filter((item: any) => item?.status === 'connected' || item?.status === 'healthy').length, loading: false });
+    });
+    return () => { alive = false; };
+  }, [demo, session, tenant]);
+  return summary;
+}
+
 function headers(session: any, tenant: any): Record<string, string> {
   return {
     'Content-Type': 'application/json',
