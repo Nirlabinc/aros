@@ -19,6 +19,10 @@ export function SettingsPage() {
       <label className="rsx-form__field"><span className="rsx-form__label">Currency</span><select className="rsx-form__input" value={form.currency} onChange={e => setForm(v => ({ ...v, currency: e.target.value }))}><option>USD</option><option>CAD</option><option>GBP</option><option>EUR</option></select></label>
       <Button disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</Button>{saved && <State title="Saved" detail={saved} />}{error && <State title="Save failed" detail={error} />}
       {workspace && <Grid><Card title="Plan" value={workspace.plan || '—'} /><Card title="Status" value={workspace.status || 'active'} /></Grid>}
+      <Card title="Computers & nodes">
+        <p style={{ color: 'var(--muted)', lineHeight: 1.55 }}>Review enrolled computers, operating systems, versions, last login, heartbeat, and node activity.</p>
+        <Button type="button" onClick={() => { window.history.pushState({}, '', '/computers'); window.dispatchEvent(new PopStateEvent('popstate')); }}>Manage computers</Button>
+      </Card>
     </form>}
   </AdminPage>;
 }

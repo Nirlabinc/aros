@@ -250,6 +250,8 @@ export function AppShell() {
             <div className="aros-role__pills">
               {demo ? ROLES.map(r => (<span key={r} className="aros-role__pill" aria-pressed={role === r}>{r}</span>)) : <span className="aros-role__pill" aria-pressed>{role}</span>}
             </div>
+            <div className="aros-side__section" style={{ marginLeft: 0 }}>Account</div>
+            <NavRow item={{ key: 'devices', label: 'Sessions & Devices', glyph: 'PC' }} active={mode === 'app' && section === 'devices'} onClick={() => goProfileSection('devices')} />
             <div className="aros-side__section" style={{ marginLeft: 0 }}>Workspace</div>
             {WORKSPACE_NAV.map(item => (
               <NavRow key={item.key} item={item} active={mode === 'app' && section === item.key} onClick={() => goProfileSection(item.key)} />
