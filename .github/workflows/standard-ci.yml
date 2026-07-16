@@ -57,6 +57,12 @@ jobs:
             jq . .claims/claims.json >/dev/null
           fi
 
+      - name: Auth conformance and secret gate
+        if: ${{ hashFiles('package.json') != '' }}
+        run: |
+          pnpm test:auth-conformance
+          pnpm security:auth
+
       - name: Run tests
         run: |
           chmod +x scripts/test.sh || true

@@ -1,0 +1,31 @@
+{
+  "$schema": "./central-auth-consumer.schema.json",
+  "issuer": "https://id.shre.ai",
+  "discoveryUrl": "https://id.shre.ai/.well-known/openid-configuration",
+  "flow": "authorization_code_pkce",
+  "tokenAlgorithm": "RS256",
+  "requiredClaims": ["iss", "sub", "aud", "exp"],
+  "workspaceClaim": "workspace_id",
+  "rolesClaim": "roles",
+  "browser": {
+    "sessionStorage": "http_only_cookie",
+    "sameSite": "lax",
+    "secureInProduction": true
+  },
+  "resourceServer": {
+    "verifyIssuer": true,
+    "verifyAudience": true,
+    "jwksCacheSeconds": 3600,
+    "allowStaleKnownKeysDuringOutage": true
+  },
+  "serviceIdentity": {
+    "method": "oauth_client_credentials",
+    "credentialSource": "shre-secrets",
+    "allowStaticTokenFallback": false
+  },
+  "consumers": {
+    "aros": { "clientIdEnv": "AROS_OIDC_CLIENT_ID", "audienceEnv": "AROS_OIDC_AUDIENCE", "callbackPath": "/auth/callback", "logoutPath": "/auth/logout" },
+    "mib": { "clientIdEnv": "MIB_OIDC_CLIENT_ID", "audienceEnv": "MIB_OIDC_AUDIENCE", "callbackPath": "/auth/callback", "logoutPath": "/auth/logout" },
+    "sia": { "clientIdEnv": "SIA_OIDC_CLIENT_ID", "audienceEnv": "SIA_OIDC_AUDIENCE", "callbackPath": "/auth/callback", "logoutPath": "/auth/logout" }
+  }
+}

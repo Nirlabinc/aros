@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["issuer", "discoveryUrl", "flow", "tokenAlgorithm", "requiredClaims", "browser", "resourceServer", "serviceIdentity", "consumers"],
+  "properties": {
+    "issuer": { "type": "string", "pattern": "^https://" },
+    "discoveryUrl": { "type": "string", "pattern": "^https://.*/\\.well-known/openid-configuration$" },
+    "flow": { "const": "authorization_code_pkce" },
+    "tokenAlgorithm": { "const": "RS256" },
+    "requiredClaims": { "type": "array", "contains": { "const": "iss" }, "minItems": 4 },
+    "browser": { "type": "object" },
+    "resourceServer": { "type": "object" },
+    "serviceIdentity": { "type": "object" },
+    "consumers": { "type": "object", "required": ["aros", "mib", "sia"] }
+  }
+}
