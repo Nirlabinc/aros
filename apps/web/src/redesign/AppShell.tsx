@@ -271,7 +271,7 @@ export function AppShell() {
       )}
 
       {wizardOpen && (
-        <ConnectWizard onClose={() => setWizardOpen(false)} onDone={name => { setWizardOpen(false); setStoresVersion(v => v + 1); setToast(`${name} connected successfully.`); }} />
+        <ConnectWizard onClose={() => setWizardOpen(false)} onDone={result => { setWizardOpen(false); setStoresVersion(v => v + 1); setToast(result.connected ? `${result.name} connected successfully.` : `${result.name} saved. Install and pair AROS Edge to finish connecting.`); }} />
       )}
       {toast && <div className="rsx-toast">✓ {toast}</div>}
     </div>

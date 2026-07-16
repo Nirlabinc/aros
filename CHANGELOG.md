@@ -6,6 +6,8 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 ### Changed
+- Reworked Verifone Commander onboarding as an Edge-first flow with required store name, optional store number, LAN/Edge guidance, and no misleading cloud-side direct test.
+- Added confirmation before removing a store/POS connection.
 - Added context-aware Marketplace navigation from Apps, Connectors, Plugins, Skills, and Agents.
 - Standardized spacing between page search controls and installed-resource content.
 - Store connection management now supports title, details, access mode, provider configuration, and secure credential rotation with automatic re-testing.

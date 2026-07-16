@@ -4,7 +4,7 @@ import { createStore, listStores, removeStore, testStore, updateStore, type Stor
 
 const PROVIDERS: Record<StoreConnectorType, { name: string; description: string; fields: Array<{ key: string; label: string; secret?: boolean; optional?: boolean }> }> = {
   'rapidrms-api': { name: 'RapidRMS', description: 'Sales, inventory, pricing, and promotions.', fields: [{ key: 'clientId', label: 'Client ID' }, { key: 'email', label: 'Account email', secret: true }, { key: 'password', label: 'Password', secret: true }] },
-  'verifone-commander': { name: 'Verifone Commander', description: 'Fuel and convenience-store operations.', fields: [{ key: 'commanderIp', label: 'Commander IP or hostname' }, { key: 'username', label: 'CGI username' }, { key: 'password', label: 'Password', secret: true }] },
+  'verifone-commander': { name: 'Verifone Commander', description: 'Fuel and convenience-store operations.', fields: [{ key: 'storeNumber', label: 'Store #', optional: true }, { key: 'commanderIp', label: 'Commander IP or hostname' }, { key: 'username', label: 'CGI username' }, { key: 'password', label: 'Password', secret: true }] },
   'azure-db': { name: 'Azure SQL', description: 'Secure access to back-office operational data.', fields: [{ key: 'server', label: 'Server' }, { key: 'database', label: 'Database' }, { key: 'username', label: 'Username' }, { key: 'port', label: 'Port', optional: true }, { key: 'password', label: 'Password', secret: true }] },
 };
 
@@ -54,6 +54,10 @@ export function StoresPage({ onConnect }: { onConnect?: () => void }) {
   }
 
   async function action(kind: 'test' | 'remove', id: string) {
+    if (kind === 'remove') {
+      const store = stores.find(item => item.id === id);
+      if (!window.confirm(`Remove ${store?.name || 'this connection'}?\n\nThis stops store synchronization and may deactivate related skills, agents, and tools. This action cannot be undone.`)) return;
+    }
     setBusy(`${kind}:${id}`); setError('');
     try { if (kind === 'test') await testStore(auth, id); else await removeStore(auth, id); await load(); }
     catch (e) { setError(e instanceof Error ? e.message : `${kind} failed`); }

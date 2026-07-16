@@ -218,7 +218,7 @@ export const SECTIONS: Record<Exclude<SectionKey, 'chat'>, SectionSpec> = {
 // `type` + field `key`s match the real connectors API (POST /api/connectors:
 // { type, name, config, secrets }) — see pages/connect/ConnectStorePage + the
 // backend rapidrms-api / verifone connectors.
-export interface WizField { key: string; label: string; ph: string; secret?: boolean; }
+export interface WizField { key: string; label: string; ph: string; secret?: boolean; optional?: boolean; }
 export interface PosProvider {
   id: string; type: string; name: string; mark: string; desc: string; tag?: string;
   kind: 'api' | 'tunnel'; blurb: string; fields: WizField[];
@@ -239,6 +239,8 @@ export const POS_PROVIDERS: PosProvider[] = [
     desc: 'Fuel controller & forecourt. Secure tunnel to the site controller.',
     blurb: 'Enter the Commander’s LAN address and its CGI service credentials. Traffic stays on an encrypted tunnel to the site controller — nothing is exposed publicly.',
     fields: [
+      { key: 'storeName', label: 'Store name', ph: 'Main Street Store' },
+      { key: 'storeNumber', label: 'Store #', ph: 'Optional location number', optional: true },
       { key: 'commanderIp', label: 'Commander IP', ph: '192.168.31.11' },
       { key: 'username', label: 'CGI username', ph: 'Commander username' },
       { key: 'password', label: 'Password', ph: '••••••••', secret: true },

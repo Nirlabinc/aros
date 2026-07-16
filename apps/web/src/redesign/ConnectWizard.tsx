@@ -12,7 +12,7 @@ const API_BASE = (window as any).__AROS_API_URL__
  * On connect it POSTs the real connectors API ({type,name,config,secrets}) then
  * runs the connection test — the same contract as ConnectStorePage.
  */
-export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone: (name: string) => void }) {
+export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone: (result: { name: string; connected: boolean }) => void }) {
   const { session, tenant } = useAuth();
   const [step, setStep] = useState(1);
   const [providerId, setProviderId] = useState<string | null>(null);
@@ -31,7 +31,7 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
 
   const canNext =
     step === 1 ? !!provider :
-    step === 2 ? !!provider && provider.fields.every(f => (values[f.key] || '').trim().length > 0) :
+    step === 2 ? !!provider && provider.fields.every(f => f.optional || (values[f.key] || '').trim().length > 0) :
     step === 3 ? true :
     true;
 
@@ -44,6 +44,7 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
       const secrets: Record<string, string> = {};
       for (const f of provider.fields) {
         const v = (values[f.key] || '').trim();
+        if (!v) continue;
         if (f.secret) secrets[f.key] = v; else config[f.key] = v;
       }
       const saveRes = await fetch(`${API_BASE}/api/connectors`, {
@@ -51,20 +52,23 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
         headers: authHeaders(),
         body: JSON.stringify({
           type: provider.type,
-          name: `${provider.name} — ${tenant?.name || 'Five Points'}`,
+          name: provider.id === 'verifone' ? String(values.storeName).trim() : `${provider.name} — ${tenant?.name || 'Five Points'}`,
           config,
           secrets,
         }),
       });
       const saved = await saveRes.json().catch(() => ({}));
       if (!saveRes.ok) throw new Error(saved.error || `Could not save connector (HTTP ${saveRes.status})`);
-      // Fire the connection test; non-fatal if it can't confirm yet.
-      if (saved.connector?.id) {
-        await fetch(`${API_BASE}/api/connectors/test`, {
+      // Cloud APIs can be tested here. Commander is LAN-only and is verified
+      // by the paired Edge Relay on the store computer.
+      if (saved.connector?.id && provider.id !== 'verifone') {
+        const testRes = await fetch(`${API_BASE}/api/connectors/test`, {
           method: 'POST', headers: authHeaders(), body: JSON.stringify({ id: saved.connector.id }),
-        }).catch(() => {});
+        });
+        const tested = await testRes.json().catch(() => ({}));
+        if (!testRes.ok || !tested.result?.success) throw new Error(tested.error || tested.result?.error || 'The connection test failed.');
       }
-      onDone(provider.name);
+      onDone({ name: provider.id === 'verifone' ? String(values.storeName).trim() : provider.name, connected: provider.id !== 'verifone' });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong');
     } finally {
@@ -131,15 +135,16 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
                   </label>
                 ))}
               </div>
+              {provider.id === 'verifone' && <div className="rsx-note" style={{ marginTop: 16 }}><div className="rsx-note__title">AROS Edge is required for cloud access</div><div className="rsx-note__body">Install Edge Relay on a Windows computer that stays on at this store and can reach Commander. Commander credentials and local database settings are completed on that computer, not exposed to the public internet. <a href="/verifone/download.html" target="_blank" rel="noreferrer">Open Edge installer</a>.</div></div>}
             </>
           )}
 
           {step === 3 && (
             <>
               <h3 className="rsx-modal__h">Confirm store &amp; access</h3>
-              <p className="rsx-modal__p">{provider?.id === 'rapidrms' ? 'A RapidRMS client ID identifies one specific store. We will validate it and add that store. Repeat this flow with another client ID to add another store.' : 'We will validate this Commander and add its site. You can connect another site afterward.'}</p>
+              <p className="rsx-modal__p">{provider?.id === 'rapidrms' ? 'A RapidRMS client ID identifies one specific store. We will validate it and add that store. Repeat this flow with another client ID to add another store.' : 'We will save this site as pending. Install and pair AROS Edge at the store; Edge will verify Commander and complete the first read-only sync.'}</p>
               <div className="rsx-scope">
-                <div className="rsx-scope__row"><strong>{provider?.id === 'rapidrms' ? 'RapidRMS store' : 'Verifone site'}</strong><span>{provider?.id === 'rapidrms' ? `Client ID: ${values.clientId}` : `Commander: ${values.commanderIp}`}</span></div>
+                <div className="rsx-scope__row"><strong>{provider?.id === 'rapidrms' ? 'RapidRMS store' : values.storeName}</strong><span>{provider?.id === 'rapidrms' ? `Client ID: ${values.clientId}` : `${values.storeNumber ? `Store #${values.storeNumber} · ` : ''}Commander ${values.commanderIp}`}</span></div>
                 <label className="rsx-scope__row"><input type="radio" name="access" checked={accessMode === 'read'} onChange={() => setAccessMode('read')} /><span><strong>Read only</strong><br />Sales, inventory, transactions, and reporting.</span></label>
                 <label className="rsx-scope__row"><input type="radio" name="access" checked={accessMode === 'read_write'} onChange={() => setAccessMode('read_write')} /><span><strong>Read + write</strong><br />Proposed changes remain approval-gated.</span></label>
               </div>
@@ -158,8 +163,9 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
               <p className="rsx-modal__p">Confirm the details below. Nothing changes in your stores until you approve it.</p>
               <div className="rsx-review">
                 <ReviewRow label="Provider" value={provider.name} />
-                <ReviewRow label="Connection" value={provider.kind === 'tunnel' ? 'Secure tunnel to site controller' : 'HTTPS API'} />
-                <ReviewRow label="Store target" value={provider.id === 'rapidrms' ? `Client ID ${values.clientId}` : String(values.commanderIp || '')} />
+                <ReviewRow label="Connection" value={provider.kind === 'tunnel' ? 'AROS Edge · outbound secure connection' : 'HTTPS API'} />
+                <ReviewRow label="Store" value={provider.id === 'rapidrms' ? `Client ID ${values.clientId}` : `${values.storeName}${values.storeNumber ? ` (#${values.storeNumber})` : ''}`} />
+                {provider.id === 'verifone' && <ReviewRow label="Next step" value="Install and pair Edge Relay at this store" />}
                 <ReviewRow label="Access" value={accessMode === 'read' ? 'Read only' : 'Read + approval-gated writes'} />
               </div>
               {error && <div className="aros-auth__error" style={{ marginTop: 14 }}>{error}</div>}
