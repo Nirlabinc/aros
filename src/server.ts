@@ -1521,6 +1521,17 @@ async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, app
     created_by: auth.userId,
   }, { onConflict: 'tenant_id,kind,name' });
   if (resourceError) return json(res, 500, { error: resourceError.message });
+  const bundle = APP_CAPABILITY_BUNDLES[appId];
+  if (bundle?.skills.length) {
+    const skillRows = bundle.skills.map(skill => ({
+      tenant_id: auth.tenantId, kind: 'skill', provider: appId, name: skill.name,
+      status: activationState === 'ready' ? 'active' : 'configuring', capabilities: skill.capabilities,
+      config: { appKey: appId, managedByApp: true }, store_ids: storeIds,
+      health: { state: activationState, checkedAt: new Date().toISOString() }, created_by: auth.userId,
+    }));
+    const { error: skillError } = await supabase.from('tenant_resources').upsert(skillRows, { onConflict: 'tenant_id,kind,name' });
+    if (skillError) return json(res, 500, { error: skillError.message });
+  }
   await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'app.granted', resource: `app:${appId}`, detail: { scopes: requested, storeIds, activationState, capabilities }, ip: getClientIp(req) });
   json(res, 200, { grant: data });
 }
@@ -2082,6 +2093,37 @@ async function handleStoreSales(req: IncomingMessage, res: ServerResponse): Prom
     console.error('[store-sales]', err instanceof Error ? err.message : err);
     json(res, 502, { error: 'RapidRMS sales data could not be retrieved' });
   }
+}
+
+const APP_CAPABILITY_BUNDLES: Record<string, { tools: string[]; skills: Array<{ name: string; capabilities: string[] }> }> = {
+  storepulse: {
+    tools: ['mib_sales_today', 'mib_sales_summary', 'mib_sales_totals', 'mib_top_items', 'mib_item_search', 'mib_low_inventory'],
+    skills: [
+      { name: 'Daily Sales Summary', capabilities: ['pos.sales.read'] },
+      { name: 'Inventory Health', capabilities: ['pos.inventory.read'] },
+      { name: 'Store Performance', capabilities: ['stores.read', 'pos.sales.read'] },
+    ],
+  },
+  mib: { tools: ['mib_workspace_get', 'mib_agent_list', 'mib_task_list'], skills: [{ name: 'Workspace Operations', capabilities: ['workspace.admin'] }] },
+  centrix: { tools: ['centrix_search', 'centrix_ticket_list'], skills: [{ name: 'Customer and Ticket Operations', capabilities: ['crm.read', 'tickets.read'] }] },
+};
+
+async function handleWorkspaceCapabilities(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const serviceToken = readServiceToken();
+  const presented = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const source = Array.isArray(req.headers['x-service-source']) ? req.headers['x-service-source'][0] : req.headers['x-service-source'];
+  const tenantId = getRequestUrl(req).searchParams.get('tenantId') || '';
+  if (!serviceToken || source !== 'shre-router' || !tokensMatch(presented, serviceToken) || !UUID_RE.test(tenantId)) return json(res, 401, { error: 'Authentication required' });
+  const supabase = createSupabaseAdmin();
+  const [{ data: grants, error: grantError }, { data: resources, error: resourceError }] = await Promise.all([
+    supabase.from('marketplace_app_entitlements').select('app_key,status,service_config').eq('tenant_id', tenantId).eq('status', 'active'),
+    supabase.from('tenant_resources').select('kind,provider,name,status,capabilities,config,store_ids').eq('tenant_id', tenantId).eq('status', 'active'),
+  ]);
+  if (grantError || resourceError) return json(res, 500, { error: grantError?.message || resourceError?.message });
+  const appKeys = (grants || []).map(grant => String(grant.app_key));
+  const tools = [...new Set(appKeys.flatMap(appKey => APP_CAPABILITY_BUNDLES[appKey]?.tools || []))];
+  await auditLog({ tenantId, action: 'workspace.capabilities.service_read', resource: tenantId, detail: { source, apps: appKeys.length, tools: tools.length }, ip: getClientIp(req) });
+  json(res, 200, { tenantId, apps: grants || [], resources: resources || [], tools, generatedAt: new Date().toISOString() });
 }
 
 const runningStoreSyncs = new Set<string>();
@@ -2785,6 +2827,9 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   }
   if (pathname === '/api/store/sales' && method === 'GET') {
     return handleStoreSales(req, res);
+  }
+  if (pathname === '/api/workspace/capabilities' && method === 'GET') {
+    return handleWorkspaceCapabilities(req, res);
   }
   if (pathname === '/api/store/sync' && (method === 'GET' || method === 'POST')) {
     return handleStoreSync(req, res);
