@@ -320,6 +320,7 @@ export function Signup() {
                       <button
                         type="button"
                         key={opt.value}
+                        className="aros-auth__intent"
                         onClick={() => setIntent(opt.value)}
                         style={{
                           display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'left',

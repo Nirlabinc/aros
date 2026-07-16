@@ -72,7 +72,10 @@ function AppContent() {
       window.location.href = onboarded ? '/dashboard' : '/start';
       return null;
     }
-    return <><Login /><ChatWidget /></>;
+    // No ChatWidget on auth screens: the legacy blue/indigo widget clashes with
+    // the warm-gold auth theme. It stays on public marketing pages (landing,
+    // contact) below.
+    return <Login />;
   }
 
   if (path === '/signup') {
@@ -80,7 +83,7 @@ function AppContent() {
       window.location.href = onboarded ? '/dashboard' : '/start';
       return null;
     }
-    return <><Signup /><ChatWidget /></>;
+    return <Signup />;
   }
 
   if (path === '/reset-password') {
