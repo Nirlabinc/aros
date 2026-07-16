@@ -69,7 +69,8 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const reply = data.response || data.message || data.content || 'No response received.';
-      setMessages(prev => [...prev, { from: 'shre', text: reply, meta: 'Shre · Local' }]);
+      const answeredBy = data.model || data._shre?.model || selectedModel;
+      setMessages(prev => [...prev, { from: 'shre', text: reply, meta: `Shre · ${answeredBy === 'auto' ? 'Auto' : answeredBy}` }]);
     } catch {
       setMessages(prev => [...prev, { from: 'shre', text: 'I couldn’t reach the store brain just now. Try again in a moment — your stores and data are unaffected.', meta: 'Shre · Local' }]);
     } finally {
