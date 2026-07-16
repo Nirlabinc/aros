@@ -32,8 +32,22 @@ export async function authenticate(
   }
 
   const envelope = (await res.json()) as Record<string, unknown>;
+  if (envelope.code !== undefined && String(envelope.code) !== '999') {
+    throw new Error(`RapidRMS auth rejected the request (code ${String(envelope.code)})`);
+  }
   const rawData = envelope.data;
-  const data = (typeof rawData === 'string' ? JSON.parse(rawData) : rawData || envelope) as Record<string, unknown>;
+  let parsedData: unknown = rawData || envelope;
+  if (typeof parsedData === 'string') {
+    try {
+      parsedData = JSON.parse(parsedData);
+    } catch {
+      throw new Error('RapidRMS auth response contained invalid JSON data');
+    }
+  }
+  if (!parsedData || typeof parsedData !== 'object' || Array.isArray(parsedData)) {
+    throw new Error('RapidRMS auth response did not contain an authentication object');
+  }
+  const data = parsedData as Record<string, unknown>;
   const token = String(data.access_token ?? '');
   const dbName = String(data.DbName ?? '');
   if (!token || !dbName) throw new Error('RapidRMS auth response did not include token and database context');

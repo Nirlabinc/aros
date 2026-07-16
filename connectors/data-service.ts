@@ -10,6 +10,7 @@
 // fabricated numbers. We never guess a value we can't read confidently.
 
 import * as rapidRms from './rapidrms-api.js';
+import type { RapidRmsSession } from './types.js';
 import { setTenantSecret, storeCredential, deleteCredential } from './vault-ref.js';
 
 export interface StoreSummary {
@@ -74,7 +75,6 @@ function pickStr(row: Record<string, unknown>, names: string[]): string | null {
 const REVENUE_FIELDS = ['Total', 'NetSales', 'NetTotal', 'GrandTotal', 'SalesAmount', 'Amount', 'TotalAmount', 'BillAmount', 'bill_amount'];
 const SALES_DATE_FIELDS = ['InvoiceDate', 'invoiceDate', 'invoice_date', 'CreatedDate', 'createdDate', 'BusinessDate', 'business_date', 'Date', 'date'];
 const INVOICE_FIELDS = ['InvoiceNo', 'invoiceNo', 'invoice_no', 'InvoiceNumber', 'TransactionId', 'transaction_id'];
-const TXN_COUNT_FIELDS = ['TransactionCount', 'Transactions', 'Count', 'InvoiceCount', 'Receipts'];
 const QTY_FIELDS = ['OnHand', 'QtyOnHand', 'Quantity', 'Qty', 'StockOnHand', 'CurrentStock'];
 const REORDER_FIELDS = ['ReorderPoint', 'ReorderLevel', 'MinQty', 'MinimumQty', 'Threshold', 'ParLevel'];
 const NAME_FIELDS = ['Name', 'ItemName', 'Description', 'ProductName', 'Product'];
@@ -86,6 +86,33 @@ function todayRange(): { from: string; to: string } {
   const d = String(now.getUTCDate()).padStart(2, '0');
   const day = `${y}-${m}-${d}`;
   return { from: `${day}T00:00:00`, to: `${day}T23:59:59` };
+}
+
+const INVOICE_PAGE_SIZE = 5000;
+const MAX_INVOICE_PAGES = 200;
+
+/** Fetch every page for a bounded invoice-report range without silently truncating sales. */
+async function fetchInvoiceRows(
+  session: RapidRmsSession,
+  params: Record<string, unknown>,
+): Promise<Array<Record<string, unknown>>> {
+  const allRows: Array<Record<string, unknown>> = [];
+  let previousPageSignature = '';
+  for (let pageNo = 1; pageNo <= MAX_INVOICE_PAGES; pageNo++) {
+    const payload = await rapidRms.getInvoiceReport(session, { ...params, pageNo, pageSize: INVOICE_PAGE_SIZE });
+    const rows = toRows(payload);
+    if (rows.length === 0) return allRows;
+    const firstInvoice = pickStr(rows[0], INVOICE_FIELDS) || '';
+    const lastInvoice = pickStr(rows[rows.length - 1], INVOICE_FIELDS) || '';
+    const signature = `${rows.length}:${firstInvoice}:${lastInvoice}`;
+    if (pageNo > 1 && signature === previousPageSignature) {
+      throw new Error('RapidRMS invoice pagination did not advance');
+    }
+    allRows.push(...rows);
+    if (rows.length < INVOICE_PAGE_SIZE) return allRows;
+    previousPageSignature = signature;
+  }
+  throw new Error(`RapidRMS invoice report exceeded ${MAX_INVOICE_PAGES} pages`);
 }
 
 // ── RapidRMS summary ────────────────────────────────────────────
@@ -118,18 +145,14 @@ async function fetchRapidRmsSummary(
     let revenue = 0;
     let transactions = 0;
     try {
-      const salesRaw = await rapidRms.getInvoiceReport(session, {
-        FromDate: from, ToDate: to, pageNo: 1, pageSize: 10000,
-      });
-      const rows = toRows(salesRaw);
+      const rows = await fetchInvoiceRows(session, { FromDate: from, ToDate: to });
       let sawRevenue = false;
       for (const r of rows) {
         const rev = pickNum(r, REVENUE_FIELDS);
         if (rev !== null) { revenue += rev; sawRevenue = true; }
       }
       // Prefer an explicit count field on the envelope/first row; else row count.
-      const envelope = (salesRaw && typeof salesRaw === 'object' ? salesRaw : {}) as Record<string, unknown>;
-      transactions = pickNum(envelope, TXN_COUNT_FIELDS) ?? rows.length;
+      transactions = rows.length;
       if (!sawRevenue && rows.length > 0) partial = true; // rows existed but no revenue field matched
     } catch {
       partial = true;
@@ -206,9 +229,9 @@ export async function fetchStoreSalesRange(
     const passwordRef = await storeCredential(`${record.id}:sales-password`, record.secrets.password ?? '');
     refs.push(emailRef, passwordRef);
     const session = await rapidRms.authenticate({ baseUrl: String(record.config.baseUrl || 'https://rapidrmsapi.azurewebsites.net'), clientId: String(record.config.clientId || ''), sessionTimeout: Number(record.config.sessionTimeout) || 420 }, emailRef, passwordRef);
-    const raw = await rapidRms.getInvoiceReport(session, { FromDate: `${from}T00:00:00`, ToDate: `${to}T23:59:59`, pageNo: 1, pageSize: 10000 });
+    const rows = await fetchInvoiceRows(session, { FromDate: `${from}T00:00:00`, ToDate: `${to}T23:59:59` });
     const buckets = new Map<string, { revenue: number; invoices: Set<string>; rows: number }>();
-    for (const row of toRows(raw)) {
+    for (const row of rows) {
       const dateValue = pickStr(row, SALES_DATE_FIELDS);
       const businessDate = dateValue?.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
       if (!businessDate || businessDate < from || businessDate > to) continue;
