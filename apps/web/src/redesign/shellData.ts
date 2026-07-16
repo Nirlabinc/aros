@@ -6,7 +6,8 @@
 
 export type SectionKey =
   | 'chat' | 'stores' | 'marketplace' | 'apps' | 'connectors' | 'plugins' | 'skills' | 'agents'
-  | 'models' | 'devices' | 'permissions' | 'health' | 'team' | 'billing' | 'usage' | 'settings';
+  | 'models' | 'devices' | 'permissions' | 'health' | 'team' | 'billing' | 'usage' | 'settings'
+  | 'edi-invoices';
 
 export interface NavItem { key: SectionKey; label: string; glyph: string; count?: number; }
 
@@ -26,6 +27,7 @@ export const PRIMARY_NAV: NavItem[] = [
 ];
 
 export const WORKSPACE_NAV: NavItem[] = [
+  { key: 'edi-invoices', label: 'EDI Invoices', glyph: 'ED' },
   { key: 'team', label: 'Team', glyph: 'Tm' },
   { key: 'billing', label: 'Billing', glyph: 'Bi' },
   { key: 'usage', label: 'Usage', glyph: 'Us' },
@@ -97,6 +99,15 @@ export interface SectionSpec {
 const s = (v: Status, label: string): [Status, string] => [v, label];
 
 export const SECTIONS: Record<Exclude<SectionKey, 'chat'>, SectionSpec> = {
+  'edi-invoices': {
+    eyebrow: 'RapidRMS', primaryCta: 'Upload invoice',
+    lead: 'Electronic supplier invoices from RapidRMS — review received line items, upload a new EDI file, or revert a receiving into the register.',
+    stats: [{ value: 3, label: 'Invoices' }, { value: 2, label: 'Suppliers' }, { value: 1, label: 'Reverted' }],
+    rows: [
+      { mark: 'MC', title: 'McLane_0714.edi', sub: 'McLane · 837 · Received', ...rowStatus(s('on', 'Received')), action: 'View' },
+      { mark: 'CO', title: 'CoreMark_0713.csv', sub: 'Core-Mark · CSV · Received', ...rowStatus(s('on', 'Received')), action: 'View' },
+    ],
+  },
   marketplace: { eyebrow: 'Marketplace', lead: 'Browse apps, connectors, plugins, skills, and agents.', rows: [] },
   connectors: { eyebrow: 'Activated connectors', lead: 'Connectors enabled for this workspace.', rows: [] },
   plugins: { eyebrow: 'Activated plugins', lead: 'Plugins enabled for this workspace.', rows: [] },
@@ -259,7 +270,7 @@ export const STORES_SCOPE = ['Main St', 'Oak Ave', '3rd St Express', 'Harbor', '
 export const SECTION_TITLES: Record<SectionKey, string> = {
   chat: 'Concierge', stores: 'Stores', marketplace: 'Marketplace', apps: 'Apps', connectors: 'Connectors', plugins: 'Plugins', skills: 'Skills', agents: 'Agents',
   models: 'Models', devices: 'Computers', permissions: 'Permissions', health: 'Connection Health',
-  team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings',
+  team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings', 'edi-invoices': 'EDI Invoices',
 };
 
 function rowStatus([status, statusLabel]: [Status, string]) { return { status, statusLabel }; }
