@@ -5,9 +5,10 @@ import { SectionPanel } from './SectionPanel';
 import { ConnectWizard } from './ConnectWizard';
 import { Canvas } from './Canvas';
 import { Home } from './Home';
+import { HistoryPanel } from './HistoryPanel';
 import { branding } from './branding';
 import {
-  PRIMARY_NAV, WORKSPACE_NAV, USER, ROLES, SECTION_TITLES, type SectionKey, type NavItem,
+  PRIMARY_NAV, WORKSPACE_NAV, USER, ROLES, SECTION_TITLES, type SectionKey, type NavItem, type ChatMsg, type Conversation,
 } from './shellData';
 
 const CHAT_MODELS = ['Shre · Local', 'Anthropic Claude', 'OpenAI GPT-4o', 'Google Gemini'];
@@ -51,8 +52,21 @@ export function AppShell() {
   const [toast, setToast] = useState<string | null>(null);
   const [chatKey, setChatKey] = useState(0);
   const [seed, setSeed] = useState('');
+  const [rightTab, setRightTab] = useState<'canvas' | 'history'>('canvas');
+  const [recalled, setRecalled] = useState<ChatMsg[] | null>(null);
+  const [activeConvo, setActiveConvo] = useState<string | undefined>(undefined);
   const { label: themeLabel, toggle: toggleTheme } = useArosTheme();
   const chatToggleRef = useRef<HTMLButtonElement>(null);
+
+  const recall = (c: Conversation) => { setRecalled(c.messages); setActiveConvo(c.id); setChatKey(k => k + 1); setRightTab('canvas'); setMode('chat'); };
+  const newChat = () => { setRecalled(null); setActiveConvo(undefined); setSeed(''); setChatKey(k => k + 1); };
+  // Menu: on mobile (no docked sidebar) open the nav drawer; on desktop close
+  // chat and return to Home, where the docked sidebar is always visible.
+  const onMenu = () => {
+    const mobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 720px)').matches;
+    if (mobile) setMenuOpen(true);
+    else { setMode('home'); setMenuOpen(false); }
+  };
 
   useEffect(() => {
     if (!toast) return;
@@ -74,7 +88,7 @@ export function AppShell() {
     <div className="rsx2-shell" data-chat={mode === 'chat' ? 'open' : 'closed'} data-mode={mode}>
       <header className="rsx2-top">
         <button ref={chatToggleRef} className={`rsx2-icon ${mode === 'chat' ? 'is-on' : ''}`} onClick={toggleChat} aria-label="Chat" aria-expanded={mode === 'chat'} title="Chat"><ChatIcon /></button>
-        <button className={`rsx2-icon ${menuOpen ? 'is-on' : ''}`} onClick={() => setMenuOpen(o => !o)} aria-label="Menu" aria-expanded={menuOpen} title="Menu"><MenuIcon /></button>
+        <button className={`rsx2-icon ${menuOpen ? 'is-on' : ''}`} onClick={onMenu} aria-label="Menu" aria-expanded={menuOpen} title="Menu"><MenuIcon /></button>
         <button className="rsx2-brand" onClick={() => setMode('home')} title="Home">
           <span className="aros-side__mark">{b.mark}</span><span className="rsx2-top__title">{title}</span>
         </button>
@@ -85,50 +99,59 @@ export function AppShell() {
         <button className="rsx2-avatar" onClick={() => setProfileOpen(true)} aria-label="Profile" title="Profile">{USER.initials}</button>
       </header>
 
-      {mode === 'app' ? (
+      {mode === 'chat' ? (
+        // Chat layer — the one exception: the chat rail replaces the sidebar,
+        // Canvas / History tabs on the right.
+        <div className="rsx2-chatlayout">
+          <aside className="rsx2-chatrail">
+            <div className="rsx2-chatpane__head">
+              <div className="rsx2-model">
+                <button className="rsx2-model__btn" onClick={() => setModelOpen(o => !o)}>{model} <span aria-hidden>▾</span></button>
+                {modelOpen && (
+                  <>
+                    <div className="rsx2-menuscrim" onClick={() => setModelOpen(false)} />
+                    <div className="rsx2-dropdown" style={{ top: 'calc(100% + 4px)' }}>
+                      {CHAT_MODELS.map(m => (
+                        <button key={m} className="rsx2-dropdown__item" onClick={() => { setModel(m); setModelOpen(false); }}>{m}</button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+              <button className="rsx2-chatpane__new" onClick={newChat}><PlusIcon /> New chat</button>
+            </div>
+            <ConciergeChat key={chatKey} onConnect={openWizard} seed={seed} focusOnMount initial={recalled ?? undefined} />
+          </aside>
+          <div className="rsx2-canvaswrap">
+            <div className="rsx2-tabs">
+              <button className={`rsx2-tab ${rightTab === 'canvas' ? 'is-on' : ''}`} onClick={() => setRightTab('canvas')}>Canvas</button>
+              <button className={`rsx2-tab ${rightTab === 'history' ? 'is-on' : ''}`} onClick={() => setRightTab('history')}>History</button>
+            </div>
+            {rightTab === 'canvas' ? <Canvas /> : <HistoryPanel onRecall={recall} activeId={activeConvo} />}
+          </div>
+        </div>
+      ) : (
+        // Every non-chat page: consistent docked sidebar + content.
         <div className="rsx2-appbody">
-          <aside className="rsx2-nav">
+          <aside className="rsx2-nav rsx2-nav--docked">
             <div className="rsx2-nav__list">
-              <NavRow item={{ key: 'chat', label: 'Chat', glyph: 'C' }} active={false} onClick={() => setMode('chat')} />
+              <button className="rsx-nav" aria-current={mode === 'home'} onClick={() => setMode('home')}>
+                <span className="rsx-nav__glyph">⌂</span><span style={{ flex: 1 }}>Home</span>
+              </button>
+              <button className="rsx-nav" onClick={() => setMode('chat')}>
+                <span className="rsx-nav__glyph">C</span><span style={{ flex: 1 }}>Chat</span>
+              </button>
               {PRIMARY_NAV.filter(i => i.key !== 'chat').map(item => (
-                <NavRow key={item.key} item={item} active={section === item.key} onClick={() => goSection(item.key)} />
+                <NavRow key={item.key} item={item} active={mode === 'app' && section === item.key} onClick={() => goSection(item.key)} />
               ))}
             </div>
             <div className="rsx2-nav__foot"><UserRow onClick={() => setProfileOpen(true)} /></div>
           </aside>
-          <div className="rsx2-content"><SectionPanel section={section} onConnect={openWizard} /></div>
-        </div>
-      ) : (
-        <div className="rsx2-slide">
-          <div className="rsx2-rail">
-            <div className="rsx2-rail__inner" aria-hidden={mode !== 'chat'}>
-              <div className="rsx2-chatpane__head">
-                <div className="rsx2-model">
-                  <button className="rsx2-model__btn" onClick={() => setModelOpen(o => !o)}>{model} <span aria-hidden>▾</span></button>
-                  {modelOpen && (
-                    <>
-                      <div className="rsx2-menuscrim" onClick={() => setModelOpen(false)} />
-                      <div className="rsx2-dropdown" style={{ top: 'calc(100% + 4px)' }}>
-                        {CHAT_MODELS.map(m => (
-                          <button key={m} className="rsx2-dropdown__item" onClick={() => { setModel(m); setModelOpen(false); }}>{m}</button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-                <button className="rsx2-chatpane__new" onClick={() => { setChatKey(k => k + 1); setSeed(''); }}><PlusIcon /> New chat</button>
-              </div>
-              <ConciergeChat key={chatKey} onConnect={openWizard} seed={seed} focusOnMount={mode === 'chat'} />
-            </div>
-          </div>
-          <div className="rsx2-stage">
-            <div className="rsx2-layer rsx2-layer--home" aria-hidden={mode === 'chat'}>
-              <Home onAskShre={askShre} onConnect={openWizard} onSection={goSection} />
-            </div>
-            <div className="rsx2-layer rsx2-layer--canvas" aria-hidden={mode !== 'chat'}>
-              <Canvas />
-            </div>
-          </div>
+          <main className="rsx2-content">
+            {mode === 'home'
+              ? <Home onAskShre={askShre} onConnect={openWizard} onSection={goSection} />
+              : <SectionPanel section={section} onConnect={openWizard} />}
+          </main>
         </div>
       )}
 

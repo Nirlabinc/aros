@@ -39,6 +39,40 @@ export const CONCIERGE_SEED: ChatMsg[] = [
 ];
 export const SUGGESTIONS = ['How were sales yesterday?', 'Which SKUs are low?', 'Raise carton prices 3% at all stores'];
 
+// Recallable conversation history (right-pane History tab). Preview uses canned
+// threads; wired build lists the tenant's conversations from the chat store.
+export interface Conversation { id: string; title: string; preview: string; when: string; messages: ChatMsg[]; }
+export const CONVERSATIONS: Conversation[] = [
+  {
+    id: 'c1', title: 'Yesterday’s sales across stores', preview: '$18,240 net · up 4.2% w/w · Harbor led', when: '2h ago',
+    messages: [
+      { from: 'me', text: 'How were sales yesterday?' },
+      { from: 'shre', text: 'Yesterday you did $18,240 across all 5 stores — up 4.2% w/w. Harbor led at $4,910; Elm St Express lagged at $2,180.', meta: 'Shre · Local' },
+    ],
+  },
+  {
+    id: 'c2', title: 'Reorder cold brew — Oak Ave', preview: 'Drafted a PO for 24 units, awaiting approval', when: 'Yesterday',
+    messages: [
+      { from: 'me', text: 'Oak Ave is low on cold brew — can you reorder?' },
+      { from: 'shre', text: 'Oak Ave is down to 6 units of cold brew (par 30). I’ve drafted a purchase order for 24 units — want me to send it for approval?', meta: 'Shre · Local' },
+    ],
+  },
+  {
+    id: 'c3', title: 'Raise carton prices 3%', preview: 'Staged across all 5 stores · approval-gated', when: 'Mon',
+    messages: [
+      { from: 'me', text: 'Raise carton prices 3% at all stores' },
+      { from: 'shre', text: 'That’s a 3% increase on 42 carton SKUs across all 5 stores. Nothing changes until you approve — review the price sheet?', meta: 'Shre · Local' },
+    ],
+  },
+  {
+    id: 'c4', title: 'Which SKUs are low?', preview: '4 SKUs below reorder point in 3 stores', when: 'Mon',
+    messages: [
+      { from: 'me', text: 'Which SKUs are low?' },
+      { from: 'shre', text: '4 SKUs are below reorder point: Marlboro Gold 100s (Harbor), Monster Energy 16oz (Main St), Coca-Cola 20oz (Oak Ave), Red Bull 12oz (3rd St Express).', meta: 'Shre · Local' },
+    ],
+  },
+];
+
 export type Status = 'on' | 'warn' | 'off';
 export interface Stat { value: string | number; label: string; }
 export interface Card { icon: string; title: string; desc: string; status: Status; tag: string; cta: string; }

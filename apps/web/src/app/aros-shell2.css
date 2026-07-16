@@ -4,6 +4,9 @@
    Layered on aros-shell.css / aros-design.css tokens.
    ========================================================================== */
 .rsx2-shell { --ease-open: cubic-bezier(0.16, 1, 0.3, 1); --ease-close: cubic-bezier(0.6, 0, 0.35, 1); --ease-fade: cubic-bezier(0.4, 0, 0.2, 1); --rail-w: 384px; }
+/* buttons must inherit the token text color, or their contents fall back to the
+   UA default (black) and become unreadable in dark mode. */
+.rsx2-brand, .rsx2-ask, .rsx2-quick, .rsx2-userrow { color: var(--ink); }
 .rsx2-brand { display: flex; align-items: center; gap: 10px; margin-left: 2px; border: none; background: none; cursor: pointer; font-family: inherit; padding: 4px 6px; border-radius: 9px; }
 .rsx2-brand:hover { background: var(--surface-2); }
 .rsx2-menuscrim { position: fixed; inset: 0; z-index: 55; }
@@ -109,6 +112,38 @@
 }
 @keyframes rsx2-slide-left { from { transform: translateX(-24px); opacity: 0.4; } to { transform: none; opacity: 1; } }
 .rsx2-drawer__brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 14px; }
+
+/* --- right-pane tabs (Canvas / History) --- */
+.rsx2-tabs { display: flex; gap: 8px; padding: 12px 30px 0; flex-shrink: 0; border-bottom: 1px solid var(--line); }
+.rsx2-tab { border: none; background: none; color: var(--ink-3); font-family: inherit; font-size: 13.5px; font-weight: 600; padding: 8px 4px 12px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.rsx2-tab:hover { color: var(--ink-2); }
+.rsx2-tab.is-on { color: var(--ink); border-bottom-color: var(--accent); }
+.rsx2-history { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 22px 30px; }
+.rsx2-history__head { margin-bottom: 16px; }
+.rsx2-history__list { display: flex; flex-direction: column; gap: 10px; max-width: 660px; }
+.rsx2-histrow { position: relative; text-align: left; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); padding: 14px 16px; cursor: pointer; font-family: inherit; box-shadow: var(--shadow-card); transition: border-color 0.13s, box-shadow 0.16s, transform 0.16s; }
+.rsx2-histrow:hover { border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--shadow-btn); }
+.rsx2-histrow.is-on { border-color: var(--accent); background: var(--accent-soft); }
+.rsx2-histrow__top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.rsx2-histrow__title { font-size: 14.5px; font-weight: 600; color: var(--ink); }
+.rsx2-histrow__when { font-size: 11.5px; color: var(--ink-3); font-family: 'JetBrains Mono', monospace; flex-shrink: 0; }
+.rsx2-histrow__preview { font-size: 13px; color: var(--ink-2); margin-top: 4px; line-height: 1.45; }
+.rsx2-histrow__recall { font-size: 12px; font-weight: 600; color: var(--accent); margin-top: 8px; display: inline-block; opacity: 0; transition: opacity 0.13s; }
+.rsx2-histrow:hover .rsx2-histrow__recall, .rsx2-histrow.is-on .rsx2-histrow__recall { opacity: 1; }
+
+/* --- chat layer (replaces the sidebar; rail slides in) --- */
+.rsx2-chatlayout { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+.rsx2-chatrail { width: var(--rail-w); flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--surface); animation: rsx2-rail-in 0.34s var(--ease-open) both; }
+@keyframes rsx2-rail-in { from { margin-left: calc(-1 * var(--rail-w)); opacity: 0.35; } to { margin-left: 0; opacity: 1; } }
+.rsx2-canvaswrap { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg); animation: rsx2-fade-in 0.3s var(--ease-fade) 0.08s both; }
+@keyframes rsx2-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@media (max-width: 720px) {
+  .rsx2-chatrail { width: 100%; border-right: none; animation-duration: 0.26s; }
+  .rsx2-canvaswrap { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rsx2-chatrail, .rsx2-canvaswrap { animation-duration: 0.001ms !important; }
+}
 
 /* --- reduced motion --- */
 @media (prefers-reduced-motion: reduce) {

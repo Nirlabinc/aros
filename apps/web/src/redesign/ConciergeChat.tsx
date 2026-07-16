@@ -12,9 +12,9 @@ const ROUTER_URL = (import.meta as any).env?.VITE_ROUTER_URL || '';
  * reply; falls back to a friendly error bubble on failure (e.g. no router in
  * the preview). Optimistic user bubble + typing indicator.
  */
-export function ConciergeChat({ onConnect, seed, focusOnMount }: { onConnect?: () => void; seed?: string; focusOnMount?: boolean }) {
+export function ConciergeChat({ onConnect, seed, focusOnMount, initial }: { onConnect?: () => void; seed?: string; focusOnMount?: boolean; initial?: ChatMsg[] }) {
   const mark = branding().concierge.charAt(0).toUpperCase();
-  const [messages, setMessages] = useState<ChatMsg[]>(CONCIERGE_SEED);
+  const [messages, setMessages] = useState<ChatMsg[]>(initial && initial.length ? initial : CONCIERGE_SEED);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
