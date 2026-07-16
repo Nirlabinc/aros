@@ -178,6 +178,7 @@ async function sendStaticFile(res: ServerResponse, filePath: string): Promise<bo
     const ext = extname(filePath);
     const headers: Record<string, string> = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
     if (filePath.includes('/assets/')) headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+    else headers['Cache-Control'] = 'private, no-store'; // authenticated HTML shell must never be cached by a shared proxy/CDN
     res.writeHead(200, headers);
     res.end(await readFile(filePath));
     return true;
