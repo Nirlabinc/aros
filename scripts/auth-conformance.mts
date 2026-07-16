@@ -4,7 +4,7 @@ import { findHardcodedSecrets, inspectAuthSurface, type AuthSurfaceKind } from '
 
 const root = resolve(process.cwd());
 const surfaces: Array<{ file: string; kind: AuthSurfaceKind }> = [{ file: 'src/server.ts', kind: 'resource-server' }];
-const ignored = new Set(['node_modules', '.git', 'dist', 'coverage', 'data', '__tests__']);
+const ignored = new Set(['node_modules', '.git', '.claude', 'dist', 'coverage', 'data', '__tests__']);
 // This file intentionally contains a CI-only signing fixture; production code
 // imports only its public key. Keep exemptions exact and reviewable.
 const secretFixtureAllowlist = new Set(['src/licensing/keys.ts']);

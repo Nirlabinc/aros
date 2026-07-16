@@ -54,6 +54,8 @@ import { handleEdgeRequest } from './edge/http.js';
 import { handleEdgeProvisioningRequest } from './edge/provisioning-http.js';
 import { EdgeProvisioningService } from './edge/provisioning.js';
 import { SupabaseEdgeProvisioningRepository } from './edge/supabase-provisioning-repository.js';
+import { createOidcRelyingParty } from './auth/oidc-rp.js';
+import { createMemoryOidcStore, createSupabaseOidcStore } from './auth/oidc-store.js';
 
 const PORT = Number(process.env.PORT || 5457);
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
@@ -76,6 +78,31 @@ heartbeat.registerDependency('redis', 'redis://127.0.0.1:6379');
 heartbeat.registerDependency('shre-tasks', 'http://127.0.0.1:5460/health');
 
 const traceMiddleware = createTraceMiddleware('aros-platform');
+const oidcStoreMode = process.env.OIDC_STORE_MODE || (process.env.NODE_ENV === 'production' ? 'supabase' : 'memory');
+if (process.env.NODE_ENV === 'production' && oidcStoreMode !== 'supabase') throw new Error('Production OIDC requires OIDC_STORE_MODE=supabase');
+const oidcEnvelopeKey = process.env.AROS_OIDC_ENCRYPTION_KEY || process.env.AROS_ENCRYPTION_KEY;
+if (oidcStoreMode === 'supabase' && !oidcEnvelopeKey) throw new Error('Durable OIDC requires AROS_OIDC_ENCRYPTION_KEY from the secrets vault');
+if (oidcEnvelopeKey) setEncryptionKey(createHash('sha256').update(oidcEnvelopeKey).digest());
+const oidcStore = oidcStoreMode === 'supabase'
+  ? createSupabaseOidcStore(createSupabaseAdmin(), { seal: encryptValue, open: decryptValue })
+  : createMemoryOidcStore();
+try { await oidcStore.cleanup(Date.now()); }
+catch (error) { if (process.env.NODE_ENV === 'production') throw new Error(`Durable OIDC store unavailable: ${error instanceof Error ? error.message : String(error)}`); }
+const oidcCleanupTimer = setInterval(() => { void oidcStore.cleanup(Date.now()).catch(error => console.error('[oidc.cleanup]', error instanceof Error ? error.message : error)); }, 300_000);
+oidcCleanupTimer.unref();
+const oidcRp = createOidcRelyingParty({
+  store: oidcStore,
+  redirectUri: process.env.OIDC_REDIRECT_URI || 'https://app.aros.live/auth/callback',
+  sessionTtlMs: Number(process.env.OIDC_SESSION_TTL_SECONDS || 3600) * 1000,
+  mapWorkspace: async (subject, requestedWorkspace) => {
+    const supabase = createSupabaseAdmin();
+    let query = supabase.from('tenant_members').select('tenant_id,role,status').eq('user_id', subject).eq('status', 'active');
+    if (requestedWorkspace) query = query.eq('tenant_id', requestedWorkspace);
+    const { data } = await query.order('is_default', { ascending: false }).limit(1);
+    const membership = data?.[0];
+    return membership ? { workspaceId: membership.tenant_id, role: membership.role } : null;
+  },
+});
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -1181,6 +1208,12 @@ function getRequestedTenantId(req: IncomingMessage): string | null {
 }
 
 async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | null> {
+  const oidcSession = await oidcRp.authenticate(req.headers.cookie);
+  if (oidcSession) {
+    const requestedTenantId = getRequestedTenantId(req);
+    if (requestedTenantId && requestedTenantId !== oidcSession.workspaceId) return null;
+    return { userId: oidcSession.subject, tenantId: oidcSession.workspaceId, role: oidcSession.role };
+  }
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) return null;
 
@@ -2690,6 +2723,27 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     res.writeHead(204);
     res.end();
     return;
+  }
+
+  if (pathname === '/auth/oidc/start' && method === 'GET') {
+    try {
+      const result = await oidcRp.begin({ cookie: req.headers.cookie, returnTo: requestUrl.searchParams.get('returnTo') || undefined, workspaceId: requestUrl.searchParams.get('workspaceId') || undefined });
+      res.writeHead(302, { Location: result.location, 'Set-Cookie': result.setCookie, 'Cache-Control': 'no-store' }); res.end(); return;
+    } catch { return json(res, 503, { error: 'Identity service unavailable' }); }
+  }
+  if (pathname === '/auth/callback' && method === 'GET') {
+    try {
+      const result = await oidcRp.callback({ code: requestUrl.searchParams.get('code') || undefined, state: requestUrl.searchParams.get('state') || undefined, cookie: req.headers.cookie });
+      res.writeHead(302, { Location: result.location, 'Set-Cookie': result.setCookie, 'Cache-Control': 'no-store' }); res.end(); return;
+    } catch { return json(res, 401, { error: 'OIDC authorization failed' }); }
+  }
+  if (pathname === '/auth/session' && method === 'GET') {
+    const session = await oidcRp.authenticate(req.headers.cookie);
+    return session ? json(res, 200, { authenticated: true, subject: session.subject, workspaceId: session.workspaceId, role: session.role }) : json(res, 401, { authenticated: false });
+  }
+  if (pathname === '/auth/logout' && method === 'POST') {
+    const result = await oidcRp.logout(req.headers.cookie);
+    res.writeHead(204, { 'Set-Cookie': result.setCookie, 'Cache-Control': 'no-store' }); res.end(); return;
   }
 
   // ── Trace Middleware (SDK detects Express by 3 args: req, res, next) ──

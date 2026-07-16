@@ -30,6 +30,7 @@
   "dependencies": {
     "@google/genai": "^1.49.0",
     "@supabase/supabase-js": "^2.100.0",
+    "jose": "^6.0.10",
     "shre-sdk": "file:../shre-sdk",
     "stripe": "^21.0.0"
   }

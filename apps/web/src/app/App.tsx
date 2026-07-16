@@ -58,7 +58,7 @@ function AppContent() {
   if (redesignParam === '1') { try { localStorage.removeItem('aros-shell-legacy'); } catch { /* ignore */ } }
   else if (redesignParam === '0') { try { localStorage.setItem('aros-shell-legacy', '1'); } catch { /* ignore */ } }
 
-  if (centralIdentityOnly && path !== '/login' && path !== '/signup') {
+  if (centralIdentityOnly && !loading && !session && path !== '/login' && path !== '/signup') {
     const authorize = path === '/oauth/authorize' ? `${path}${window.location.search}` : null;
     window.location.replace(authorize ? `/login?return_to=${encodeURIComponent(authorize)}` : '/login');
     return null;

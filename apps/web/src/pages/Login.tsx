@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { safeReturnTo } from '../app-registry';
 import { hostedAuth, safeIssuerReturnTo, type HostedChallenge, type HostedWorkspace } from '../lib/hosted-auth';
 import { useArosTheme } from '../lib/useArosTheme';
+import { centralIdentityOnly } from '../lib/supabase';
 
 const AUTH_BASE = (window as any).__SHRE_AUTH_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5455' : '');
@@ -94,7 +95,7 @@ export function Login() {
               <div className="aros-auth__notice">Account created. Sign in to get started.</div>
             )}
 
-            {workspaces.length > 0 && !challenge ? (
+            {centralIdentityOnly ? <button type="button" className="aros-auth__btn" onClick={() => window.location.assign(`/auth/oidc/start?returnTo=${encodeURIComponent(returnTo)}`)}>Continue with Shre ID</button> : workspaces.length > 0 && !challenge ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div className="aros-auth__label" style={{ marginBottom: 0 }}>Choose a workspace</div>
                 {workspaces.map(workspace => (

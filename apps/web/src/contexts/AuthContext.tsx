@@ -173,7 +173,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (centralIdentityOnly) {
-      setLoading(false);
+      fetch(`${API_BASE}/auth/session`, { credentials: 'include' }).then(async response => {
+        if (!response.ok) return;
+        const identity = await response.json() as { subject: string; workspaceId: string; role: TenantMembership['role'] };
+        const centralUser = { id: identity.subject, aud: 'authenticated', role: 'authenticated', email: '', user_metadata: {}, app_metadata: { role: identity.role } } as unknown as User;
+        const centralTenant = { id: identity.workspaceId, name: 'Your workspace', slug: identity.workspaceId, owner_id: '', plan: '', onboarding_completed: true, created_at: '' };
+        setUser(centralUser); setSession({ user: centralUser, access_token: '', refresh_token: '', expires_in: 3600, token_type: 'bearer' } as Session); setTenant(centralTenant);
+        setMemberships([{ tenant_id: identity.workspaceId, role: identity.role, is_default: true, status: 'active', tenant: centralTenant }]);
+      }).catch(() => undefined).finally(() => setLoading(false));
       return;
     }
     supabase.auth.getSession()
@@ -203,7 +210,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [memberships]);
 
   const signIn = useCallback(async (email: string, password: string) => {
-    if (centralIdentityOnly) return { error: 'Use the central AROS sign-in flow.' };
+    if (centralIdentityOnly) { window.location.assign(`/auth/oidc/start?returnTo=${encodeURIComponent('/dashboard')}`); return { error: null }; }
     try {
       const res = await fetch(`${API_BASE}/api/login`, {
         method: 'POST',
@@ -243,7 +250,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
+    if (centralIdentityOnly) await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+    else await supabase.auth.signOut();
     setUser(null);
     setSession(null);
     setMemberships([]);
