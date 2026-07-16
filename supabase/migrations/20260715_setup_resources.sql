@@ -68,7 +68,7 @@ CREATE POLICY platform_apps_read ON public.platform_apps FOR SELECT USING (auth.
 GRANT SELECT ON public.platform_apps TO authenticated;
 
 INSERT INTO public.platform_apps(id,name,launch_url,repo,vault_namespace,required_scopes,status) VALUES
-('storepulse','StorePulse','https://storepulse.aros.live','Shreai/shreai/apps/storepulse-ui','shre/aros/storepulse-ui',ARRAY['stores:read','pos:read'],'migration-needed'),
+('storepulse','StorePulse','https://storepulse.aros.live','Shreai/shreai/apps/storepulse-ui','shre/aros/storepulse-ui',ARRAY['stores:read','pos:read'],'active'),
 ('storepulse-hq','StorePulse HQ','https://storepulse-hq.aros.live','canonical repo pending','shre/aros/storepulse-hq',ARRAY['stores:read','fleet:read'],'planned'),
 ('cpg','CPG Intelligence','https://cpg.aros.live','Nirpat3/cpg-intelligence','nirlab/cpg-intelligence',ARRAY['cpg:read','stores:read'],'migration-needed'),
 ('mib','MIB','https://mib.aros.live','Shreai/shre-command-center','shre/mib',ARRAY['workspace:admin'],'active'),

@@ -72,6 +72,8 @@ function pickStr(row: Record<string, unknown>, names: string[]): string | null {
 // section, never a wrong number — safe to ship, refine once a real tenant
 // connects.
 const REVENUE_FIELDS = ['Total', 'NetSales', 'NetTotal', 'GrandTotal', 'SalesAmount', 'Amount', 'TotalAmount'];
+const SALES_DATE_FIELDS = ['InvoiceDate', 'invoice_date', 'BusinessDate', 'business_date', 'Date', 'date'];
+const INVOICE_FIELDS = ['InvoiceNo', 'invoice_no', 'InvoiceNumber', 'TransactionId', 'transaction_id'];
 const TXN_COUNT_FIELDS = ['TransactionCount', 'Transactions', 'Count', 'InvoiceCount', 'Receipts'];
 const QTY_FIELDS = ['OnHand', 'QtyOnHand', 'Quantity', 'Qty', 'StockOnHand', 'CurrentStock'];
 const REORDER_FIELDS = ['ReorderPoint', 'ReorderLevel', 'MinQty', 'MinimumQty', 'Threshold', 'ParLevel'];
@@ -184,5 +186,41 @@ export async function fetchStoreSummary(
     case 'verifone-commander':
     default:
       return null;
+  }
+}
+
+export type DailyStoreSales = { businessDate: string; revenue: number; transactions: number };
+
+/** Fetch and normalize a bounded RapidRMS sales range into daily totals. */
+export async function fetchStoreSalesRange(
+  record: ConnectorRecord,
+  vaultSecret: string,
+  from: string,
+  to: string,
+): Promise<DailyStoreSales[]> {
+  if (record.type !== 'rapidrms-api') return [];
+  const refs: string[] = [];
+  try {
+    setTenantSecret(vaultSecret);
+    const emailRef = await storeCredential(`${record.id}:sales-email`, record.secrets.email ?? '');
+    const passwordRef = await storeCredential(`${record.id}:sales-password`, record.secrets.password ?? '');
+    refs.push(emailRef, passwordRef);
+    const session = await rapidRms.authenticate({ baseUrl: String(record.config.baseUrl || 'https://rapidrmsapi.azurewebsites.net'), clientId: String(record.config.clientId || ''), sessionTimeout: Number(record.config.sessionTimeout) || 420 }, emailRef, passwordRef);
+    const raw = await rapidRms.getSalesDetail(session, { FromDate: `${from}T00:00:00`, ToDate: `${to}T23:59:59`, StartDate: `${from}T00:00:00`, EndDate: `${to}T23:59:59` });
+    const buckets = new Map<string, { revenue: number; invoices: Set<string>; rows: number }>();
+    for (const row of toRows(raw)) {
+      const dateValue = pickStr(row, SALES_DATE_FIELDS);
+      const businessDate = dateValue?.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
+      if (!businessDate || businessDate < from || businessDate > to) continue;
+      const bucket = buckets.get(businessDate) || { revenue: 0, invoices: new Set<string>(), rows: 0 };
+      bucket.revenue += pickNum(row, [...REVENUE_FIELDS, 'BillAmount', 'bill_amount']) || 0;
+      const invoice = pickStr(row, INVOICE_FIELDS);
+      if (invoice) bucket.invoices.add(invoice);
+      bucket.rows++;
+      buckets.set(businessDate, bucket);
+    }
+    return [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([businessDate, bucket]) => ({ businessDate, revenue: Math.round(bucket.revenue * 100) / 100, transactions: bucket.invoices.size || bucket.rows }));
+  } finally {
+    await Promise.all(refs.map(ref => deleteCredential(ref).catch(() => {})));
   }
 }
