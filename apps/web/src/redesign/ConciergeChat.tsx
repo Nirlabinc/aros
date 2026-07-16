@@ -24,6 +24,14 @@ const EXTERNAL_INTELLIGENCE_REQUEST = /\b(weather|forecast|temperature|news|head
 
 type ActiveAgent = { name: string; capabilities: string[] };
 
+function customerFacingReply(reply: string): string {
+  const cleaned = reply.includes('</think>') ? reply.split('</think>').pop()!.trim() : reply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  if (/\btool\s+[\w.-]+\s+failed\b|\bfailed on all paths\b|\bweb_fetch\b|\baccess control\b/i.test(cleaned)) {
+    return 'I could not retrieve the connected store data for that request. The Store Operations Agent is active, but its data capability is temporarily unavailable. Check Connection Health for the affected connection, or try again in a moment.';
+  }
+  return cleaned;
+}
+
 /**
  * Concierge chat home. Sends to the real shre-router /v1/chat and renders the
  * reply; falls back to a friendly error bubble on failure (e.g. no router in
@@ -96,7 +104,7 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
       const data = await res.json();
       const rawReply = [data?.response, data?.message?.content, data?.message, data?.content].find(value => typeof value === 'string' && value.trim());
       if (!rawReply) throw new Error('The model returned an unsupported response.');
-      const reply = rawReply.includes('</think>') ? rawReply.split('</think>').pop()!.trim() : rawReply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      const reply = customerFacingReply(rawReply);
       if (!reply) throw new Error('The model returned no customer-facing answer.');
       setMessages(prev => [...prev, { from: 'shre', text: reply, meta: data?.model ? `${data.model} · via Shre` : 'Shre · Local' }]);
     } catch (error) {
