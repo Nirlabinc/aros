@@ -47,7 +47,7 @@ import { testConnection as testRapidRmsConnector } from '../connectors/rapidrms-
 import { testConnection as testAzureDbConnector } from '../connectors/azure-db.js';
 import { testConnection as testVerifoneConnector } from '../connectors/verifone/connector.js';
 import { setTenantSecret, storeCredential, deleteCredential } from '../connectors/vault-ref.js';
-import { fetchStoreSummary, type StoreSummary } from '../connectors/data-service.js';
+import { fetchStoreSalesRange, fetchStoreSummary, type StoreSummary } from '../connectors/data-service.js';
 import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
 import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
 import { handleEdgeRequest } from './edge/http.js';
@@ -1237,6 +1237,66 @@ function normalizeAppKey(raw: unknown): string {
   return (aliases[value] ?? value).replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-');
 }
 
+type AppLaunchGrant = {
+  appKey: string;
+  tenantId: string;
+  userId: string;
+  role: string;
+  storeIds: string[];
+  expiresAt: number;
+};
+
+const appLaunchGrants = new Map<string, AppLaunchGrant>();
+const APP_LAUNCH_TTL_MS = 60_000;
+
+function hashAppLaunchCode(code: string): string {
+  return createHash('sha256').update(code).digest('hex');
+}
+
+async function handleAppLaunchCreate(req: IncomingMessage, res: ServerResponse, appKeyParam: string): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const appKey = normalizeAppKey(appKeyParam);
+  const supabase = createSupabaseAdmin();
+  const [{ data: app }, { data: entitlement }] = await Promise.all([
+    supabase.from('platform_apps').select('id,launch_url,status').eq('id', appKey).maybeSingle(),
+    supabase.from('marketplace_app_entitlements').select('status,service_config').eq('tenant_id', auth.tenantId).eq('app_key', appKey).maybeSingle(),
+  ]);
+  if (!app || app.status !== 'active') return json(res, 409, { error: 'This app is not launch-ready' });
+  if (entitlement?.status !== 'active') return json(res, 403, { error: 'Activate this app before opening it' });
+  if (appKey !== 'storepulse') return json(res, 409, { error: 'This app has not completed the workspace SSO contract' });
+  const code = randomBytes(32).toString('base64url');
+  const storeIds = Array.isArray(entitlement.service_config?.storeIds) ? entitlement.service_config.storeIds.map(String) : [];
+  appLaunchGrants.set(hashAppLaunchCode(code), { appKey, tenantId: auth.tenantId, userId: auth.userId, role: auth.role, storeIds, expiresAt: Date.now() + APP_LAUNCH_TTL_MS });
+  for (const [key, grant] of appLaunchGrants) if (grant.expiresAt <= Date.now()) appLaunchGrants.delete(key);
+  await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'app.launch_started', resource: `app:${appKey}`, detail: { appKey, storeCount: storeIds.length }, ip: getClientIp(req) });
+  const launchUrl = new URL('/api/auth/aros-launch', app.launch_url);
+  launchUrl.searchParams.set('code', code);
+  res.setHeader('Cache-Control', 'no-store');
+  json(res, 200, { launchUrl: launchUrl.toString(), expiresIn: APP_LAUNCH_TTL_MS / 1000 });
+}
+
+async function handleAppLaunchConsume(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await parseJsonBody(req);
+  const code = typeof body?.code === 'string' ? body.code : '';
+  const appKey = normalizeAppKey(body?.appKey);
+  if (!code || !appKey) return json(res, 400, { error: 'code and appKey are required' });
+  const key = hashAppLaunchCode(code);
+  const grant = appLaunchGrants.get(key);
+  appLaunchGrants.delete(key);
+  res.setHeader('Cache-Control', 'no-store');
+  if (!grant || grant.expiresAt <= Date.now() || grant.appKey !== appKey) return json(res, 401, { error: 'Launch code is invalid or expired' });
+  const supabase = createSupabaseAdmin();
+  const [{ data: userResult }, { data: connectors }] = await Promise.all([
+    supabase.auth.admin.getUserById(grant.userId),
+    grant.storeIds.length ? supabase.from('tenant_connectors').select('id,type,name,config,status').eq('tenant_id', grant.tenantId).in('id', grant.storeIds) : Promise.resolve({ data: [] }),
+  ]);
+  const user = userResult?.user;
+  if (!user) return json(res, 401, { error: 'Workspace user is no longer available' });
+  await auditLog({ tenantId: grant.tenantId, userId: grant.userId, action: 'app.launch_consumed', resource: `app:${appKey}`, detail: { appKey }, ip: getClientIp(req) });
+  json(res, 200, { appKey, tenantId: grant.tenantId, userId: grant.userId, email: user.email || '', name: user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'User', role: grant.role, stores: connectors || [] });
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -1431,7 +1491,7 @@ async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, app
   if (!['owner', 'admin'].includes(auth.role)) return json(res, 403, { error: 'Workspace admin access required' });
   const { data: app } = await supabase.from('platform_apps').select('id,name,launch_url,required_scopes,status').eq('id', appId).single();
   if (!app) return json(res, 404, { error: 'App not found' });
-  if (app.status === 'planned') return json(res, 409, { error: 'This app is not available yet' });
+  if (app.status !== 'active') return json(res, 409, { error: 'This app has not completed its launch and workspace SSO contract' });
   const body = await parseJsonBody(req) || {};
   const requested = Array.isArray(body.scopes) ? body.scopes.map(String) : app.required_scopes;
   const allowed = new Set<string>(app.required_scopes || []);
@@ -1985,6 +2045,115 @@ async function handleStoreSummary(req: IncomingMessage, res: ServerResponse): Pr
   if (!auth) return json(res, 401, { error: 'Authentication required' });
   const summary = await getTenantStoreSummary(auth.tenantId);
   json(res, 200, summary ? { connected: true, summary } : { connected: false, summary: null });
+}
+
+async function handleStoreSales(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  const request = getRequestUrl(req);
+  let tenantId = auth?.tenantId || '';
+  if (!auth) {
+    const serviceToken = readServiceToken();
+    const presented = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+    const source = Array.isArray(req.headers['x-service-source']) ? req.headers['x-service-source'][0] : req.headers['x-service-source'];
+    tenantId = request.searchParams.get('tenantId') || '';
+    if (!serviceToken || source !== 'shre-router' || !tokensMatch(presented, serviceToken) || !UUID_RE.test(tenantId)) return json(res, 401, { error: 'Authentication required' });
+  }
+  const to = request.searchParams.get('to') || businessDate();
+  const from = request.searchParams.get('from') || to;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return json(res, 400, { error: 'from and to must be a valid date range' });
+  const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000) + 1;
+  if (days > 31) return json(res, 413, { error: 'Interactive sales queries are limited to 31 days. Start a historical sync for larger ranges.' });
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data: rows } = await supabase.from('tenant_connectors').select(`${CONNECTOR_COLUMNS}, credentials_encrypted`).eq('tenant_id', tenantId).eq('type', 'rapidrms-api').eq('status', 'connected').limit(1);
+    const row = rows?.[0];
+    if (!row) return json(res, 404, { error: 'No healthy RapidRMS connection is mapped to this workspace' });
+    ensureConnectorCrypto();
+    const secrets = JSON.parse(decryptValue(row.credentials_encrypted)) as Record<string, string>;
+    const daily = await fetchStoreSalesRange({ id: row.id, type: row.type, name: row.name, config: row.config || {}, secrets }, vaultSecretFor(tenantId), from, to);
+    for (const day of daily) {
+      await supabase.from('store_snapshots').upsert({ tenant_id: tenantId, connector_id: row.id, business_date: day.businessDate, captured_at: new Date().toISOString(), revenue: day.revenue, transactions: day.transactions, low_stock_count: 0, low_stock_items: [], source: { type: row.type, name: row.name }, partial: false }, { onConflict: 'tenant_id,business_date' });
+      void replicateSnapshotToCortex({ tenantId, connectorId: row.id, businessDate: day.businessDate, revenue: day.revenue, transactions: day.transactions, lowStockCount: 0, source: { type: row.type, name: row.name }, partial: false });
+    }
+    const totals = daily.reduce((sum, day) => ({ revenue: sum.revenue + day.revenue, transactions: sum.transactions + day.transactions }), { revenue: 0, transactions: 0 });
+    await auditLog({ tenantId, userId: auth?.userId, action: 'store.sales.read', resource: `connector:${row.id}`, detail: { from, to, days: daily.length, source: auth ? 'user' : 'shre-router' }, ip: getClientIp(req) });
+    json(res, 200, { store: row.name, from, to, daily, totals: { revenue: Math.round(totals.revenue * 100) / 100, transactions: totals.transactions, averageTicket: totals.transactions ? Math.round((totals.revenue / totals.transactions) * 100) / 100 : 0 }, source: 'RapidRMS API', fetchedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error('[store-sales]', err instanceof Error ? err.message : err);
+    json(res, 502, { error: 'RapidRMS sales data could not be retrieved' });
+  }
+}
+
+const runningStoreSyncs = new Set<string>();
+const isoDate = (value: Date) => value.toISOString().slice(0, 10);
+const addDays = (value: string, days: number) => isoDate(new Date(Date.parse(`${value}T00:00:00Z`) + days * 86_400_000));
+
+async function runStoreSync(jobId: string): Promise<void> {
+  if (runningStoreSyncs.has(jobId)) return;
+  runningStoreSyncs.add(jobId);
+  const supabase = createSupabaseAdmin();
+  try {
+    const { data: job, error: jobError } = await supabase.from('store_sync_jobs').select('*').eq('id', jobId).single();
+    if (jobError || !job || job.status === 'cancelled' || job.status === 'completed') return;
+    const { data: row, error: connectorError } = await supabase.from('tenant_connectors').select(`${CONNECTOR_COLUMNS}, credentials_encrypted`).eq('id', job.connector_id).eq('tenant_id', job.tenant_id).eq('type', 'rapidrms-api').eq('status', 'connected').single();
+    if (connectorError || !row) throw new Error('The RapidRMS connector is no longer healthy');
+    await supabase.from('store_sync_jobs').update({ status: 'running', started_at: job.started_at || new Date().toISOString(), last_error: null, updated_at: new Date().toISOString() }).eq('id', jobId);
+    ensureConnectorCrypto();
+    const secrets = JSON.parse(decryptValue(row.credentials_encrypted)) as Record<string, string>;
+    const totalDays = Math.round((Date.parse(`${job.to_date}T00:00:00Z`) - Date.parse(`${job.from_date}T00:00:00Z`)) / 86_400_000) + 1;
+    let cursor = String(job.cursor_date);
+    let daysSynced = Number(job.days_synced || 0);
+    while (cursor <= job.to_date) {
+      const { data: current } = await supabase.from('store_sync_jobs').select('status').eq('id', jobId).single();
+      if (current?.status === 'cancelled') return;
+      const chunkTo = [addDays(cursor, Number(job.chunk_days) - 1), String(job.to_date)].sort()[0];
+      const daily = await fetchStoreSalesRange({ id: row.id, type: row.type, name: row.name, config: row.config || {}, secrets }, vaultSecretFor(job.tenant_id), cursor, chunkTo);
+      for (const day of daily) {
+        const snapshot = { tenant_id: job.tenant_id, connector_id: row.id, business_date: day.businessDate, captured_at: new Date().toISOString(), revenue: day.revenue, transactions: day.transactions, low_stock_count: 0, low_stock_items: [], source: { type: row.type, name: row.name }, partial: false };
+        const { error } = await supabase.from('store_snapshots').upsert(snapshot, { onConflict: 'tenant_id,business_date' });
+        if (error) throw error;
+        void replicateSnapshotToCortex({ tenantId: job.tenant_id, connectorId: row.id, businessDate: day.businessDate, revenue: day.revenue, transactions: day.transactions, lowStockCount: 0, source: snapshot.source, partial: false });
+      }
+      const chunkDays = Math.round((Date.parse(`${chunkTo}T00:00:00Z`) - Date.parse(`${cursor}T00:00:00Z`)) / 86_400_000) + 1;
+      daysSynced += chunkDays;
+      cursor = addDays(chunkTo, 1);
+      await supabase.from('store_sync_jobs').update({ cursor_date: cursor, days_synced: daysSynced, progress: Math.min(99, Math.round(daysSynced / totalDays * 100)), updated_at: new Date().toISOString() }).eq('id', jobId);
+    }
+    await supabase.from('store_sync_jobs').update({ status: 'completed', progress: 100, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', jobId);
+    storeSummaryCache.delete(job.tenant_id);
+  } catch (err) {
+    await supabase.from('store_sync_jobs').update({ status: 'failed', last_error: err instanceof Error ? err.message.slice(0, 500) : 'Historical sync failed', updated_at: new Date().toISOString() }).eq('id', jobId);
+    console.error('[store-sync]', jobId, err instanceof Error ? err.message : err);
+  } finally {
+    runningStoreSyncs.delete(jobId);
+  }
+}
+
+async function handleStoreSync(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const supabase = createSupabaseAdmin();
+  if (req.method === 'GET') {
+    const { data, error } = await supabase.from('store_sync_jobs').select('id,connector_id,from_date,to_date,cursor_date,chunk_days,status,progress,days_synced,last_error,started_at,completed_at,created_at,updated_at').eq('tenant_id', auth.tenantId).order('created_at', { ascending: false }).limit(20);
+    return error ? json(res, 500, { error: error.message }) : json(res, 200, { jobs: data || [] });
+  }
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+  const months = Math.max(1, Math.min(36, Number(body.months || 12)));
+  const to = typeof body.to === 'string' ? body.to : businessDate();
+  const defaultFrom = new Date(`${to}T00:00:00Z`); defaultFrom.setUTCMonth(defaultFrom.getUTCMonth() - months);
+  const from = typeof body.from === 'string' ? body.from : isoDate(defaultFrom);
+  const chunkDays = Math.max(1, Math.min(31, Number(body.chunkDays || 7)));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return json(res, 400, { error: 'Invalid historical date range' });
+  const { data: connector } = await supabase.from('tenant_connectors').select('id').eq('tenant_id', auth.tenantId).eq('type', 'rapidrms-api').eq('status', 'connected').limit(1).maybeSingle();
+  if (!connector) return json(res, 409, { error: 'Connect and test a RapidRMS store before starting history sync' });
+  const { data: existing } = await supabase.from('store_sync_jobs').select('id,status').eq('tenant_id', auth.tenantId).in('status', ['queued','running']).limit(1).maybeSingle();
+  if (existing) return json(res, 409, { error: 'A historical sync is already active', job: existing });
+  const { data: job, error } = await supabase.from('store_sync_jobs').insert({ tenant_id: auth.tenantId, connector_id: connector.id, from_date: from, to_date: to, cursor_date: from, chunk_days: chunkDays }).select('*').single();
+  if (error || !job) return json(res, 500, { error: error?.message || 'Could not create sync job' });
+  void runStoreSync(job.id);
+  json(res, 202, { job });
 }
 
 function validateConnectorInput(
@@ -2614,6 +2783,12 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (pathname === '/api/store/summary' && method === 'GET') {
     return handleStoreSummary(req, res);
   }
+  if (pathname === '/api/store/sales' && method === 'GET') {
+    return handleStoreSales(req, res);
+  }
+  if (pathname === '/api/store/sync' && (method === 'GET' || method === 'POST')) {
+    return handleStoreSync(req, res);
+  }
 
   if (pathname === '/api/marketplace/entitlements' && method === 'GET') {
     return handleMarketplaceEntitlements(req, res);
@@ -2642,6 +2817,12 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   const workspaceRolesMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/roles$/);
   if (workspaceRolesMatch && method === 'GET') return handleWorkspaceMembersCompat(req, res, workspaceRolesMatch[1]);
   if (pathname === '/api/apps' && method === 'GET') return handlePlatformApps(req, res);
+  if (pathname === '/api/app-launch/consume' && method === 'POST') {
+    if (!rateLimit(req, 30, 60_000)) return json(res, 429, { error: 'Too many launch attempts' });
+    return handleAppLaunchConsume(req, res);
+  }
+  const appLaunchMatch = pathname.match(/^\/api\/apps\/([a-z0-9-]+)\/launch$/);
+  if (appLaunchMatch && method === 'POST') return handleAppLaunchCreate(req, res, appLaunchMatch[1]);
   const appGrantMatch = pathname.match(/^\/api\/apps\/([a-z0-9-]+)\/grant$/);
   if (appGrantMatch && method === 'POST') return handlePlatformApps(req, res, appGrantMatch[1]);
 
@@ -2691,6 +2872,15 @@ const server = createServer((req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[aros-platform] Health server listening on 0.0.0.0:${PORT}`);
   heartbeat.start();
+
+  // Resume interrupted historical imports after a deploy or process restart.
+  setTimeout(() => {
+    createSupabaseAdmin().from('store_sync_jobs').select('id').in('status', ['queued', 'running'])
+      .then(({ data, error }) => {
+        if (error) return console.error('[store-sync] resume query:', error.message);
+        for (const job of data || []) void runStoreSync(job.id);
+      });
+  }, 15_000).unref();
 
   // Warehouse snapshotter — env-gated (STORE_SNAPSHOT_INTERVAL_MIN>0 to enable).
   // Off by default: no env, no background work.

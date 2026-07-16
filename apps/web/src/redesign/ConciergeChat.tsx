@@ -89,7 +89,7 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
         headers: {
           'Content-Type': 'application/json', 'x-channel': 'aros',
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-          ...(tenant?.id ? { 'x-aros-tenant-id': tenant.id, 'X-Workspace-ID': tenant.id } : {}),
+          ...(tenant?.id ? { 'x-tenant-id': tenant.id, 'x-aros-tenant-id': tenant.id, 'X-Workspace-ID': tenant.id } : {}),
         },
         body: JSON.stringify({
           agentId: 'aros-agent',

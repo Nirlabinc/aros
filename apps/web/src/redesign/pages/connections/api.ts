@@ -29,6 +29,8 @@ export type AppGrant = {
   enabled_at?: string | null;
 };
 
+export type StoreSyncJob = { id: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; progress: number; from_date: string; to_date: string; days_synced: number; last_error?: string | null };
+
 const apiBase = () => (window as Window & { __AROS_API_URL__?: string }).__AROS_API_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
 
@@ -67,6 +69,14 @@ export async function removeStore(auth: AuthScope, id: string): Promise<void> {
   await request(`/api/connectors?id=${encodeURIComponent(id)}`, auth, { method: 'DELETE' });
 }
 
+export async function listStoreSyncs(auth: AuthScope): Promise<StoreSyncJob[]> {
+  return (await request<{ jobs?: StoreSyncJob[] }>('/api/store/sync', auth)).jobs || [];
+}
+
+export async function startStoreSync(auth: AuthScope, months = 12): Promise<StoreSyncJob> {
+  return (await request<{ job: StoreSyncJob }>('/api/store/sync', auth, { method: 'POST', body: JSON.stringify({ months, chunkDays: 7 }) })).job;
+}
+
 export async function listApps(auth: AuthScope): Promise<{ apps: PlatformApp[]; grants: AppGrant[] }> {
   const data = await request<{ apps?: PlatformApp[]; grants?: AppGrant[] }>('/api/apps', auth);
   return { apps: (data.apps || []).map(app => ({ ...app, url: app.url || app.launch_url || null })), grants: data.grants || [] };
@@ -80,5 +90,11 @@ export async function grantApp(auth: AuthScope, app: PlatformApp, storeIds: stri
 
 export async function disableApp(auth: AuthScope, appId: string): Promise<void> {
   await request(`/api/marketplace/apps/${encodeURIComponent(appId)}/disable`, auth, { method: 'POST' });
+}
+
+export async function createAppLaunch(auth: AuthScope, appId: string): Promise<string> {
+  const result = await request<{ launchUrl: string }>(`/api/apps/${encodeURIComponent(appId)}/launch`, auth, { method: 'POST' });
+  if (!result.launchUrl) throw new Error('The app did not return a launch destination');
+  return result.launchUrl;
 }
 
