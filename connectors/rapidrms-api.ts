@@ -5,6 +5,14 @@
 import type { RapidRmsApiConfig, RapidRmsSession, ConnectorTestResult } from './types.js';
 import { retrieveCredential } from './vault-ref.js';
 
+function unwrapEnvelope(body: Record<string, unknown>): Record<string, unknown> {
+  if (body.code === '999' && body.data) {
+    const data = typeof body.data === 'string' ? JSON.parse(body.data) : body.data;
+    return (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  }
+  return body;
+}
+
 // ── Authenticate ────────────────────────────────────────────────
 
 /** Authenticate with RapidRMS. Retrieves email + password from vault. */
@@ -20,10 +28,10 @@ export async function authenticate(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      ClientId: config.clientId,
-      Email: email,
+      grant_type: 'token',
+      client_id: config.clientId,
+      Username: email,
       Password: password,
-      RememberMe: true,
     }),
   });
 
@@ -31,13 +39,16 @@ export async function authenticate(
     throw new Error(`RapidRMS auth failed: ${res.status} ${res.statusText}`);
   }
 
-  const data = (await res.json()) as Record<string, unknown>;
+  const data = unwrapEnvelope((await res.json()) as Record<string, unknown>);
+  const token = String(data.access_token || data.Token || data.token || '');
+  if (!token) throw new Error('No token in RapidRMS auth response');
   const cookie = res.headers.get('set-cookie') ?? '';
   const timeout = config.sessionTimeout || 420;
 
   return {
     config,
     dbName: String(data.DbName ?? ''),
+    token,
     cookie,
     expiresAt: Date.now() + timeout * 60 * 1000,
     authenticated: true,
@@ -62,7 +73,10 @@ export async function request(
     method,
     headers: {
       'Content-Type': 'application/json',
-      Cookie: session.cookie,
+      Authorization: `Bearer ${session.token}`,
+      ClientId: session.config.clientId,
+      DbName: session.dbName,
+      ...(session.cookie ? { Cookie: session.cookie } : {}),
     },
   };
 
@@ -75,7 +89,8 @@ export async function request(
     throw new Error(`RapidRMS ${method} ${path}: ${res.status} ${res.statusText}`);
   }
 
-  return res.json();
+  const body = (await res.json()) as Record<string, unknown>;
+  return unwrapEnvelope(body);
 }
 
 // ── Test ────────────────────────────────────────────────────────

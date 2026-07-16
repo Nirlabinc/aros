@@ -51,6 +51,7 @@ export interface AzureDbConnection {
 export interface RapidRmsSession {
   config: RapidRmsApiConfig;
   dbName: string;
+  token: string;
   cookie: string;
   expiresAt: number;
   authenticated: boolean;
