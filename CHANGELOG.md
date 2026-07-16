@@ -17,11 +17,17 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - Store connection management now supports title, details, access mode, provider configuration, and secure credential rotation with automatic re-testing.
 
 ### Planned / In Progress
-- Verify the post-flip security checks now that the redesign is the default: server-side rejects a mismatched `x-aros-tenant-id`, `Cache-Control: private, no-store` on the app shell, demo-leak checks (login shows empty states / no demo persona)
 - Converge the redesign canvas onto the shared `mib-widget` content-block contract (once the live fork picks up PR #38)
 - Restyle the Login/Signup auth screens to the new theme
 - MIB API reuse for resources/POS (blocked on a shre-id tenant↔company token bridge)
 - Shre brain sync integration; BYOM model selector; Licensing module
+
+## [0.5.1] — 2026-07-16 — Post-flip security hardening
+### Security
+- App-shell HTML (and the index.html SPA fallback) now returns `Cache-Control: private, no-store`, so no shared cache/CDN stores the authenticated bootstrap. Fingerprinted `/assets/*` stay `public, immutable`. (`src/server.ts` `sendStaticFile`)
+### Verified (post-flip audit, redesign now default)
+- **Tenant isolation:** the server never trusts the `x-aros-tenant-id` header — `authenticateRequest()` validates the Bearer token, then requires an active `tenant_members` row for `(user, requested_tenant)`; a mismatch yields zero rows → 401, and the effective tenant is read from the DB membership. Every data query scopes by `auth.tenantId`; workspace routes add an explicit `!== → 403`. Unauthenticated `/api/*` returns 401.
+- **No demo-data leak:** demo persona/figures are gated on `useDemo() === !session` and only render on the unauthenticated `/preview/app` route; the served shell embeds no persona. A live session shows real fetches and empty states.
 
 ## [0.5.0] — 2026-07-16 — Chat-first redesign (soft launch)
 ### Added
