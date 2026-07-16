@@ -20,10 +20,10 @@ export async function authenticate(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      ClientId: config.clientId,
-      Email: email,
+      grant_type: 'token',
+      client_id: String(config.clientId),
+      Username: email,
       Password: password,
-      RememberMe: true,
     }),
   });
 
@@ -31,13 +31,19 @@ export async function authenticate(
     throw new Error(`RapidRMS auth failed: ${res.status} ${res.statusText}`);
   }
 
-  const data = (await res.json()) as Record<string, unknown>;
+  const envelope = (await res.json()) as Record<string, unknown>;
+  const rawData = envelope.data;
+  const data = (typeof rawData === 'string' ? JSON.parse(rawData) : rawData || envelope) as Record<string, unknown>;
+  const token = String(data.access_token ?? '');
+  const dbName = String(data.DbName ?? '');
+  if (!token || !dbName) throw new Error('RapidRMS auth response did not include token and database context');
   const cookie = res.headers.get('set-cookie') ?? '';
   const timeout = config.sessionTimeout || 420;
 
   return {
     config,
-    dbName: String(data.DbName ?? ''),
+    dbName,
+    token,
     cookie,
     expiresAt: Date.now() + timeout * 60 * 1000,
     authenticated: true,
@@ -68,6 +74,8 @@ export async function request(
     method: normalizedMethod,
     headers: {
       'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.token}`,
+      DbName: session.dbName,
       Cookie: session.cookie,
     },
   };
