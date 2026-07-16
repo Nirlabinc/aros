@@ -17,8 +17,22 @@ const LOW_STOCK = [
   { sku: 'Red Bull 12oz', store: '3rd St Express', onHand: 6, par: 30 },
 ];
 
+import { useCanvasDemo } from './data';
+
 export function Canvas() {
+  const demo = useCanvasDemo();
   const max = Math.max(...SALES_BY_STORE.map(s => s.value));
+  if (!demo) {
+    return (
+      <div className="rsx2-canvas">
+        <div className="rsx2-empty rsx2-empty--tall">
+          <div className="rsx2-empty__icon">📊</div>
+          <div className="rsx2-empty__title">Nothing on the canvas yet</div>
+          <div className="rsx2-empty__text">Ask Shre a question — charts, tables, and numbers from the answer show up here.</div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="rsx2-canvas">
       <div className="rsx2-canvas__head">

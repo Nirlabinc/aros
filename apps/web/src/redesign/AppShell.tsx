@@ -7,6 +7,7 @@ import { Canvas } from './Canvas';
 import { Home } from './Home';
 import { HistoryPanel } from './HistoryPanel';
 import { branding } from './branding';
+import { useIdentity } from './data';
 import {
   PRIMARY_NAV, WORKSPACE_NAV, USER, ROLES, SECTION_TITLES, type SectionKey, type NavItem, type ChatMsg, type Conversation,
 } from './shellData';
@@ -28,12 +29,13 @@ function NavRow({ item, active, onClick }: { item: NavItem; active: boolean; onC
 }
 
 function UserRow({ onClick }: { onClick: () => void }) {
+  const id = useIdentity();
   return (
     <button className="rsx2-userrow" onClick={onClick}>
-      <span className="aros-user__avatar">{USER.initials}</span>
+      <span className="aros-user__avatar">{id.initials}</span>
       <span className="rsx2-userrow__info">
-        <span className="aros-user__name">{USER.name}</span>
-        <span className="aros-user__meta">{USER.role} · {USER.workspace}</span>
+        <span className="aros-user__name">{id.name}</span>
+        <span className="aros-user__meta">{id.role} · {id.workspace}</span>
       </span>
     </button>
   );
@@ -41,6 +43,7 @@ function UserRow({ onClick }: { onClick: () => void }) {
 
 export function AppShell() {
   const b = branding();
+  const ident = useIdentity();
   const [mode, setMode] = useState<'home' | 'chat' | 'app'>('home');
   const [section, setSection] = useState<Exclude<SectionKey, 'chat'>>('stores');
   const [role, setRole] = useState<string>(USER.role);
@@ -67,6 +70,10 @@ export function AppShell() {
     if (mobile) setMenuOpen(true);
     else { setMode('home'); setMenuOpen(false); }
   };
+  // Profile is a LEFT panel overlapping the sidebar; it persists while you click
+  // through the account pages (Home + Team/Billing/Usage/Settings).
+  const openProfile = () => { if (mode === 'chat') setMode('home'); setMenuOpen(false); setProfileOpen(true); };
+  const goProfileSection = (key: SectionKey) => { if (key !== 'chat') { setSection(key); setMode('app'); } };
 
   useEffect(() => {
     if (!toast) return;
@@ -96,7 +103,7 @@ export function AppShell() {
         <div style={{ flex: 1 }} />
         <span className="aros-topbar__status rsx2-hide-sm"><span className="aros-health__dot" style={{ background: 'var(--ok)' }} /> 5 stores live</span>
         <button className="aros-topbar__toggle rsx2-hide-sm" onClick={toggleTheme}>{themeLabel}</button>
-        <button className="rsx2-avatar" onClick={() => setProfileOpen(true)} aria-label="Profile" title="Profile">{USER.initials}</button>
+        <button className="rsx2-avatar" onClick={openProfile} aria-label="Profile" title="Profile">{ident.initials}</button>
       </header>
 
       {mode === 'chat' ? (
@@ -145,7 +152,7 @@ export function AppShell() {
                 <NavRow key={item.key} item={item} active={mode === 'app' && section === item.key} onClick={() => goSection(item.key)} />
               ))}
             </div>
-            <div className="rsx2-nav__foot"><UserRow onClick={() => setProfileOpen(true)} /></div>
+            <div className="rsx2-nav__foot"><UserRow onClick={openProfile} /></div>
           </aside>
           <main className="rsx2-content">
             {mode === 'home'
@@ -173,37 +180,39 @@ export function AppShell() {
                 <NavRow key={item.key} item={item} active={mode === 'app' && section === item.key} onClick={() => goSection(item.key)} />
               ))}
             </div>
-            <div className="rsx2-nav__foot"><UserRow onClick={() => { setMenuOpen(false); setProfileOpen(true); }} /></div>
+            <div className="rsx2-nav__foot"><UserRow onClick={openProfile} /></div>
           </aside>
         </div>
       )}
 
       {profileOpen && (
-        <div className="rsx2-scrim" onClick={() => setProfileOpen(false)}>
-          <aside className="rsx2-profile" onClick={e => e.stopPropagation()}>
-            <div className="rsx2-profile__head">
-              <div className="aros-user__avatar" style={{ width: 40, height: 40, fontSize: 14 }}>{USER.initials}</div>
-              <div>
-                <div className="aros-user__name" style={{ fontSize: 15 }}>{USER.name}</div>
-                <div className="aros-user__meta">{role} · {USER.workspace}</div>
-              </div>
-              <button className="rsx-modal__x" style={{ marginLeft: 'auto' }} onClick={() => setProfileOpen(false)} aria-label="Close">×</button>
+        <aside className="rsx2-profilenav">
+          <div className="rsx2-profilenav__head">
+            <div className="aros-user__avatar" style={{ width: 38, height: 38, fontSize: 13 }}>{ident.initials}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="aros-user__name" style={{ fontSize: 14 }}>{ident.name}</div>
+              <div className="aros-user__meta">{role} · {ident.workspace}</div>
             </div>
-            <div className="aros-role__label" style={{ marginTop: 8 }}>Role</div>
+            <button className="rsx-modal__x" onClick={() => setProfileOpen(false)} aria-label="Close profile">×</button>
+          </div>
+          <div className="rsx2-nav__list">
+            <button className="rsx-nav" aria-current={mode === 'home'} onClick={() => setMode('home')}>
+              <span className="rsx-nav__glyph">⌂</span><span style={{ flex: 1 }}>Home</span>
+            </button>
+            <div className="aros-role__label" style={{ marginTop: 14 }}>Role</div>
             <div className="aros-role__pills">
               {ROLES.map(r => (<button key={r} className="aros-role__pill" aria-pressed={role === r} onClick={() => setRole(r)}>{r}</button>))}
             </div>
             <div className="aros-side__section" style={{ marginLeft: 0 }}>Workspace</div>
-            <nav>
-              {WORKSPACE_NAV.map(item => (
-                <NavRow key={item.key} item={item} active={mode === 'app' && section === item.key} onClick={() => goSection(item.key)} />
-              ))}
-            </nav>
-            <div style={{ flex: 1 }} />
+            {WORKSPACE_NAV.map(item => (
+              <NavRow key={item.key} item={item} active={mode === 'app' && section === item.key} onClick={() => goProfileSection(item.key)} />
+            ))}
+          </div>
+          <div className="rsx2-nav__foot">
             <button className="aros-topbar__toggle rsx2-show-sm" onClick={toggleTheme} style={{ width: '100%', marginBottom: 8 }}>{themeLabel} mode</button>
-            <button className="rsx2-signout">Sign out</button>
-          </aside>
-        </div>
+            <button className="rsx2-signout" style={{ width: '100%' }}>Sign out</button>
+          </div>
+        </aside>
       )}
 
       {wizardOpen && (

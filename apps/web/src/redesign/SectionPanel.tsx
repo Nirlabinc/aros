@@ -1,4 +1,5 @@
-import { SECTIONS, type SectionKey, type Card, type Row, type FormField } from './shellData';
+import { type SectionKey, type Card, type Row, type FormField } from './shellData';
+import { useSection } from './data';
 
 function StatRow({ stats }: { stats: { value: string | number; label: string }[] }) {
   return (
@@ -77,8 +78,12 @@ function FormPanel({ fields }: { fields: FormField[] }) {
  * live fetches — the render layer stays the same.
  */
 export function SectionPanel({ section, onConnect }: { section: Exclude<SectionKey, 'chat'>; onConnect?: () => void }) {
-  const spec = SECTIONS[section];
+  const { spec, loading } = useSection(section);
   const ctaOpensWizard = section === 'stores';
+  const cta = spec.primaryCta && (
+    <button className="rsx-panel__cta" type="button" onClick={ctaOpensWizard ? onConnect : undefined}>{spec.primaryCta}</button>
+  );
+  const hasContent = !!(spec.stats?.length || spec.cards?.length || spec.rows?.length || spec.form?.length || spec.note);
   return (
     <div className="rsx-panel">
       <div className="rsx-panel__head">
@@ -86,20 +91,31 @@ export function SectionPanel({ section, onConnect }: { section: Exclude<SectionK
           <div className="rsx-panel__eyebrow">{spec.eyebrow}</div>
           <p className="rsx-panel__lead">{spec.lead}</p>
         </div>
-        {spec.primaryCta && (
-          <button className="rsx-panel__cta" type="button" onClick={ctaOpensWizard ? onConnect : undefined}>{spec.primaryCta}</button>
-        )}
+        {cta}
       </div>
 
-      {spec.stats && <StatRow stats={spec.stats} />}
-      {spec.cards && <CardGrid cards={spec.cards} />}
-      {spec.rows && <RowList rows={spec.rows} />}
-      {spec.form && <FormPanel fields={spec.form} />}
-      {spec.note && (
-        <div className="rsx-note">
-          <div className="rsx-note__title">✓ {spec.note.title}</div>
-          <div className="rsx-note__body">{spec.note.body}</div>
+      {loading ? (
+        <div className="rsx2-empty"><div className="rsx2-empty__text">Loading…</div></div>
+      ) : !hasContent ? (
+        <div className="rsx2-empty">
+          <div className="rsx2-empty__icon">◇</div>
+          <div className="rsx2-empty__title">Nothing here yet</div>
+          <div className="rsx2-empty__text">Once you connect your data, this appears automatically.</div>
+          {ctaOpensWizard && spec.primaryCta && <button className="rsx-panel__cta" type="button" onClick={onConnect}>{spec.primaryCta}</button>}
         </div>
+      ) : (
+        <>
+          {spec.stats && <StatRow stats={spec.stats} />}
+          {spec.cards && <CardGrid cards={spec.cards} />}
+          {spec.rows && <RowList rows={spec.rows} />}
+          {spec.form && <FormPanel fields={spec.form} />}
+          {spec.note && (
+            <div className="rsx-note">
+              <div className="rsx-note__title">✓ {spec.note.title}</div>
+              <div className="rsx-note__body">{spec.note.body}</div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

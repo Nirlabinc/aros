@@ -113,6 +113,27 @@
 @keyframes rsx2-slide-left { from { transform: translateX(-24px); opacity: 0.4; } to { transform: none; opacity: 1; } }
 .rsx2-drawer__brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 14px; }
 
+/* --- profile panel: a LEFT sidebar that overlaps the primary nav and persists
+   while you click through account pages (Home + Team/Billing/Usage/Settings) --- */
+.rsx2-profilenav {
+  position: fixed; top: 56px; left: 0; bottom: 0; width: 240px; max-width: 84vw; z-index: 60;
+  background: var(--surface); border-right: 1px solid var(--line);
+  box-shadow: 24px 0 60px -34px rgba(0, 0, 0, 0.55);
+  display: flex; flex-direction: column; padding: 14px 12px;
+  animation: rsx2-slide-left 0.24s var(--ease-open) both;
+}
+.rsx2-profilenav__head { display: flex; align-items: center; gap: 10px; padding: 2px 6px 12px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.rsx2-profilenav .rsx2-nav__list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.rsx2-profilenav .rsx2-nav__foot { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+
+/* --- empty states (live build shows these instead of demo data) --- */
+.rsx2-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; padding: 40px 20px; }
+.rsx2-empty--tall { flex: 1; min-height: 320px; }
+.rsx2-empty__icon { font-size: 30px; opacity: 0.75; margin-bottom: 4px; }
+.rsx2-empty__title { font-size: 15px; font-weight: 600; color: var(--ink); }
+.rsx2-empty__text { font-size: 13px; color: var(--ink-3); max-width: 400px; line-height: 1.5; }
+.rsx2-empty .rsx-panel__cta { margin: 10px 0 0; }
+
 /* --- right-pane tabs (Canvas / History) --- */
 .rsx2-tabs { display: flex; gap: 8px; padding: 12px 30px 0; flex-shrink: 0; border-bottom: 1px solid var(--line); }
 .rsx2-tab { border: none; background: none; color: var(--ink-3); font-family: inherit; font-size: 13.5px; font-weight: 600; padding: 8px 4px 12px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
