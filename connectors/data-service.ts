@@ -79,7 +79,7 @@ function pickStr(row: Record<string, unknown>, names: string[]): string | null {
 // section, never a wrong number — safe to ship, refine once a real tenant
 // connects.
 const REVENUE_FIELDS = ['Total', 'NetSales', 'NetTotal', 'GrandTotal', 'SalesAmount', 'Amount', 'TotalAmount', 'BillAmount', 'billAmount', 'subTotal', 'grandTotal', 'bill_amount'];
-const SALES_DATE_FIELDS = ['InvoiceDate', 'invoiceDate', 'invoice_date', 'CreatedDate', 'createdDate', 'BusinessDate', 'business_date', 'Date', 'date'];
+const SALES_DATE_FIELDS = ['InvoiceDate', 'invoiceDate', 'invoice_date', 'CreatedDate', 'createdDate', 'BusinessDate', 'business_date', 'datetime', 'Date', 'date'];
 const INVOICE_FIELDS = ['InvoiceNo', 'invoiceNo', 'invoice_no', 'InvoiceNumber', 'TransactionId', 'transaction_id'];
 const QTY_FIELDS = ['OnHand', 'QtyOnHand', 'Quantity', 'Qty', 'StockOnHand', 'CurrentStock'];
 const REORDER_FIELDS = ['ReorderPoint', 'ReorderLevel', 'MinQty', 'MinimumQty', 'Threshold', 'ParLevel'];
@@ -92,6 +92,14 @@ function todayRange(): { from: string; to: string } {
   const d = String(now.getUTCDate()).padStart(2, '0');
   const day = `${y}-${m}-${d}`;
   return { from: `${day}T00:00:00`, to: `${day}T23:59:59` };
+}
+
+function normalizeBusinessDate(value: string | null): string | null {
+  if (!value) return null;
+  const iso = value.match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+  if (iso) return iso;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : null;
 }
 
 const INVOICE_PAGE_SIZE = 5000;
@@ -239,7 +247,10 @@ export async function fetchStoreSalesRange(
     const buckets = new Map<string, { revenue: number; invoices: Set<string>; rows: number }>();
     for (const row of rows) {
       const dateValue = pickStr(row, SALES_DATE_FIELDS);
-      const businessDate = dateValue?.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
+      // RapidRMS's live payload uses `datetime` and may format it in the
+      // tenant locale rather than ISO. For a one-day API result, the endpoint
+      // itself provides the date boundary even if an older tenant omits it.
+      const businessDate = normalizeBusinessDate(dateValue) || (from === to ? from : null);
       if (!businessDate || businessDate < from || businessDate > to) continue;
       const bucket = buckets.get(businessDate) || { revenue: 0, invoices: new Set<string>(), rows: 0 };
       bucket.revenue += pickNum(row, REVENUE_FIELDS) || 0;
