@@ -26,6 +26,7 @@ import AIModelsSettings from '../pages/settings/AIModels';
 import { CapabilityCatalog } from '../pages/settings/CapabilityCatalog';
 import { ConnectionHealth } from '../pages/settings/ConnectionHealth';
 import { centralIdentityOnly } from '../lib/supabase';
+import { AppShell } from '../redesign/AppShell';
 
 const MARKETPLACE_ADMIN_URL = (window as any).__MARKETPLACE_URL__
   ? `${(window as any).__MARKETPLACE_URL__}/admin`
@@ -45,6 +46,11 @@ function AppContent() {
   const path = window.location.pathname;
   const isAdmin = user?.app_metadata?.role === 'admin' || user?.app_metadata?.role === 'superadmin';
   const onboarded = isOnboardingComplete(tenant);
+
+  // Chat-first redesign preview — self-contained, no auth, for review only.
+  if (path.startsWith('/preview/app')) {
+    return <AppShell />;
+  }
 
   if (centralIdentityOnly && path !== '/login' && path !== '/signup') {
     const authorize = path === '/oauth/authorize' ? `${path}${window.location.search}` : null;
