@@ -7,6 +7,7 @@ import { Canvas } from './Canvas';
 import { Home } from './Home';
 import { HistoryPanel } from './HistoryPanel';
 import { branding } from './branding';
+import { type CanvasWidgetItem } from '../aros-ai/canvas';
 import { useIdentity } from './data';
 import {
   PRIMARY_NAV, WORKSPACE_NAV, USER, ROLES, SECTION_TITLES, type SectionKey, type NavItem, type ChatMsg, type Conversation,
@@ -58,16 +59,13 @@ export function AppShell() {
   const [rightTab, setRightTab] = useState<'canvas' | 'history'>('canvas');
   const [recalled, setRecalled] = useState<ChatMsg[] | null>(null);
   const [activeConvo, setActiveConvo] = useState<string | undefined>(undefined);
-  const [canvasBlocks, setCanvasBlocks] = useState<any[] | null>(null);
+  const [canvasItems, setCanvasItems] = useState<CanvasWidgetItem[]>([]);
   const { label: themeLabel, toggle: toggleTheme } = useArosTheme();
   const chatToggleRef = useRef<HTMLButtonElement>(null);
 
-  const recall = (c: Conversation) => { setRecalled(c.messages); setActiveConvo(c.id); setCanvasBlocks(null); setChatKey(k => k + 1); setRightTab('canvas'); setMode('chat'); };
-  const newChat = () => { setRecalled(null); setActiveConvo(undefined); setCanvasBlocks(null); setSeed(''); setChatKey(k => k + 1); };
-  const onChatReply = (data: any) => {
-    const b = data?.blocks || data?.canvas?.blocks || data?.content_blocks;
-    if (Array.isArray(b) && b.length) { setCanvasBlocks(b); setRightTab('canvas'); }
-  };
+  const recall = (c: Conversation) => { setRecalled(c.messages); setActiveConvo(c.id); setCanvasItems([]); setChatKey(k => k + 1); setRightTab('canvas'); setMode('chat'); };
+  const newChat = () => { setRecalled(null); setActiveConvo(undefined); setCanvasItems([]); setSeed(''); setChatKey(k => k + 1); };
+  const onCanvasItems = (items: CanvasWidgetItem[]) => { setCanvasItems(items); if (items.length) setRightTab('canvas'); };
   // Menu: on mobile (no docked sidebar) open the nav drawer; on desktop close
   // chat and return to Home, where the docked sidebar is always visible.
   const onMenu = () => {
@@ -132,14 +130,14 @@ export function AppShell() {
               </div>
               <button className="rsx2-chatpane__new" onClick={newChat}><PlusIcon /> New chat</button>
             </div>
-            <ConciergeChat key={chatKey} onConnect={openWizard} seed={seed} focusOnMount initial={recalled ?? undefined} onReply={onChatReply} />
+            <ConciergeChat key={chatKey} onConnect={openWizard} seed={seed} focusOnMount initial={recalled ?? undefined} onCanvasItems={onCanvasItems} />
           </aside>
           <div className="rsx2-canvaswrap">
             <div className="rsx2-tabs">
               <button className={`rsx2-tab ${rightTab === 'canvas' ? 'is-on' : ''}`} onClick={() => setRightTab('canvas')}>Canvas</button>
               <button className={`rsx2-tab ${rightTab === 'history' ? 'is-on' : ''}`} onClick={() => setRightTab('history')}>History</button>
             </div>
-            {rightTab === 'canvas' ? <Canvas blocks={canvasBlocks ?? undefined} /> : <HistoryPanel onRecall={recall} activeId={activeConvo} />}
+            {rightTab === 'canvas' ? <Canvas items={canvasItems} /> : <HistoryPanel onRecall={recall} activeId={activeConvo} />}
           </div>
         </div>
       ) : (
