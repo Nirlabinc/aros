@@ -43,10 +43,18 @@ function isOnboardingComplete(tenant: Tenant | null): boolean {
 }
 
 function AppContent() {
-  const { user, session, tenant, loading } = useSupabaseAuth();
+  const { user, session, tenant, loading, membershipError } = useSupabaseAuth();
   const path = window.location.pathname;
   const isAdmin = user?.app_metadata?.role === 'admin' || user?.app_metadata?.role === 'superadmin';
   const onboarded = isOnboardingComplete(tenant);
+  // A failed membership lookup is not evidence of a new workspace. Route an
+  // authenticated session to the dashboard so ProtectedRoute can show/retry
+  // the shared-backend lookup instead of incorrectly starting onboarding.
+  const authenticatedLanding = membershipError
+    ? '/dashboard'
+    : tenant
+      ? (onboarded ? '/dashboard' : '/start')
+      : '/start';
 
   // Chat-first redesign preview — self-contained, no auth, for review only.
   if (path.startsWith('/preview/app')) {
@@ -70,7 +78,7 @@ function AppContent() {
     const isHostedResume = new URLSearchParams(window.location.search).has('return_to');
     if (session && !loading && !isHostedResume) {
       // New users land in the value-first demo chat (/start), not the wizard.
-      window.location.href = onboarded ? '/dashboard' : '/start';
+      window.location.href = authenticatedLanding;
       return null;
     }
     return <><Login /><ChatWidget /></>;
@@ -78,7 +86,7 @@ function AppContent() {
 
   if (path === '/signup') {
     if (session && !loading) {
-      window.location.href = onboarded ? '/dashboard' : '/start';
+      window.location.href = authenticatedLanding;
       return null;
     }
     return <><Signup /><ChatWidget /></>;
