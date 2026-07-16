@@ -2,12 +2,14 @@ import { useState, FormEvent } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { safeReturnTo } from '../app-registry';
 import { hostedAuth, safeIssuerReturnTo, type HostedChallenge, type HostedWorkspace } from '../lib/hosted-auth';
+import { useArosTheme } from '../lib/useArosTheme';
 
 const AUTH_BASE = (window as any).__SHRE_AUTH_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5455' : '');
 
 export function Login() {
   const { signIn } = useAuth();
+  const { label: themeLabel, toggle: toggleTheme } = useArosTheme();
   const params = new URLSearchParams(window.location.search);
   const justRegistered = params.get('registered') === 'true';
   const prefillEmail = params.get('email') || '';
@@ -65,214 +67,77 @@ export function Login() {
     setError(''); setLoading(true);
     try {
       await hostedAuth.verifyTwoFactor(AUTH_BASE, challenge, code);
-      // The API has now set the issuer-scoped HttpOnly cookie. Resume only the
-      // validated internal authorize request; its own client registry controls the callback.
       window.location.assign(issuerReturnTo);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Verification failed'); }
     finally { setLoading(false); }
   }
 
   return (
-    <div style={styles.wrapper}>
-      <div style={styles.container}>
-        <div style={styles.header}>
-          <div style={styles.logo}>AROS</div>
-          <p style={styles.tagline}>Agentic Retail Operating System</p>
-        </div>
+    <div className="aros-auth">
+      <div className="aros-auth__topbar">
+        <div className="aros-auth__brand-mark">A</div>
+        <span className="aros-auth__brand-name">AROS</span>
+        <span className="aros-auth__brand-by">by ShreAI</span>
+        <div style={{ flex: 1 }} />
+        <button type="button" className="aros-auth__theme-toggle" onClick={toggleTheme}>{themeLabel}</button>
+      </div>
 
-        <div style={styles.card}>
-          <h2 style={styles.cardTitle}>Sign in to your account</h2>
-
-          {justRegistered && (
-            <div style={{ padding: '10px 14px', background: '#f0fdf4', color: '#16a34a', borderRadius: 8, fontSize: 13, fontWeight: 500, marginBottom: 16, border: '1px solid #bbf7d0' }}>
-              Account created successfully! Sign in to get started.
-            </div>
-          )}
-
-          {hosted && <p style={{ fontSize: 13, color: '#6b7280', textAlign: 'center', marginTop: -12 }}>Sign in once to continue securely to your app.</p>}
-
-          {workspaces.length > 0 && !challenge ? (
-            <div style={styles.form}>
-              <div style={styles.label}>Choose a workspace</div>
-              {workspaces.map(workspace => (
-                <button key={workspace.id} type="button" disabled={loading} style={styles.button} onClick={() => void chooseWorkspace(workspace.id)}>
-                  {workspace.name} · {workspace.role}
-                </button>
-              ))}
-              {error && <div style={styles.error}>{error}</div>}
-            </div>
-          ) : challenge ? (
-            <form onSubmit={verifyCode} style={styles.form}>
-              <p style={{ fontSize: 13, color: '#6b7280', margin: 0 }}>Enter the code sent to {challenge.destination}.</p>
-              <div style={styles.field}>
-                <label style={styles.label}>Verification code</label>
-                <input value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" required minLength={6} style={styles.input} autoFocus />
-              </div>
-              {error && <div style={styles.error}>{error}</div>}
-              <button type="submit" disabled={loading || code.length !== 6} style={loading ? { ...styles.button, opacity: 0.6 } : styles.button}>{loading ? 'Verifying...' : 'Verify & Continue'}</button>
-            </form>
-          ) : <form onSubmit={handleSubmit} style={styles.form}>
-            <div style={styles.field}>
-              <label style={styles.label}>Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="you@yourstore.com"
-                required
-                autoComplete="email"
-                autoFocus
-                style={styles.input}
-              />
-            </div>
-
-            <div style={styles.field}>
-              <label style={styles.label}>Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                placeholder="Enter your password"
-                required
-                autoComplete="current-password"
-                style={styles.input}
-              />
-              <div style={{ textAlign: 'right' }}>
-                <a href="/reset-password" style={styles.link}>Forgot password?</a>
-              </div>
-            </div>
-
-            {error && <div style={styles.error}>{error}</div>}
-
-            <button
-              type="submit"
-              disabled={loading}
-              style={loading ? { ...styles.button, opacity: 0.6 } : styles.button}
-            >
-              {loading ? 'Signing in...' : 'Sign In'}
-            </button>
-          </form>}
-
-          <p style={styles.footer}>
-            Don't have an account?{' '}
-            <a href={hosted ? `/signup?return_to=${encodeURIComponent(issuerReturnTo!)}` : `/signup?returnTo=${encodeURIComponent(returnTo)}`} style={styles.link}>Create one</a>
+      <div className="aros-auth__body">
+        <div className="aros-auth__panel">
+          <div className="aros-auth__headline aros-auth__headline--sm">Welcome back.</div>
+          <p className="aros-auth__sub">
+            {hosted ? 'Sign in once to continue securely to your app.' : 'Sign in to keep running your stores by chat.'}
           </p>
-        </div>
 
-        <p style={styles.legal}>
-          By continuing, you agree to our{' '}
-          <a href="https://nirtek.net/terms.html" style={styles.link} target="_blank" rel="noopener">Terms</a>
-          {' '}and{' '}
-          <a href="https://nirtek.net/privacy.html" style={styles.link} target="_blank" rel="noopener">Privacy Policy</a>.
-        </p>
+          <div className="aros-auth__card">
+            {justRegistered && (
+              <div className="aros-auth__notice">Account created. Sign in to get started.</div>
+            )}
+
+            {workspaces.length > 0 && !challenge ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div className="aros-auth__label" style={{ marginBottom: 0 }}>Choose a workspace</div>
+                {workspaces.map(workspace => (
+                  <button key={workspace.id} type="button" disabled={loading} className="aros-auth__btn-ghost" onClick={() => void chooseWorkspace(workspace.id)}>
+                    {workspace.name} · {workspace.role}
+                  </button>
+                ))}
+                {error && <div className="aros-auth__error">{error}</div>}
+              </div>
+            ) : challenge ? (
+              <form onSubmit={verifyCode} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <p style={{ fontSize: 13, color: 'var(--ink-2)', margin: 0 }}>Enter the code sent to {challenge.destination}.</p>
+                <div>
+                  <label className="aros-auth__label">Verification code</label>
+                  <input className="aros-auth__input" value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" required minLength={6} autoFocus />
+                </div>
+                {error && <div className="aros-auth__error">{error}</div>}
+                <button type="submit" disabled={loading || code.length !== 6} className="aros-auth__btn">{loading ? 'Verifying…' : 'Verify & Continue'}</button>
+              </form>
+            ) : (
+              <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div>
+                  <label className="aros-auth__label" htmlFor="login-email">Work email</label>
+                  <input id="login-email" className="aros-auth__input" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="dana@fivepointsmarket.com" required autoFocus />
+                </div>
+                <div>
+                  <label className="aros-auth__label" htmlFor="login-password">Password</label>
+                  <input id="login-password" className="aros-auth__input" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" required />
+                </div>
+                {error && <div className="aros-auth__error">{error}</div>}
+                <button type="submit" disabled={loading} className="aros-auth__btn">{loading ? 'Signing in…' : 'Sign in'}</button>
+              </form>
+            )}
+          </div>
+
+          {!hosted && workspaces.length === 0 && !challenge && (
+            <p className="aros-auth__foot">
+              New to AROS?{' '}
+              <a className="aros-auth__link" href={`/signup?returnTo=${encodeURIComponent(returnTo)}`}>Create an account</a>
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  wrapper: {
-    minHeight: '100vh',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: 'linear-gradient(135deg, #f0f4ff 0%, #e8ecf8 50%, #f5f3ff 100%)',
-    padding: 24,
-  },
-  container: {
-    width: '100%',
-    maxWidth: 420,
-  },
-  header: {
-    textAlign: 'center' as const,
-    marginBottom: 32,
-  },
-  logo: {
-    fontSize: 32,
-    fontWeight: 800,
-    letterSpacing: -1,
-    color: '#1a1a2e',
-  },
-  tagline: {
-    fontSize: 14,
-    color: '#6b7280',
-    marginTop: 4,
-  },
-  card: {
-    background: '#fff',
-    borderRadius: 16,
-    padding: '32px 28px',
-    boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
-    border: '1px solid #e5e7eb',
-  },
-  cardTitle: {
-    fontSize: 20,
-    fontWeight: 800,
-    color: '#1a1a2e',
-    marginBottom: 24,
-    textAlign: 'center' as const,
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 16,
-  },
-  field: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 6,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: '#374151',
-  },
-  input: {
-    padding: '12px 14px',
-    border: '1px solid #d1d5db',
-    borderRadius: 10,
-    fontSize: 15,
-    fontFamily: 'inherit',
-    outline: 'none',
-    transition: 'border-color 0.2s',
-  },
-  error: {
-    padding: '10px 14px',
-    background: '#fef2f2',
-    color: '#dc2626',
-    borderRadius: 8,
-    fontSize: 13,
-    fontWeight: 500,
-  },
-  button: {
-    padding: '14px 0',
-    background: '#3b5bdb',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 10,
-    fontSize: 15,
-    fontWeight: 700,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    marginTop: 4,
-    transition: 'background 0.2s',
-  },
-  footer: {
-    textAlign: 'center' as const,
-    fontSize: 13,
-    color: '#6b7280',
-    marginTop: 20,
-  },
-  link: {
-    color: '#3b5bdb',
-    textDecoration: 'none',
-    fontWeight: 600,
-    fontSize: 13,
-  },
-  legal: {
-    textAlign: 'center' as const,
-    fontSize: 12,
-    color: '#9ca3af',
-    marginTop: 20,
-  },
-};

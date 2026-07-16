@@ -5,7 +5,8 @@ import { useAuth } from '../../contexts/AuthContext';
 type Kind = 'pos' | 'app';
 type Connection = { id: string; provider: string; label: string; kind: Kind; stores: string[]; status: 'connected' | 'needs-attention' };
 
-const POS = ['RapidRMS', 'Verifone Commander', 'Clover', 'Square', 'NCR', 'Gilbarco Passport'];
+// POS scoped to the two providers AROS supports today.
+const POS = ['RapidRMS', 'Verifone Commander'];
 const APPS = [...AROS_APPS.map(app => app.name), 'Gmail', 'Google Calendar', 'Google Drive', 'OneDrive', 'Dropbox', 'Slack', 'Microsoft Teams', 'HubSpot', 'Zendesk', 'Zoho', 'Salesforce', 'Xero', 'QuickBooks', 'RingCentral'];
 const STORAGE_KEY = 'aros-connections';
 

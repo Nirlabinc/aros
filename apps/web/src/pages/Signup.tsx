@@ -2,6 +2,7 @@ import { useState, FormEvent } from 'react';
 import { safeReturnTo } from '../app-registry';
 import { safeIssuerReturnTo } from '../lib/hosted-auth';
 import { hostedAuth, type HostedChallenge } from '../lib/hosted-auth';
+import { useArosTheme } from '../lib/useArosTheme';
 
 const API_BASE = (window as any).__AROS_API_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
@@ -36,6 +37,7 @@ function validatePhone(phone: string): boolean {
 }
 
 export function Signup() {
+  const { label: themeLabel, toggle: toggleTheme } = useArosTheme();
   const returnTo = safeReturnTo(new URLSearchParams(window.location.search).get('returnTo'));
   const issuerReturnTo = safeIssuerReturnTo(new URLSearchParams(window.location.search).get('return_to'));
   const loginQuery = issuerReturnTo
@@ -66,6 +68,7 @@ export function Signup() {
     special: /[^A-Za-z0-9]/.test(password),
   };
   const pwStrength = Object.values(pwChecks).filter(Boolean).length;
+  const strengthColor = pwStrength <= 2 ? 'var(--danger)' : pwStrength <= 3 ? 'var(--accent)' : 'var(--ok)';
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -182,60 +185,64 @@ export function Signup() {
     }
   }
 
+  const topbar = (withBack: boolean) => (
+    <div className="aros-auth__topbar">
+      {withBack ? (
+        <button type="button" onClick={() => setStep('form')} style={{ background: 'none', border: 'none', color: 'var(--ink-2)', fontWeight: 600, fontSize: 13, padding: 0, cursor: 'pointer', fontFamily: 'inherit' }}>← Back</button>
+      ) : (
+        <>
+          <div className="aros-auth__brand-mark">A</div>
+          <span className="aros-auth__brand-name">AROS</span>
+          <span className="aros-auth__brand-by">by ShreAI</span>
+        </>
+      )}
+      <div style={{ flex: 1 }} />
+      <button type="button" className="aros-auth__theme-toggle" onClick={toggleTheme}>{themeLabel}</button>
+    </div>
+  );
+
   // ── Step: Verify Email ──────────────────────────────────────
   if (step === 'verify') {
     return (
-      <div style={styles.wrapper}>
-        <div style={styles.container}>
-          <div style={styles.header}>
-            <div style={styles.logo}>AROS</div>
-          </div>
-          <div style={styles.card}>
-            <h2 style={styles.cardTitle}>Verify your email</h2>
-            <p style={{ fontSize: 14, color: '#6b7280', textAlign: 'center', marginBottom: 24, lineHeight: 1.5 }}>
-              We sent a 6-digit code to <strong style={{ color: '#1a1a2e' }}>{hostedChallenge?.destination || email}</strong>
+      <div className="aros-auth">
+        {topbar(true)}
+        <div className="aros-auth__body">
+          <div className="aros-auth__panel">
+            <div className="aros-auth__headline aros-auth__headline--sm">Check your email</div>
+            <p className="aros-auth__sub">
+              We sent a 6-digit code to <strong style={{ color: 'var(--ink)' }}>{hostedChallenge?.destination || email}</strong>. It expires in 10 minutes.
             </p>
-
-            <form onSubmit={handleVerify} style={styles.form}>
-              <input
-                type="text"
-                value={otp}
-                onChange={e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                placeholder="000000"
-                maxLength={6}
-                required
-                autoFocus
-                style={{ ...styles.input, textAlign: 'center', fontSize: 28, letterSpacing: 10, fontWeight: 700 }}
-              />
-
-              {otpError && <div style={styles.error}>{otpError}</div>}
-
-              <button
-                type="submit"
-                disabled={loading || otp.length < 6}
-                style={loading || otp.length < 6 ? { ...styles.button, opacity: 0.6 } : styles.button}
-              >
-                {loading ? 'Verifying...' : 'Verify & Continue'}
-              </button>
-
-              {!hostedChallenge && <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <button
-                  type="button"
-                  onClick={sendOtp}
-                  disabled={otpSending}
-                  style={styles.linkBtn}
-                >
-                  {otpSending ? 'Sending...' : 'Resend code'}
+            <div className="aros-auth__card">
+              <form onSubmit={handleVerify} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <input
+                  className="aros-auth__input"
+                  type="text"
+                  value={otp}
+                  onChange={e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="000000"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  required
+                  autoFocus
+                  style={{ textAlign: 'center', fontSize: 28, letterSpacing: 10, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }}
+                />
+                {otpError && <div className="aros-auth__error">{otpError}</div>}
+                <button type="submit" disabled={loading || otp.length < 6} className="aros-auth__btn">
+                  {loading ? 'Verifying…' : 'Verify & Continue'}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setStep('done')}
-                  style={styles.linkBtn}
-                >
-                  Skip for now
-                </button>
-              </div>}
-            </form>
+                {!hostedChallenge && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <button type="button" onClick={sendOtp} disabled={otpSending} className="aros-auth__link" style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>
+                      {otpSending ? 'Sending…' : 'Resend code'}
+                    </button>
+                    <button type="button" onClick={() => setStep('done')} style={{ background: 'none', border: 'none', color: 'var(--ink-2)', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>
+                      Skip for now
+                    </button>
+                  </div>
+                )}
+              </form>
+            </div>
           </div>
         </div>
       </div>
@@ -250,274 +257,107 @@ export function Signup() {
 
   // ── Step: Form ──────────────────────────────────────────────
   return (
-    <div style={styles.wrapper}>
-      <div style={styles.container}>
-        <div style={styles.header}>
-          <div style={styles.logo}>AROS</div>
-          <p style={styles.tagline}>Agentic Retail Operating System</p>
-        </div>
+    <div className="aros-auth">
+      {topbar(false)}
+      <div className="aros-auth__body">
+        <div className="aros-auth__panel" style={{ maxWidth: 440 }}>
+          <div className="aros-auth__headline">Run your stores by chatting.</div>
+          <p className="aros-auth__sub">One chat that knows your registers, apps, and numbers. Create your account to start.</p>
 
-        <div style={styles.card}>
-          <h2 style={styles.cardTitle}>Create your account</h2>
+          <div className="aros-auth__card">
+            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <label className="aros-auth__label">Full name</label>
+                <input className="aros-auth__input" type="text" value={fullName} onChange={e => setFullName(e.target.value)} placeholder="Dana Reyes" required autoFocus />
+              </div>
 
-          <form onSubmit={handleSubmit} style={styles.form}>
-            <div style={styles.field}>
-              <label style={styles.label}>Full Name</label>
-              <input
-                type="text"
-                value={fullName}
-                onChange={e => setFullName(e.target.value)}
-                placeholder="John Smith"
-                required
-                autoFocus
-                style={styles.input}
-              />
-            </div>
+              <div>
+                <label className="aros-auth__label">Work email</label>
+                <input className="aros-auth__input" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="dana@fivepointsmarket.com" required autoComplete="email" />
+              </div>
 
-            <div style={styles.field}>
-              <label style={styles.label}>Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="you@yourstore.com"
-                required
-                autoComplete="email"
-                style={styles.input}
-              />
-            </div>
+              <div>
+                <label className="aros-auth__label">Phone <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>(optional)</span></label>
+                <input className="aros-auth__input" type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="(555) 123-4567" autoComplete="tel" />
+              </div>
 
-            <div style={styles.field}>
-              <label style={styles.label}>Phone <span style={{ fontWeight: 400, color: '#9ca3af' }}>(optional)</span></label>
-              <input
-                type="tel"
-                value={phone}
-                onChange={e => setPhone(e.target.value)}
-                placeholder="(555) 123-4567"
-                autoComplete="tel"
-                style={styles.input}
-              />
-            </div>
-
-            <div style={styles.field}>
-              <label style={styles.label}>Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                placeholder="Create a strong password"
-                required
-                minLength={8}
-                autoComplete="new-password"
-                style={styles.input}
-              />
-              {password.length > 0 && (
-                <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                  {[1, 2, 3, 4, 5].map(i => (
-                    <div key={i} style={{
-                      flex: 1, height: 4, borderRadius: 2,
-                      background: i <= pwStrength
-                        ? pwStrength <= 2 ? '#ef4444' : pwStrength <= 3 ? '#f59e0b' : '#22c55e'
-                        : '#e5e7eb',
-                    }} />
-                  ))}
-                </div>
-              )}
-              <div style={{ fontSize: 11, color: '#9ca3af', lineHeight: 1.6 }}>
-                {password.length > 0 ? (
-                  <>
-                    <span style={{ color: pwChecks.length ? '#22c55e' : '#9ca3af' }}>8+ chars</span>{' '}
-                    <span style={{ color: pwChecks.upper ? '#22c55e' : '#9ca3af' }}>uppercase</span>{' '}
-                    <span style={{ color: pwChecks.lower ? '#22c55e' : '#9ca3af' }}>lowercase</span>{' '}
-                    <span style={{ color: pwChecks.number ? '#22c55e' : '#9ca3af' }}>number</span>{' '}
-                    <span style={{ color: pwChecks.special ? '#22c55e' : '#9ca3af' }}>special</span>
-                  </>
-                ) : (
-                  'Min 8 chars with uppercase, lowercase, number, and special character'
+              <div>
+                <label className="aros-auth__label">Password</label>
+                <input className="aros-auth__input" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Create a strong password" required minLength={8} autoComplete="new-password" />
+                {password.length > 0 && (
+                  <div style={{ display: 'flex', gap: 4, marginTop: 8 }}>
+                    {[1, 2, 3, 4, 5].map(i => (
+                      <div key={i} style={{ flex: 1, height: 4, borderRadius: 2, background: i <= pwStrength ? strengthColor : 'var(--line)' }} />
+                    ))}
+                  </div>
                 )}
+                <div style={{ fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.6, marginTop: 6 }}>
+                  {password.length > 0 ? (
+                    <>
+                      <span style={{ color: pwChecks.length ? 'var(--ok)' : 'var(--ink-3)' }}>8+ chars</span>{' '}
+                      <span style={{ color: pwChecks.upper ? 'var(--ok)' : 'var(--ink-3)' }}>uppercase</span>{' '}
+                      <span style={{ color: pwChecks.lower ? 'var(--ok)' : 'var(--ink-3)' }}>lowercase</span>{' '}
+                      <span style={{ color: pwChecks.number ? 'var(--ok)' : 'var(--ink-3)' }}>number</span>{' '}
+                      <span style={{ color: pwChecks.special ? 'var(--ok)' : 'var(--ink-3)' }}>special</span>
+                    </>
+                  ) : (
+                    'Min 8 chars with uppercase, lowercase, number, and special character'
+                  )}
+                </div>
               </div>
-            </div>
 
-            <div style={styles.field}>
-              <label style={styles.label}>Company Name</label>
-              <input
-                type="text"
-                value={company}
-                onChange={e => setCompany(e.target.value)}
-                placeholder="Smith's Corner Market"
-                required
-                style={styles.input}
-              />
-            </div>
-
-            <div style={styles.field}>
-              <label style={styles.label}>What do you want your agent to do?</label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                {INTENTS.map(opt => {
-                  const selected = intent === opt.value;
-                  return (
-                    <button
-                      type="button"
-                      key={opt.value}
-                      onClick={() => setIntent(opt.value)}
-                      style={{
-                        display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'left',
-                        padding: '12px 14px', borderRadius: 10, cursor: 'pointer',
-                        background: selected ? '#eef2ff' : '#fff',
-                        border: `1.5px solid ${selected ? '#3b5bdb' : '#d1d5db'}`,
-                        fontFamily: 'inherit', transition: 'border-color 0.15s, background 0.15s',
-                      }}
-                    >
-                      <span style={{ fontSize: 15, fontWeight: 600, color: '#1a1a2e' }}>
-                        <span style={{ marginRight: 6 }}>{opt.icon}</span>{opt.label}
-                      </span>
-                      <span style={{ fontSize: 12, color: '#6b7280' }}>{opt.hint}</span>
-                    </button>
-                  );
-                })}
+              <div>
+                <label className="aros-auth__label">Company name</label>
+                <input className="aros-auth__input" type="text" value={company} onChange={e => setCompany(e.target.value)} placeholder="Five Points Market" required />
               </div>
-            </div>
 
-            {error && <div style={styles.error}>{error}</div>}
+              <div>
+                <label className="aros-auth__label">What do you want your agent to do?</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {INTENTS.map(opt => {
+                    const selected = intent === opt.value;
+                    return (
+                      <button
+                        type="button"
+                        key={opt.value}
+                        onClick={() => setIntent(opt.value)}
+                        style={{
+                          display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'left',
+                          padding: '12px 14px', borderRadius: 10, cursor: 'pointer',
+                          background: selected ? 'var(--accent-soft)' : 'var(--surface)',
+                          border: `1.5px solid ${selected ? 'var(--accent)' : 'var(--line)'}`,
+                          fontFamily: 'inherit', transition: 'border-color 0.15s, background 0.15s',
+                        }}
+                      >
+                        <span style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--ink)' }}>
+                          <span style={{ marginRight: 6 }}>{opt.icon}</span>{opt.label}
+                        </span>
+                        <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>{opt.hint}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              style={loading ? { ...styles.button, opacity: 0.6 } : styles.button}
-            >
-              {loading ? 'Creating account...' : 'Create Account'}
-            </button>
-          </form>
+              {error && <div className="aros-auth__error">{error}</div>}
 
-          <p style={styles.footer}>
+              <button type="submit" disabled={loading} className="aros-auth__btn">
+                {loading ? 'Creating account…' : 'Create account'}
+              </button>
+            </form>
+          </div>
+
+          <p className="aros-auth__foot">
             Already have an account?{' '}
-            <a href={`/login?${loginQuery}`} style={styles.link}>Sign in</a>
+            <a className="aros-auth__link" href={`/login?${loginQuery}`}>Sign in</a>
+            <br />
+            By continuing you agree to the{' '}
+            <a className="aros-auth__link" href="https://nirtek.net/terms.html" target="_blank" rel="noopener">Terms</a>
+            {' '}and{' '}
+            <a className="aros-auth__link" href="https://nirtek.net/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.
           </p>
         </div>
-
-        <p style={styles.legal}>
-          By continuing, you agree to our{' '}
-          <a href="https://nirtek.net/terms.html" style={styles.link} target="_blank" rel="noopener">Terms</a>
-          {' '}and{' '}
-          <a href="https://nirtek.net/privacy.html" style={styles.link} target="_blank" rel="noopener">Privacy Policy</a>.
-        </p>
       </div>
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  wrapper: {
-    minHeight: '100vh',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: 'linear-gradient(135deg, #f0f4ff 0%, #e8ecf8 50%, #f5f3ff 100%)',
-    padding: 24,
-  },
-  container: {
-    width: '100%',
-    maxWidth: 480,
-  },
-  header: {
-    textAlign: 'center' as const,
-    marginBottom: 32,
-  },
-  logo: {
-    fontSize: 32,
-    fontWeight: 800,
-    letterSpacing: -1,
-    color: '#1a1a2e',
-  },
-  tagline: {
-    fontSize: 14,
-    color: '#6b7280',
-    marginTop: 4,
-  },
-  card: {
-    background: '#fff',
-    borderRadius: 16,
-    padding: '32px 28px',
-    boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
-    border: '1px solid #e5e7eb',
-  },
-  cardTitle: {
-    fontSize: 20,
-    fontWeight: 800,
-    color: '#1a1a2e',
-    marginBottom: 24,
-    textAlign: 'center' as const,
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 16,
-  },
-  field: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 6,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: '#374151',
-  },
-  input: {
-    padding: '12px 14px',
-    border: '1px solid #d1d5db',
-    borderRadius: 10,
-    fontSize: 15,
-    fontFamily: 'inherit',
-    outline: 'none',
-    transition: 'border-color 0.2s',
-  },
-  error: {
-    padding: '10px 14px',
-    background: '#fef2f2',
-    color: '#dc2626',
-    borderRadius: 8,
-    fontSize: 13,
-    fontWeight: 500,
-  },
-  button: {
-    padding: '14px 0',
-    background: '#3b5bdb',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 10,
-    fontSize: 15,
-    fontWeight: 700,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    marginTop: 4,
-    transition: 'background 0.2s',
-  },
-  linkBtn: {
-    background: 'none',
-    border: 'none',
-    color: '#3b5bdb',
-    fontSize: 13,
-    fontWeight: 600,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    padding: 0,
-  },
-  footer: {
-    textAlign: 'center' as const,
-    fontSize: 13,
-    color: '#6b7280',
-    marginTop: 20,
-  },
-  link: {
-    color: '#3b5bdb',
-    textDecoration: 'none',
-    fontWeight: 600,
-  },
-  legal: {
-    textAlign: 'center' as const,
-    fontSize: 12,
-    color: '#9ca3af',
-    marginTop: 20,
-  },
-};

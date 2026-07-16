@@ -1,0 +1,298 @@
+/* ============================================================================
+   AROS chat-first redesign — design tokens + shared primitives.
+
+   Stripe / Apple-grade execution over a warm brand identity: clean white cards
+   on a soft warm ground, hairline borders, layered soft shadows, precise focus
+   rings, restrained depth on interactive elements, antialiased type. Both light
+   and dark are first-class. Signature accent = gold #B8842A (matched to the
+   Claude Design export's rgba(184,132,42,…) focus rings). Fonts: Newsreader
+   (serif display), Hanken Grotesk (UI), JetBrains Mono (brand mark / labels).
+   ========================================================================== */
+
+:root,
+:root[data-aros-theme="light"] {
+  --bg: #f5f2ec;
+  --surface: #ffffff;
+  --surface-2: #f1eee6;
+  --line: #e8e3d8;
+  --line-strong: #dcd6c8;
+  --ink: #1c1a16;
+  --ink-2: #6a6357;
+  --ink-3: #9b9385;
+  --inv: #1a1813;
+  --inv-ink: #f6f2ea;
+  --accent: #b8842a;
+  --accent-2: #9c6d1c;
+  --accent-ink: #ffffff;
+  --accent-soft: #f6ebd6;
+  --danger: #c0392b;
+  --danger-soft: #fbedeb;
+  --danger-line: #f0c9c4;
+  --danger-ink: #9f2618;
+  --ok: #3e8e5a;
+  --ok-soft: #e7f2eb;
+  --ok-line: #c5e0cf;
+  --ok-ink: #2c6a42;
+  --focus-ring: 0 0 0 3.5px rgba(184, 132, 42, 0.16);
+  --shadow-card: 0 1px 2px rgba(28, 26, 22, 0.04), 0 10px 26px -12px rgba(28, 26, 22, 0.16);
+  --shadow-btn: 0 1px 1px rgba(122, 86, 22, 0.24), 0 3px 10px -3px rgba(122, 86, 22, 0.34);
+  --shadow-btn-hover: 0 1px 1px rgba(122, 86, 22, 0.24), 0 6px 16px -4px rgba(122, 86, 22, 0.42);
+}
+
+:root[data-aros-theme="dark"] {
+  --bg: #131210;
+  --surface: #1e1b17;
+  --surface-2: #272420;
+  --line: #322e28;
+  --line-strong: #3d3931;
+  --ink: #f4efe5;
+  --ink-2: #b6ad9e;
+  --ink-3: #837a6c;
+  --inv: #f4efe5;
+  --inv-ink: #131210;
+  --accent: #cd9f43;
+  --accent-2: #e0b65e;
+  --accent-ink: #131210;
+  --accent-soft: #382d18;
+  --danger: #e5675a;
+  --danger-soft: #362320;
+  --danger-line: #542f2a;
+  --danger-ink: #f0a79e;
+  --ok: #5fb07e;
+  --ok-soft: #1e2e24;
+  --ok-line: #2e4a38;
+  --ok-ink: #a7d9bc;
+  --focus-ring: 0 0 0 3.5px rgba(205, 159, 67, 0.22);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px -16px rgba(0, 0, 0, 0.66);
+  --shadow-btn: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-btn-hover: 0 2px 10px -2px rgba(224, 182, 94, 0.35);
+}
+
+/* Follow the OS when the user hasn't explicitly chosen a theme. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-aros-theme]) {
+    --bg: #131210;
+    --surface: #1e1b17;
+    --surface-2: #272420;
+    --line: #322e28;
+    --line-strong: #3d3931;
+    --ink: #f4efe5;
+    --ink-2: #b6ad9e;
+    --ink-3: #837a6c;
+    --inv: #f4efe5;
+    --inv-ink: #131210;
+    --accent: #cd9f43;
+    --accent-2: #e0b65e;
+    --accent-ink: #131210;
+    --accent-soft: #382d18;
+    --danger: #e5675a;
+    --danger-soft: #362320;
+    --danger-line: #542f2a;
+    --danger-ink: #f0a79e;
+    --ok: #5fb07e;
+    --ok-soft: #1e2e24;
+    --ok-line: #2e4a38;
+    --ok-ink: #a7d9bc;
+    --focus-ring: 0 0 0 3.5px rgba(205, 159, 67, 0.22);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px -16px rgba(0, 0, 0, 0.66);
+    --shadow-btn: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow-btn-hover: 0 2px 10px -2px rgba(224, 182, 94, 0.35);
+  }
+}
+
+/* ---- auth screens (signup / login / verify) ------------------------------ */
+
+.aros-auth {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(120% 80% at 50% -10%, var(--surface-2) 0%, transparent 60%),
+    linear-gradient(180deg, var(--bg), var(--surface-2));
+  color: var(--ink);
+  font-family: 'Hanken Grotesk', Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+.aros-auth__topbar {
+  padding: 22px 28px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.aros-auth__brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--inv);
+  color: var(--inv-ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  font-size: 13px;
+}
+.aros-auth__brand-name { font-weight: 600; letter-spacing: 0.01em; }
+.aros-auth__brand-by {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 2px 8px;
+}
+.aros-auth__theme-toggle {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.aros-auth__theme-toggle:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+  box-shadow: var(--shadow-card);
+}
+.aros-auth__body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 16px 56px;
+}
+.aros-auth__panel { width: 100%; max-width: 416px; animation: aros-fade 0.55s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.aros-auth__headline {
+  font-family: 'Newsreader', serif;
+  font-size: 34px;
+  line-height: 1.12;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+.aros-auth__headline--sm { font-size: 30px; }
+.aros-auth__sub { color: var(--ink-2); margin: 12px 0 26px; font-size: 15px; line-height: 1.55; }
+.aros-auth__card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: var(--shadow-card);
+}
+.aros-auth__label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  display: block;
+  margin-bottom: 7px;
+  letter-spacing: 0.005em;
+}
+.aros-auth__input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  font-size: 15px;
+  background: var(--surface);
+  color: var(--ink);
+  outline: none;
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.aros-auth__input::placeholder { color: var(--ink-3); }
+.aros-auth__input:hover { border-color: var(--ink-3); }
+.aros-auth__input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+.aros-auth__btn {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 11px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: var(--shadow-btn);
+  transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.06s ease;
+}
+.aros-auth__btn:hover:not(:disabled) { background: var(--accent-2); box-shadow: var(--shadow-btn-hover); }
+.aros-auth__btn:active:not(:disabled) { transform: translateY(0.5px); }
+.aros-auth__btn:focus-visible { outline: none; box-shadow: var(--shadow-btn), var(--focus-ring); }
+.aros-auth__btn:disabled { opacity: 0.55; cursor: default; box-shadow: none; }
+.aros-auth__btn-ghost {
+  width: 100%;
+  padding: 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.aros-auth__btn-ghost:hover { background: var(--surface-2); border-color: var(--ink-3); box-shadow: var(--shadow-card); }
+.aros-auth__divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.aros-auth__divider::before,
+.aros-auth__divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.aros-auth__error {
+  color: var(--danger-ink);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-line);
+  border-radius: 11px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.aros-auth__link { color: var(--accent); font-weight: 600; text-decoration: none; }
+.aros-auth__link:hover { color: var(--accent-2); text-decoration: underline; text-underline-offset: 2px; }
+.aros-auth__foot {
+  color: var(--ink-3);
+  font-size: 12.5px;
+  text-align: center;
+  margin-top: 18px;
+  line-height: 1.7;
+}
+.aros-auth__notice {
+  padding: 10px 14px;
+  background: var(--ok-soft);
+  color: var(--ok-ink);
+  border: 1px solid var(--ok-line);
+  border-radius: 11px;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 16px;
+}
+
+@keyframes aros-fade {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes aros-spin { to { transform: rotate(360deg); } }

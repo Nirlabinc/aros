@@ -26,6 +26,7 @@ import AIModelsSettings from '../pages/settings/AIModels';
 import { CapabilityCatalog } from '../pages/settings/CapabilityCatalog';
 import { ConnectionHealth } from '../pages/settings/ConnectionHealth';
 import { centralIdentityOnly } from '../lib/supabase';
+import { AppShell } from '../redesign/AppShell';
 
 const MARKETPLACE_ADMIN_URL = (window as any).__MARKETPLACE_URL__
   ? `${(window as any).__MARKETPLACE_URL__}/admin`
@@ -46,6 +47,17 @@ function AppContent() {
   const isAdmin = user?.app_metadata?.role === 'admin' || user?.app_metadata?.role === 'superadmin';
   const onboarded = isOnboardingComplete(tenant);
 
+  // Chat-first redesign preview — self-contained, no auth, for review only.
+  if (path.startsWith('/preview/app')) {
+    return <AppShell />;
+  }
+
+  // Opt-in cutover flag: ?redesign=1 turns the chat-first shell on for this
+  // browser (authenticated users); ?redesign=0 reverts. Persisted, reversible.
+  const redesignParam = new URLSearchParams(window.location.search).get('redesign');
+  if (redesignParam === '1') { try { localStorage.setItem('aros-shell', '1'); } catch { /* ignore */ } }
+  else if (redesignParam === '0') { try { localStorage.removeItem('aros-shell'); } catch { /* ignore */ } }
+
   if (centralIdentityOnly && path !== '/login' && path !== '/signup') {
     const authorize = path === '/oauth/authorize' ? `${path}${window.location.search}` : null;
     window.location.replace(authorize ? `/login?return_to=${encodeURIComponent(authorize)}` : '/login');
@@ -53,7 +65,7 @@ function AppContent() {
   }
 
   // ── Public auth pages (no session required) ────────────────
-  if (path === '/login') {
+  if (path === '/login' || path === '/auth') {
     const isHostedResume = new URLSearchParams(window.location.search).has('return_to');
     if (session && !loading && !isHostedResume) {
       // New users land in the value-first demo chat (/start), not the wizard.
@@ -158,6 +170,12 @@ function AuthenticatedRoutes({ path, isAdmin, onboarded }: { path: string; isAdm
     window.location.href = '/start';
     return null;
   }
+
+  // Opt-in chat-first redesign shell (set via the ?redesign flag in AppContent).
+  // Off by default; renders the real app with the live auth session.
+  let redesignShell = false;
+  try { redesignShell = localStorage.getItem('aros-shell') === '1'; } catch { /* ignore */ }
+  if (redesignShell) return <AppShell />;
 
   // Admin panel -> marketplace admin
   if (path.startsWith('/admin') && isAdmin) {
