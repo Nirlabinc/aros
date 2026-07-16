@@ -2746,8 +2746,12 @@ async function provisionDocumentsAccess(
     .maybeSingle();
 
   const cfg: Record<string, unknown> = isRecord(row?.service_config) ? { ...row!.service_config } : {};
-  if (typeof cfg.mibServiceTokenEnc === 'string' && cfg.mibServiceTokenEnc && typeof cfg.mibWorkspaceId === 'string' && cfg.mibWorkspaceId) {
-    return; // already provisioned
+  if (
+    typeof cfg.mibServiceTokenEnc === 'string' && cfg.mibServiceTokenEnc &&
+    typeof cfg.mibWorkspaceId === 'string' && cfg.mibWorkspaceId &&
+    cfg.mibTokenRegistered === true
+  ) {
+    return; // already provisioned and registered with MIB
   }
 
   const workspaceId = await resolveMibWorkspaceId(tenantId);
@@ -2759,9 +2763,22 @@ async function provisionDocumentsAccess(
   }
 
   ensureConnectorCrypto();
-  const token = randomBytes(32).toString('base64url');
+  // Reuse an already-minted token (e.g. a prior activation whose MIB registration
+  // failed) so we don't orphan token hashes in MIB; otherwise mint a fresh one.
+  let token: string | null = null;
+  if (typeof cfg.mibServiceTokenEnc === 'string' && cfg.mibServiceTokenEnc) {
+    try { token = decryptValue(cfg.mibServiceTokenEnc); } catch { token = null; }
+  }
+  if (!token) {
+    token = randomBytes(32).toString('base64url');
+    cfg.mibServiceTokenEnc = encryptValue(token);
+  }
   cfg.mibWorkspaceId = workspaceId;
-  cfg.mibServiceTokenEnc = encryptValue(token);
+
+  // Register the token's hash with MIB so its /drive/* auth bridge accepts this
+  // per-tenant token and scopes the actor to `workspaceId`. Idempotent on hash.
+  const registered = await registerMibDocsToken(token, workspaceId);
+  cfg.mibTokenRegistered = registered;
 
   await supabase
     .from('marketplace_app_entitlements')
@@ -2769,10 +2786,43 @@ async function provisionDocumentsAccess(
     .eq('tenant_id', tenantId)
     .eq('app_key', DOCUMENTS_APP_KEY);
 
-  // TODO(mib-register): POST the {tokenHash, workspaceId} pair to MIB's
-  // service-token registry so its /drive/* auth bridge accepts this per-tenant
-  // token and scopes the actor to `workspaceId`. Until then, MIB_DOCS_SERVICE_TOKEN
-  // (dev fallback in resolveMibDocsAccess) is the only accepted credential.
+  if (!registered) {
+    console.warn(
+      '[documents] MIB token registration failed for tenant %s — /drive access will not work until a re-activation registers successfully (check MIB_DOCS_BASE_URL / MIB_DOCS_ADMIN_TOKEN)',
+      tenantId,
+    );
+  }
+}
+
+/**
+ * Register a minted per-tenant token's SHA-256 hash with MIB's document
+ * service-token registry, using the trusted mib007 admin token. Idempotent on
+ * the hash. Returns false (and logs) when MIB is unreachable or unconfigured, so
+ * activation still persists the token and retries registration on the next call.
+ */
+async function registerMibDocsToken(token: string, workspaceId: string): Promise<boolean> {
+  const base = process.env.MIB_DOCS_BASE_URL;
+  const adminToken = process.env.MIB_DOCS_ADMIN_TOKEN || process.env.MIB_DOCS_SERVICE_TOKEN;
+  if (!base || !adminToken) {
+    console.warn('[documents] MIB_DOCS_BASE_URL / MIB_DOCS_ADMIN_TOKEN not set — cannot register per-tenant token with MIB');
+    return false;
+  }
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  try {
+    const res = await fetch(`${base.replace(/\/+$/, '')}/api/drive/service-tokens/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ tokenHash, workspaceId, label: 'aros-documents' }),
+    });
+    if (!res.ok) {
+      console.warn('[documents] MIB service-token register returned HTTP %s', res.status);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[documents] MIB service-token register failed:', err instanceof Error ? err.message : String(err));
+    return false;
+  }
 }
 
 /**
