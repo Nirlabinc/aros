@@ -5,6 +5,7 @@ export type StoreConnector = {
   id: string;
   type: StoreConnectorType;
   name: string;
+  config?: { description?: string; accessMode?: 'read' | 'read_write'; [key: string]: unknown };
   status: 'pending' | 'connected' | 'disconnected' | 'error';
   last_tested?: string | null;
   last_error?: string | null;
@@ -20,13 +21,18 @@ export type PlatformApp = {
   url?: string | null;
   launch_url?: string | null;
   icon?: string | null;
+  repo?: string | null;
+  vault_namespace?: string | null;
 };
+
+export type CapabilityResource = { id: string; name: string; provider?: string | null; status?: string | null; capabilities?: string[] | null };
 
 export type AppGrant = {
   app_key: string;
   status: string;
   service_config?: { scopes?: string[]; storeIds?: string[]; activationState?: string } | null;
   enabled_at?: string | null;
+  source?: string | null;
 };
 
 export type StoreSyncJob = { id: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; progress: number; from_date: string; to_date: string; days_synced: number; rows_imported?: number; last_error?: string | null };
@@ -65,6 +71,11 @@ export async function testStore(auth: AuthScope, id: string): Promise<boolean> {
   return Boolean(result.result?.success);
 }
 
+export async function updateStore(auth: AuthScope, id: string, input: { name: string; description: string; accessMode: 'read' | 'read_write'; config?: Record<string, unknown>; secrets?: Record<string, string> }): Promise<StoreConnector> {
+  const result = await request<{ connector: StoreConnector }>('/api/connectors', auth, { method: 'PATCH', body: JSON.stringify({ id, ...input }) });
+  return result.connector;
+}
+
 export async function removeStore(auth: AuthScope, id: string): Promise<void> {
   await request(`/api/connectors?id=${encodeURIComponent(id)}`, auth, { method: 'DELETE' });
 }
@@ -78,8 +89,13 @@ export async function startStoreSync(auth: AuthScope, months = 12): Promise<Stor
 }
 
 export async function listApps(auth: AuthScope): Promise<{ apps: PlatformApp[]; grants: AppGrant[] }> {
-  const data = await request<{ apps?: PlatformApp[]; grants?: AppGrant[] }>('/api/apps', auth);
+  const data = await request<{ apps?: Array<PlatformApp & { launch_url?: string | null }>; grants?: AppGrant[] }>('/api/apps', auth);
   return { apps: (data.apps || []).map(app => ({ ...app, url: app.url || app.launch_url || null })), grants: data.grants || [] };
+}
+
+export async function listCapabilityResources(auth: AuthScope, kind: 'skill' | 'agent'): Promise<CapabilityResource[]> {
+  const data = await request<{ resources?: CapabilityResource[] }>(`/api/resources/${kind}`, auth);
+  return data.resources || [];
 }
 
 export async function grantApp(auth: AuthScope, app: PlatformApp, storeIds: string[] = []): Promise<void> {
@@ -90,6 +106,11 @@ export async function grantApp(auth: AuthScope, app: PlatformApp, storeIds: stri
 
 export async function disableApp(auth: AuthScope, appId: string): Promise<void> {
   await request(`/api/marketplace/apps/${encodeURIComponent(appId)}/disable`, auth, { method: 'POST' });
+}
+
+export async function listMarketplaceEntitlements(auth: AuthScope): Promise<AppGrant[]> {
+  const data = await request<{ entitlements?: AppGrant[] }>('/api/marketplace/entitlements', auth);
+  return data.entitlements || [];
 }
 
 export async function createAppLaunch(auth: AuthScope, appId: string): Promise<string> {
