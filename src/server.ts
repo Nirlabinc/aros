@@ -1187,22 +1187,21 @@ async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | 
     if (error || !user) return null;
 
     const requestedTenantId = getRequestedTenantId(req);
-    let membershipQuery = supabase
-      .from('tenant_members')
-      .select('tenant_id, role, status')
-      .eq('user_id', user.id)
-      .eq('status', 'active');
-
-    if (requestedTenantId) {
-      membershipQuery = membershipQuery.eq('tenant_id', requestedTenantId);
+    let membership: { tenant_id: string; role: string; status: string } | undefined;
+    for (let attempt = 0; attempt < 2 && !membership; attempt += 1) {
+      let membershipQuery = supabase
+        .from('tenant_members')
+        .select('tenant_id, role, status')
+        .eq('user_id', user.id)
+        .eq('status', 'active');
+      if (requestedTenantId) membershipQuery = membershipQuery.eq('tenant_id', requestedTenantId);
+      const { data: memberships, error: membershipError } = await membershipQuery
+        .order('is_default', { ascending: false })
+        .order('joined_at', { ascending: true })
+        .limit(1);
+      if (!membershipError) membership = memberships?.[0];
+      if (!membership && attempt === 0) await new Promise(resolve => setTimeout(resolve, 250));
     }
-
-    const { data: memberships } = await membershipQuery
-      .order('is_default', { ascending: false })
-      .order('joined_at', { ascending: true })
-      .limit(1);
-
-    const membership = memberships?.[0];
 
     if (!membership) return null;
     return {
