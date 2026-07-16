@@ -2,18 +2,22 @@ import { useState, useEffect, useRef } from 'react';
 import { useArosTheme } from '../lib/useArosTheme';
 import { ConciergeChat } from './ConciergeChat';
 import { SectionPanel } from './SectionPanel';
+import { IntelligencePage } from './pages/intelligence';
+import { StoresPage, AppsPage } from './pages/connections';
+import {
+  BillingPage, UsagePage, TeamPage, SettingsPage, PermissionsPage, ConnectionHealthPage,
+} from './pages/admin';
 import { ConnectWizard } from './ConnectWizard';
 import { Canvas } from './Canvas';
 import { Home } from './Home';
 import { HistoryPanel } from './HistoryPanel';
 import { branding } from './branding';
 import { type CanvasWidgetItem } from '../aros-ai/canvas';
-import { useIdentity } from './data';
+import { useConnectionSummary, useDemo, useIdentity } from './data';
+import { useAuth } from '../contexts/AuthContext';
 import {
   PRIMARY_NAV, WORKSPACE_NAV, USER, ROLES, SECTION_TITLES, type SectionKey, type NavItem, type ChatMsg, type Conversation,
 } from './shellData';
-
-const CHAT_MODELS = ['Shre · Local', 'Anthropic Claude', 'OpenAI GPT-4o', 'Google Gemini'];
 
 const ChatIcon = () => (<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>);
 const MenuIcon = () => (<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>);
@@ -63,16 +67,17 @@ function UserRow({ onClick }: { onClick: () => void }) {
 }
 
 export function AppShell() {
+  const { signOut } = useAuth();
   const b = branding();
   const ident = useIdentity();
+  const demo = useDemo();
+  const connections = useConnectionSummary();
   const initialRoute = routeState();
   const [mode, setMode] = useState<'home' | 'chat' | 'app'>(initialRoute.mode);
   const [section, setSection] = useState<Exclude<SectionKey, 'chat'>>(initialRoute.section);
-  const [role, setRole] = useState<string>(USER.role);
+  const role = demo ? USER.role : ident.role;
   const [menuOpen, setMenuOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [modelOpen, setModelOpen] = useState(false);
-  const [model, setModel] = useState(CHAT_MODELS[0]);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [chatKey, setChatKey] = useState(0);
@@ -127,6 +132,22 @@ export function AppShell() {
     navigate('app', key);
   };
   const title = mode === 'chat' ? 'Concierge' : mode === 'home' ? 'Home' : SECTION_TITLES[section];
+  const renderSection = () => {
+    if (demo) return <SectionPanel section={section} onConnect={openWizard} />;
+    if (section === 'stores') return <StoresPage onConnect={openWizard} />;
+    if (section === 'apps') return <AppsPage />;
+    if (section === 'permissions') return <PermissionsPage />;
+    if (section === 'health') return <ConnectionHealthPage />;
+    if (section === 'team') return <TeamPage />;
+    if (section === 'billing') return <BillingPage />;
+    if (section === 'usage') return <UsagePage />;
+    if (section === 'settings') return <SettingsPage />;
+    if (section === 'skills' || section === 'agents' || section === 'models') {
+      const kind = section === 'skills' ? 'skill' : section === 'agents' ? 'agent' : 'model';
+      return <IntelligencePage kind={kind} />;
+    }
+    return <SectionPanel section={section} onConnect={openWizard} />;
+  };
 
   return (
     <div className="rsx2-shell" data-chat={mode === 'chat' ? 'open' : 'closed'} data-mode={mode}>
@@ -138,7 +159,7 @@ export function AppShell() {
         </button>
         {mode === 'chat' && <span className="aros-topbar__pill">{b.concierge} · Local</span>}
         <div style={{ flex: 1 }} />
-        <span className="aros-topbar__status rsx2-hide-sm"><span className="aros-health__dot" style={{ background: 'var(--ok)' }} /> 5 stores live</span>
+        <span className="aros-topbar__status rsx2-hide-sm"><span className="aros-health__dot" style={{ background: connections.healthy > 0 ? 'var(--ok)' : 'var(--ink-3)' }} /> {connections.loading ? 'Checking connections…' : connections.total === 0 ? 'No stores connected' : `${connections.healthy}/${connections.total} connections healthy`}</span>
         <button className="aros-topbar__toggle rsx2-hide-sm" onClick={toggleTheme}>{themeLabel}</button>
         <button className="rsx2-avatar" onClick={openProfile} aria-label="Profile" title="Profile">{ident.initials}</button>
       </header>
@@ -149,22 +170,10 @@ export function AppShell() {
         <div className="rsx2-chatlayout">
           <aside className="rsx2-chatrail">
             <div className="rsx2-chatpane__head">
-              <div className="rsx2-model">
-                <button className="rsx2-model__btn" onClick={() => setModelOpen(o => !o)}>{model} <span aria-hidden>▾</span></button>
-                {modelOpen && (
-                  <>
-                    <div className="rsx2-menuscrim" onClick={() => setModelOpen(false)} />
-                    <div className="rsx2-dropdown" style={{ top: 'calc(100% + 4px)' }}>
-                      {CHAT_MODELS.map(m => (
-                        <button key={m} className="rsx2-dropdown__item" onClick={() => { setModel(m); setModelOpen(false); }}>{m}</button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
+              <div className="rsx2-model"><span className="rsx2-model__btn">Shre · Local</span></div>
               <button className="rsx2-chatpane__new" onClick={newChat}><PlusIcon /> New chat</button>
             </div>
-            <ConciergeChat key={chatKey} onConnect={openWizard} seed={seed} focusOnMount initial={recalled ?? undefined} onCanvasItems={onCanvasItems} />
+            <ConciergeChat key={chatKey} onConnect={openWizard} onConnectApps={() => goSection('apps')} seed={seed} focusOnMount initial={recalled ?? undefined} onCanvasItems={onCanvasItems} />
           </aside>
           <div className="rsx2-canvaswrap">
             <div className="rsx2-tabs">
@@ -186,7 +195,7 @@ export function AppShell() {
                 <span className="rsx-nav__glyph">C</span><span style={{ flex: 1 }}>Chat</span>
               </button>
               {PRIMARY_NAV.filter(i => i.key !== 'chat').map(item => (
-                <NavRow key={item.key} item={item} active={mode === 'app' && section === item.key} onClick={() => goSection(item.key)} />
+                <NavRow key={item.key} item={demo ? item : { ...item, count: undefined }} active={mode === 'app' && section === item.key} onClick={() => goSection(item.key)} />
               ))}
             </div>
             <div className="rsx2-nav__foot"><UserRow onClick={openProfile} /></div>
@@ -194,7 +203,7 @@ export function AppShell() {
           <main className="rsx2-content">
             {mode === 'home'
               ? <Home onAskShre={askShre} onConnect={openWizard} onSection={goSection} />
-              : <SectionPanel section={section} onConnect={openWizard} />}
+              : renderSection()}
           </main>
         </div>
       )}
@@ -214,7 +223,7 @@ export function AppShell() {
                 <span className="rsx-nav__glyph">C</span><span style={{ flex: 1 }}>Chat</span>
               </button>
               {PRIMARY_NAV.filter(i => i.key !== 'chat').map(item => (
-                <NavRow key={item.key} item={item} active={mode === 'app' && section === item.key} onClick={() => goSection(item.key)} />
+                <NavRow key={item.key} item={demo ? item : { ...item, count: undefined }} active={mode === 'app' && section === item.key} onClick={() => goSection(item.key)} />
               ))}
             </div>
             <div className="rsx2-nav__foot"><UserRow onClick={openProfile} /></div>
@@ -238,7 +247,7 @@ export function AppShell() {
             </button>
             <div className="aros-role__label" style={{ marginTop: 14 }}>Role</div>
             <div className="aros-role__pills">
-              {ROLES.map(r => (<button key={r} className="aros-role__pill" aria-pressed={role === r} onClick={() => setRole(r)}>{r}</button>))}
+              {demo ? ROLES.map(r => (<span key={r} className="aros-role__pill" aria-pressed={role === r}>{r}</span>)) : <span className="aros-role__pill" aria-pressed>{role}</span>}
             </div>
             <div className="aros-side__section" style={{ marginLeft: 0 }}>Workspace</div>
             {WORKSPACE_NAV.map(item => (
@@ -247,7 +256,7 @@ export function AppShell() {
           </div>
           <div className="rsx2-nav__foot">
             <button className="aros-topbar__toggle rsx2-show-sm" onClick={toggleTheme} style={{ width: '100%', marginBottom: 8 }}>{themeLabel} mode</button>
-            <button className="rsx2-signout" style={{ width: '100%' }}>Sign out</button>
+            <button className="rsx2-signout" style={{ width: '100%' }} onClick={() => void signOut()}>Sign out</button>
           </div>
         </aside>
       )}

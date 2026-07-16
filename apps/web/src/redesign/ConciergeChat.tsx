@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, FormEvent } from 'react';
 import { CONCIERGE_SEED, SUGGESTIONS, type ChatMsg } from './shellData';
+import { useDemo } from './data';
 import { branding } from './branding';
 import { ChatMessageRenderer, type ChatPalette } from '../aros-ai/ChatMessageRenderer';
 import { itemsFromMessages, type CanvasWidgetItem } from '../aros-ai/canvas';
@@ -22,10 +23,11 @@ const ROUTER_URL = (import.meta as any).env?.VITE_ROUTER_URL || '';
  * reply; falls back to a friendly error bubble on failure (e.g. no router in
  * the preview). Optimistic user bubble + typing indicator.
  */
-export function ConciergeChat({ onConnect, seed, focusOnMount, initial, onCanvasItems }: { onConnect?: () => void; seed?: string; focusOnMount?: boolean; initial?: ChatMsg[]; onCanvasItems?: (items: CanvasWidgetItem[]) => void }) {
+export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, initial, onCanvasItems }: { onConnect?: () => void; onConnectApps?: () => void; seed?: string; focusOnMount?: boolean; initial?: ChatMsg[]; onCanvasItems?: (items: CanvasWidgetItem[]) => void }) {
+  const demo = useDemo();
   const mark = branding().concierge.charAt(0).toUpperCase();
   const palette = warmPalette();
-  const [messages, setMessages] = useState<ChatMsg[]>(initial && initial.length ? initial : CONCIERGE_SEED);
+  const [messages, setMessages] = useState<ChatMsg[]>(initial && initial.length ? initial : demo ? CONCIERGE_SEED : []);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
@@ -65,6 +67,7 @@ export function ConciergeChat({ onConnect, seed, focusOnMount, initial, onCanvas
   return (
     <div className="aros-chat">
       <div className="aros-thread">
+        {messages.length === 0 && !sending && <div className="rsx2-empty rsx2-empty--tall"><div className="rsx2-empty__title">Start a conversation</div><div className="rsx2-empty__text">Ask about your connected store data, or connect a store first.</div></div>}
         {messages.map((m, i) => (
           <div key={i} className={`aros-msg ${m.from === 'me' ? 'aros-msg--me' : ''}`}>
             <div className="aros-msg__av">{m.from === 'me' ? 'DR' : mark}</div>
@@ -88,7 +91,7 @@ export function ConciergeChat({ onConnect, seed, focusOnMount, initial, onCanvas
       <div className="aros-composer">
         <div className="aros-chips">
           <button className="aros-chip" type="button" onClick={onConnect}><span className="aros-chip__dot" />Connect Store</button>
-          <button className="aros-chip" type="button"><span className="aros-chip__dot" />Connect Apps</button>
+          <button className="aros-chip" type="button" onClick={onConnectApps}><span className="aros-chip__dot" />Connect Apps</button>
         </div>
         <form className="aros-inputrow" onSubmit={(e: FormEvent) => { e.preventDefault(); send(draft); }}>
           <input

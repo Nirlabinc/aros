@@ -1437,6 +1437,81 @@ async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, app
   json(res, 200, { grant: data });
 }
 
+async function handleWorkspaceCompat(req: IncomingMessage, res: ServerResponse, workspaceId: string): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (auth.tenantId !== workspaceId) return json(res, 403, { error: 'Workspace access denied' });
+  const supabase = createSupabaseAdmin();
+  if (req.method === 'GET') {
+    const { data, error } = await supabase.from('tenants').select('id,name,plan,timezone,currency,status,created_at,updated_at').eq('id', workspaceId).single();
+    return error || !data ? json(res, 404, { error: 'Workspace not found' }) : json(res, 200, {
+      id: data.id, name: data.name, plan: data.plan, timezone: data.timezone, currency: data.currency,
+      status: data.status, createdAt: data.created_at, updatedAt: data.updated_at,
+    });
+  }
+  if (!['owner', 'admin'].includes(auth.role)) return json(res, 403, { error: 'Workspace admin access required' });
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+  const update: Record<string, string> = {};
+  if (typeof body.name === 'string' && body.name.trim()) update.name = sanitizeString(body.name, 120);
+  if (typeof body.timezone === 'string' && body.timezone.trim()) update.timezone = sanitizeString(body.timezone, 80);
+  if (typeof body.currency === 'string' && /^[A-Z]{3}$/.test(body.currency)) update.currency = body.currency;
+  if (!Object.keys(update).length) return json(res, 400, { error: 'No supported workspace fields supplied' });
+  const { data, error } = await supabase.from('tenants').update({ ...update, updated_at: new Date().toISOString() }).eq('id', workspaceId).select('id,name,plan,timezone,currency,status,created_at,updated_at').single();
+  if (error || !data) return json(res, 500, { error: error?.message || 'Workspace update failed' });
+  await auditLog({ tenantId: workspaceId, userId: auth.userId, action: 'workspace.updated', resource: `workspace:${workspaceId}`, detail: { fields: Object.keys(update) }, ip: getClientIp(req) });
+  json(res, 200, { id: data.id, name: data.name, plan: data.plan, timezone: data.timezone, currency: data.currency, status: data.status, createdAt: data.created_at, updatedAt: data.updated_at });
+}
+
+async function workspaceMembers(workspaceId: string) {
+  const supabase = createSupabaseAdmin();
+  const { data, error } = await supabase.from('tenant_members').select('id,user_id,role,status,joined_at').eq('tenant_id', workspaceId).order('joined_at');
+  if (error) throw error;
+  return Promise.all((data || []).map(async member => {
+    const { data: userResult } = await supabase.auth.admin.getUserById(member.user_id);
+    const user = userResult?.user;
+    return {
+      id: member.id, principalType: 'user', principalId: member.user_id, status: member.status,
+      membershipRole: member.role, createdAt: member.joined_at, updatedAt: member.joined_at,
+      user: user ? { id: user.id, name: user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'Member', email: user.email || '' } : null,
+    };
+  }));
+}
+
+async function handleWorkspaceMembersCompat(req: IncomingMessage, res: ServerResponse, workspaceId: string, memberId?: string): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (auth.tenantId !== workspaceId) return json(res, 403, { error: 'Workspace access denied' });
+  try {
+    if (req.method === 'GET' && !memberId) return json(res, 200, await workspaceMembers(workspaceId));
+    if (!['owner', 'admin'].includes(auth.role)) return json(res, 403, { error: 'Workspace admin access required' });
+    if (!memberId) return json(res, 400, { error: 'Member id required' });
+    const supabase = createSupabaseAdmin();
+    const { data: target } = await supabase.from('tenant_members').select('id,user_id,role').eq('tenant_id', workspaceId).eq('id', memberId).single();
+    if (!target) return json(res, 404, { error: 'Member not found' });
+    if (req.method === 'PATCH') {
+      const body = await parseJsonBody(req); const role = String(body?.role || '');
+      if (!['owner', 'admin', 'member'].includes(role)) return json(res, 400, { error: 'Role must be owner, admin, or member' });
+      if (target.role === 'owner' && role !== 'owner') {
+        const { count } = await supabase.from('tenant_members').select('id', { count: 'exact', head: true }).eq('tenant_id', workspaceId).eq('role', 'owner').eq('status', 'active');
+        if ((count || 0) <= 1) return json(res, 409, { error: 'The workspace must retain at least one owner' });
+      }
+      const { data, error } = await supabase.from('tenant_members').update({ role }).eq('tenant_id', workspaceId).eq('id', memberId).select('id,role').single();
+      if (error || !data) return json(res, 500, { error: error?.message || 'Role update failed' });
+      await auditLog({ tenantId: workspaceId, userId: auth.userId, action: 'workspace.member_role_updated', resource: `member:${memberId}`, detail: { role }, ip: getClientIp(req) });
+      return json(res, 200, { id: data.id, membershipRole: data.role });
+    }
+    if (req.method === 'DELETE') {
+      if (target.user_id === auth.userId) return json(res, 409, { error: 'You cannot remove your own active membership' });
+      const { error } = await supabase.from('tenant_members').delete().eq('tenant_id', workspaceId).eq('id', memberId);
+      if (error) return json(res, 500, { error: error.message });
+      await auditLog({ tenantId: workspaceId, userId: auth.userId, action: 'workspace.member_removed', resource: `member:${memberId}`, detail: {}, ip: getClientIp(req) });
+      return json(res, 200, { id: memberId });
+    }
+    json(res, 405, { error: 'Method not allowed' });
+  } catch (error) { json(res, 500, { error: error instanceof Error ? error.message : 'Workspace member request failed' }); }
+}
+
 // ── Dashboard ───────────────────────────────────────────────────
 
 async function handleDashboard(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -2532,6 +2607,12 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   const resourceMatch = pathname.match(/^\/api\/resources\/(channel|pos|app|agent|skill|model)(?:\/([0-9a-f-]+))?$/);
   if (resourceMatch && ['GET', 'POST', 'PUT'].includes(method)) return handleTenantResources(req, res, resourceMatch[1], resourceMatch[2]);
+  const workspaceCompatMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)$/);
+  if (workspaceCompatMatch && ['GET', 'PATCH'].includes(method)) return handleWorkspaceCompat(req, res, workspaceCompatMatch[1]);
+  const workspaceMembersMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/members(?:\/([0-9a-f-]+)(?:\/role)?)?$/);
+  if (workspaceMembersMatch && ['GET', 'PATCH', 'DELETE'].includes(method)) return handleWorkspaceMembersCompat(req, res, workspaceMembersMatch[1], workspaceMembersMatch[2]);
+  const workspaceRolesMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/roles$/);
+  if (workspaceRolesMatch && method === 'GET') return handleWorkspaceMembersCompat(req, res, workspaceRolesMatch[1]);
   if (pathname === '/api/apps' && method === 'GET') return handlePlatformApps(req, res);
   const appGrantMatch = pathname.match(/^\/api\/apps\/([a-z0-9-]+)\/grant$/);
   if (appGrantMatch && method === 'POST') return handlePlatformApps(req, res, appGrantMatch[1]);

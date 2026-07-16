@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { POS_PROVIDERS, STORES_SCOPE, type PosProvider } from './shellData';
+import { POS_PROVIDERS, type PosProvider } from './shellData';
 
 const STEP_LABELS = ['PROVIDER', 'CONNECT', 'SCOPE', 'REVIEW'];
 const API_BASE = (window as any).__AROS_API_URL__
@@ -17,7 +17,7 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
   const [step, setStep] = useState(1);
   const [providerId, setProviderId] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
-  const [stores, setStores] = useState<string[]>(STORES_SCOPE);
+  const [visibleSecrets, setVisibleSecrets] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const provider = POS_PROVIDERS.find(p => p.id === providerId) || null;
@@ -31,18 +31,15 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
   const canNext =
     step === 1 ? !!provider :
     step === 2 ? !!provider && provider.fields.every(f => (values[f.key] || '').trim().length > 0) :
-    step === 3 ? stores.length > 0 :
+    step === 3 ? true :
     true;
-
-  function toggleStore(name: string) {
-    setStores(all => all.includes(name) ? all.filter(x => x !== name) : [...all, name]);
-  }
 
   async function submit() {
     if (!provider) return;
     setBusy(true); setError('');
     try {
-      const config: Record<string, unknown> = { stores };
+      const targetStore = provider.id === 'rapidrms' ? String(values.clientId || '') : String(values.commanderIp || '');
+      const config: Record<string, unknown> = { stores: targetStore ? [targetStore] : [] };
       const secrets: Record<string, string> = {};
       for (const f of provider.fields) {
         const v = (values[f.key] || '').trim();
@@ -123,11 +120,13 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
                     <span className="rsx-form__label">{f.label}</span>
                     <input
                       className="rsx-form__input"
-                      type={f.secret ? 'password' : 'text'}
+                      type={f.secret && !visibleSecrets[f.key] ? 'password' : f.key === 'email' ? 'email' : 'text'}
+                      autoComplete={f.key === 'email' ? 'username' : f.secret ? 'current-password' : 'off'}
                       placeholder={f.ph}
                       value={values[f.key] || ''}
                       onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))}
                     />
+                    {f.secret && <button className="rsx-modal__back" type="button" aria-label={`${visibleSecrets[f.key] ? 'Hide' : 'Show'} ${f.label}`} aria-pressed={Boolean(visibleSecrets[f.key])} onClick={() => setVisibleSecrets(current => ({ ...current, [f.key]: !current[f.key] }))}>{visibleSecrets[f.key] ? 'Hide' : 'Show'}</button>}
                   </label>
                 ))}
               </div>
@@ -136,15 +135,10 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
 
           {step === 3 && (
             <>
-              <h3 className="rsx-modal__h">Choose stores &amp; access</h3>
-              <p className="rsx-modal__p">Select which locations to sync. You can change scope anytime.</p>
+              <h3 className="rsx-modal__h">Confirm store &amp; access</h3>
+              <p className="rsx-modal__p">{provider?.id === 'rapidrms' ? 'A RapidRMS client ID identifies one specific store. We will validate it and add that store. Repeat this flow with another client ID to add another store.' : 'We will validate this Commander and add its site. You can connect another site afterward.'}</p>
               <div className="rsx-scope">
-                {STORES_SCOPE.map(name => (
-                  <label key={name} className="rsx-scope__row">
-                    <input type="checkbox" checked={stores.includes(name)} onChange={() => toggleStore(name)} />
-                    <span>{name}</span>
-                  </label>
-                ))}
+                <div className="rsx-scope__row"><strong>{provider?.id === 'rapidrms' ? 'RapidRMS store' : 'Verifone site'}</strong><span>{provider?.id === 'rapidrms' ? `Client ID: ${values.clientId}` : `Commander: ${values.commanderIp}`}</span></div>
               </div>
               <div className="rsx-note" style={{ marginTop: 16 }}>
                 <div className="rsx-note__body" style={{ opacity: 1 }}>
@@ -162,7 +156,7 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
               <div className="rsx-review">
                 <ReviewRow label="Provider" value={provider.name} />
                 <ReviewRow label="Connection" value={provider.kind === 'tunnel' ? 'Secure tunnel to site controller' : 'HTTPS API'} />
-                <ReviewRow label="Stores" value={stores.length === STORES_SCOPE.length ? `All ${stores.length}` : stores.join(', ') || 'None'} />
+                <ReviewRow label="Store target" value={provider.id === 'rapidrms' ? `Client ID ${values.clientId}` : String(values.commanderIp || '')} />
                 <ReviewRow label="Access" value="Read + approval-gated writes" />
               </div>
               {error && <div className="aros-auth__error" style={{ marginTop: 14 }}>{error}</div>}
