@@ -5,6 +5,7 @@
  */
 import React, { useState, useEffect } from 'react';
 import { DEFAULT_MODEL } from '../../model-defaults';
+import { PROVIDER_PRESETS } from '../../model-catalog';
 
 interface ModelProvider {
   id: string;
@@ -16,13 +17,8 @@ interface ModelProvider {
   isActive: boolean;
 }
 
-const PROVIDER_PRESETS = [
-  { provider: 'anthropic' as const, label: 'Anthropic Claude', placeholder: 'sk-ant-...', defaultModel: 'claude-sonnet-4-6', docs: 'https://console.anthropic.com' },
-  { provider: 'openai' as const, label: 'OpenAI', placeholder: 'sk-...', defaultModel: 'gpt-4o', docs: 'https://platform.openai.com/api-keys' },
-  { provider: 'google' as const, label: 'Google Gemini', placeholder: 'AIza...', defaultModel: 'gemini-2.5-flash', docs: 'https://aistudio.google.com' },
-  { provider: 'ollama' as const, label: 'Ollama (local)', placeholder: 'No key needed', defaultModel: 'llama3.2', docs: 'https://ollama.ai' },
-  { provider: 'custom' as const, label: 'Custom (OpenAI-compatible)', placeholder: 'API key (optional)', defaultModel: '', docs: '' },
-];
+// Provider presets are shared with the onboarding model step (model-catalog.ts)
+// so the two never drift.
 
 const LOCAL_DEFAULT: ModelProvider = {
   id: 'local-default',

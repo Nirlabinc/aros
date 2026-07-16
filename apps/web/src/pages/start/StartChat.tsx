@@ -8,9 +8,9 @@ import { useState, useRef, useEffect, type FormEvent } from 'react';
  * agent immediately shows proactive insights drawn from real sample numbers
  * plus suggested questions — so value lands before any integration is required.
  *
- * "Connect your store" is an in-context CTA (value first, credentials second),
- * not a gate. It leads to /connect — the actual store-connection step — and
- * from there to /onboarding (plan + business setup) once the user is sold.
+ * "Set up your workspace" is an in-context CTA (value first, config second),
+ * not a gate. It enters the resumable journey at /onboarding (model → connect →
+ * readiness) once the user is sold.
  */
 
 // /api/v1/* remains proxied server-side for already-shipped bundles.
@@ -123,7 +123,7 @@ export function StartChat() {
         <div style={s.sampleBadge}>
           <span style={s.dot} /> Exploring with sample data{activation ? ` · ${activation.store}` : ''}
         </div>
-        <a href="/connect" style={s.connectBtn}>Connect your store</a>
+        <a href="/onboarding" style={s.connectBtn}>Set up your workspace</a>
       </header>
 
       <main style={s.main}>

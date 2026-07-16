@@ -5,6 +5,7 @@ import { Shell } from '../components/Shell';
 import { Dashboard } from '../components/Dashboard';
 import { ProtectedRoute } from '../components/ProtectedRoute';
 import { OnboardingPage } from '../pages/onboarding/OnboardingPage';
+import { JourneyPage } from '../pages/onboarding/JourneyPage';
 import { MarketplacePage } from '../pages/marketplace/MarketplacePage';
 import { DeveloperPortal } from '../pages/developers/DeveloperPortal';
 import { LandingPage } from '../pages/landing/LandingPage';
@@ -28,6 +29,7 @@ import { ConnectionHealth } from '../pages/settings/ConnectionHealth';
 import { DevicesPage } from '../redesign/pages/admin';
 import { centralIdentityOnly } from '../lib/supabase';
 import { AppShell } from '../redesign/AppShell';
+import { resolveAuthenticatedLanding } from '../onboarding/journey';
 
 const MARKETPLACE_ADMIN_URL = (window as any).__MARKETPLACE_URL__
   ? `${(window as any).__MARKETPLACE_URL__}/admin`
@@ -43,10 +45,25 @@ function isOnboardingComplete(tenant: Tenant | null): boolean {
 }
 
 function AppContent() {
-  const { user, session, tenant, loading } = useSupabaseAuth();
+  const { user, session, tenant, loading, membershipError, onboardingStep, onboardingLoading } = useSupabaseAuth();
   const path = window.location.pathname;
   const isAdmin = user?.app_metadata?.role === 'admin' || user?.app_metadata?.role === 'superadmin';
   const onboarded = isOnboardingComplete(tenant);
+  // Single source of truth for where an authenticated session lands (see
+  // onboarding/journey.ts): onboarded workspaces always resolve to /dashboard
+  // via the backend tenant flag (works on a new device with empty caches), a
+  // membership-lookup failure never restarts onboarding, genuinely new
+  // workspaces get /start, and a mid-journey workspace resumes at /onboarding.
+  // We only need the resumable progress step for the not-yet-onboarded case, so
+  // fold its loading into the gate to avoid flashing /start at a returning user.
+  const needsProgress = !!session && !!tenant && !onboarded && !membershipError && !centralIdentityOnly;
+  const authenticatedLanding = resolveAuthenticatedLanding({
+    loading: loading || (needsProgress && onboardingLoading),
+    hasSession: !!session,
+    onboardingCompleted: onboarded,
+    membershipError: !!membershipError,
+    progressStep: onboardingStep,
+  });
 
   // Chat-first redesign preview — self-contained, no auth, for review only.
   if (path.startsWith('/preview/app')) {
@@ -68,17 +85,18 @@ function AppContent() {
   // ── Public auth pages (no session required) ────────────────
   if (path === '/login' || path === '/auth') {
     const isHostedResume = new URLSearchParams(window.location.search).has('return_to');
-    if (session && !loading && !isHostedResume) {
-      // New users land in the value-first demo chat (/start), not the wizard.
-      window.location.href = onboarded ? '/dashboard' : '/start';
+    if (session && !loading && !isHostedResume && authenticatedLanding) {
+      // New users land in the value-first demo chat (/start), not the wizard;
+      // returning/mid-journey users resolve to /dashboard or /onboarding.
+      window.location.href = authenticatedLanding;
       return null;
     }
     return <><Login /><ChatWidget /></>;
   }
 
   if (path === '/signup') {
-    if (session && !loading) {
-      window.location.href = onboarded ? '/dashboard' : '/start';
+    if (session && !loading && authenticatedLanding) {
+      window.location.href = authenticatedLanding;
       return null;
     }
     return <><Signup /><ChatWidget /></>;
@@ -141,12 +159,14 @@ function AppContent() {
     );
   }
 
-  // Onboarding — full-screen plan + business setup wizard, reached from
-  // /connect (or a paid CTA) once the user is sold — not a gate before value.
+  // Onboarding — the resumable journey (model → connect → readiness). The legacy
+  // plan/business wizard is retained only for the Stripe payment round-trip so
+  // in-flight checkouts still complete.
   if (path.startsWith('/onboarding')) {
+    const isPaymentCallback = new URLSearchParams(window.location.search).has('payment');
     return (
       <ProtectedRoute>
-        <OnboardingPage />
+        {isPaymentCallback ? <OnboardingPage /> : <JourneyPage />}
       </ProtectedRoute>
     );
   }
@@ -154,21 +174,22 @@ function AppContent() {
   // All remaining routes require auth + onboarding complete
   return (
     <ProtectedRoute>
-      <AuthenticatedRoutes path={path} isAdmin={isAdmin} onboarded={onboarded} />
+      <AuthenticatedRoutes path={path} isAdmin={isAdmin} onboarded={onboarded} landing={authenticatedLanding} />
     </ProtectedRoute>
   );
 }
 
-function AuthenticatedRoutes({ path, isAdmin, onboarded }: { path: string; isAdmin: boolean; onboarded: boolean }) {
-  // Gate: new users who haven't completed onboarding land in the value-first
-  // demo chat (/start), not the wizard. The payment callback still resumes the
-  // onboarding flow so Stripe round-trips complete.
+function AuthenticatedRoutes({ path, isAdmin, onboarded, landing }: { path: string; isAdmin: boolean; onboarded: boolean; landing: string | null }) {
+  // Gate: a not-yet-onboarded workspace resumes at the right place — /start for
+  // a genuinely new one, /onboarding for a mid-journey one (see journey.ts). The
+  // payment callback still resumes the legacy wizard so Stripe round-trips work.
   if (!onboarded) {
     const params = new URLSearchParams(window.location.search);
     if (params.has('payment')) {
       return <OnboardingPage />;
     }
-    window.location.href = '/start';
+    if (!landing) return null; // progress still resolving — avoid a premature redirect
+    window.location.href = landing;
     return null;
   }
 

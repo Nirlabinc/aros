@@ -643,6 +643,42 @@ async function handleVerifyOtp(req: IncomingMessage, res: ServerResponse): Promi
 
 // ── Onboarding ──────────────────────────────────────────────────
 
+type OnboardingComponentName = 'model' | 'store' | 'sync' | 'capabilities';
+type OnboardingComponentStatus = 'not_started' | 'pending' | 'ready' | 'error' | 'skipped';
+
+function canonicalOnboardingState(row: Record<string, unknown> | null, tenantId: string) {
+  const component = (name: OnboardingComponentName) => {
+    const value = row?.[name];
+    return value && typeof value === 'object' ? value : { status: 'not_started', updatedAt: null };
+  };
+  return {
+    version: Number(row?.version || 1), tenantId,
+    phase: String(row?.phase || 'identity_ready'),
+    model: component('model'), store: component('store'), sync: component('sync'), capabilities: component('capabilities'),
+    completedAt: row?.completed_at ?? null, updatedAt: row?.updated_at ?? new Date().toISOString(),
+  };
+}
+
+async function resolveOnboardingScope(req: IncomingMessage, tenantId: string, userId?: string) {
+  const userAuth = await authenticateRequest(req);
+  if (userAuth) return userAuth.tenantId === tenantId ? userAuth : null;
+  const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  if (String(req.headers['x-service-source'] || '') !== 'mib007' || !tokensMatch(token, readServiceToken())) return null;
+  return UUID_RE.test(tenantId) && userId ? { tenantId, userId, role: 'member' } : null;
+}
+
+async function setOnboardingComponent(
+  tenantId: string, component: OnboardingComponentName, status: OnboardingComponentStatus,
+  metadata: Record<string, unknown> = {}, error: string | null = null,
+) {
+  const { data, error: rpcError } = await createSupabaseAdmin().rpc('set_workspace_onboarding_component', {
+    p_tenant_id: tenantId, p_component: component, p_status: status, p_metadata: metadata, p_error: error,
+  });
+  if (rpcError) throw rpcError;
+  const row = Array.isArray(data) ? data[0] : data;
+  return canonicalOnboardingState((row as Record<string, unknown> | null) ?? null, tenantId);
+}
+
 async function handleOnboardingStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
   const tenantId = url.searchParams.get('tenantId');
@@ -650,6 +686,9 @@ async function handleOnboardingStatus(req: IncomingMessage, res: ServerResponse)
   if (!tenantId) {
     return json(res, 400, { error: 'Missing query parameter: tenantId' });
   }
+
+  const scope = await resolveOnboardingScope(req, tenantId, url.searchParams.get('userId') || undefined);
+  if (!scope) return json(res, 401, { error: 'Authentication required' });
 
   try {
     const supabase = createSupabaseAdmin();
@@ -669,12 +708,19 @@ async function handleOnboardingStatus(req: IncomingMessage, res: ServerResponse)
       .eq('tenant_id', tenantId)
       .single();
 
+    const { data: canonical } = await supabase
+      .from('workspace_onboarding_state')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+
     json(res, 200, {
       tenantId: tenant.id,
       completed: tenant.onboarding_completed === true,
       step: progress?.step ?? 1,
       stepData: progress?.step_data ?? {},
       completedAt: progress?.completed_at ?? null,
+      state: canonicalOnboardingState(canonical as Record<string, unknown> | null, tenantId),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to fetch onboarding status';
@@ -763,6 +809,82 @@ async function handleOnboardingComplete(req: IncomingMessage, res: ServerRespons
     const message = err instanceof Error ? err.message : 'Failed to complete onboarding';
     console.error('[onboarding/complete]', message);
     json(res, 500, { error: message });
+  }
+}
+
+async function handleOnboardingProgress(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+
+  const { tenantId, step, stepData } = body as {
+    tenantId?: string;
+    step?: number;
+    stepData?: Record<string, unknown>;
+  };
+
+  if (!tenantId) return json(res, 400, { error: 'tenantId is required' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const requestedUserId = typeof (body as Record<string, unknown>).userId === 'string'
+      ? String((body as Record<string, unknown>).userId) : undefined;
+    const scope = await resolveOnboardingScope(req, tenantId, requestedUserId);
+    if (!scope) return json(res, 401, { error: 'Authentication required' });
+
+    // Merge step_data and never regress the recorded step — progress only moves
+    // forward, so a stale/out-of-order write can't rewind a resumable journey.
+    const { data: existing } = await supabase
+      .from('onboarding_progress')
+      .select('step, step_data')
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+
+    const currentStep = typeof existing?.step === 'number' ? existing.step : 1;
+    const requestedStep = typeof step === 'number' && Number.isFinite(step) ? Math.floor(step) : currentStep;
+    const nextStep = Math.max(currentStep, requestedStep);
+    const mergedData = {
+      ...(existing?.step_data && typeof existing.step_data === 'object' ? existing.step_data : {}),
+      ...(stepData && typeof stepData === 'object' ? stepData : {}),
+    };
+
+    const { error: progressError } = await supabase
+      .from('onboarding_progress')
+      .upsert({ tenant_id: tenantId, step: nextStep, step_data: mergedData }, { onConflict: 'tenant_id' });
+
+    if (progressError) throw progressError;
+
+    let state = null;
+    if (stepData?.model && typeof stepData.model === 'object') {
+      state = await setOnboardingComponent(tenantId, 'model', 'ready', stepData.model as Record<string, unknown>);
+    }
+
+    json(res, 200, { ok: true, step: nextStep, stepData: mergedData, state });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to save onboarding progress';
+    console.error('[onboarding/progress]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+async function handleOnboardingComponent(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+  const tenantId = typeof body.tenantId === 'string' ? body.tenantId : '';
+  const userId = typeof body.userId === 'string' ? body.userId : undefined;
+  const component = body.component as OnboardingComponentName;
+  const status = body.status as OnboardingComponentStatus;
+  if (!UUID_RE.test(tenantId)) return json(res, 400, { error: 'Valid tenantId is required' });
+  if (!['model', 'store', 'sync', 'capabilities'].includes(component)) return json(res, 400, { error: 'Invalid component' });
+  if (!['not_started', 'pending', 'ready', 'error', 'skipped'].includes(status)) return json(res, 400, { error: 'Invalid status' });
+  const scope = await resolveOnboardingScope(req, tenantId, userId);
+  if (!scope) return json(res, 401, { error: 'Authentication required' });
+  try {
+    const metadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+      ? body.metadata as Record<string, unknown> : {};
+    const state = await setOnboardingComponent(tenantId, component, status, metadata, typeof body.error === 'string' ? body.error : null);
+    json(res, 200, { state });
+  } catch (err) {
+    json(res, 500, { error: err instanceof Error ? err.message : 'Failed to update onboarding state' });
   }
 }
 
@@ -2449,6 +2571,14 @@ async function handleConnectorsTest(req: IncomingMessage, res: ServerResponse): 
       })
       .eq('id', row.id);
 
+    if (result.success) {
+      await setOnboardingComponent(auth.tenantId, 'store', 'ready', {
+        connectorId: row.id, connectorType: row.type,
+      });
+      await setOnboardingComponent(auth.tenantId, 'sync', 'pending', { connectorId: row.id });
+    } else {
+      await setOnboardingComponent(auth.tenantId, 'store', 'error', { connectorId: row.id }, result.error ?? 'Connection test failed');
+    }
     // A newly-connected (or newly-broken) connector should reflect on the
     // dashboard immediately, not after the summary TTL expires.
     storeSummaryCache.delete(auth.tenantId);
@@ -2829,6 +2959,14 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (url === '/api/onboarding/complete' && method === 'POST') {
     return handleOnboardingComplete(req, res);
+  }
+
+  if (url === '/api/onboarding/progress' && method === 'POST') {
+    return handleOnboardingProgress(req, res);
+  }
+
+  if (url === '/api/onboarding/component' && method === 'POST') {
+    return handleOnboardingComponent(req, res);
   }
 
   // ── Dashboard (authenticated) ──────────────────────────
