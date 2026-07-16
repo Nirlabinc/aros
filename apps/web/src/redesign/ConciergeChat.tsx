@@ -12,7 +12,7 @@ const ROUTER_URL = (import.meta as any).env?.VITE_ROUTER_URL || '';
  * reply; falls back to a friendly error bubble on failure (e.g. no router in
  * the preview). Optimistic user bubble + typing indicator.
  */
-export function ConciergeChat({ onConnect, seed, focusOnMount, initial }: { onConnect?: () => void; seed?: string; focusOnMount?: boolean; initial?: ChatMsg[] }) {
+export function ConciergeChat({ onConnect, seed, focusOnMount, initial, onReply }: { onConnect?: () => void; seed?: string; focusOnMount?: boolean; initial?: ChatMsg[]; onReply?: (data: any) => void }) {
   const mark = branding().concierge.charAt(0).toUpperCase();
   const [messages, setMessages] = useState<ChatMsg[]>(initial && initial.length ? initial : CONCIERGE_SEED);
   const [draft, setDraft] = useState('');
@@ -40,6 +40,8 @@ export function ConciergeChat({ onConnect, seed, focusOnMount, initial }: { onCo
       const data = await res.json();
       const reply = data.response || data.message || data.content || 'No response received.';
       setMessages(prev => [...prev, { from: 'shre', text: reply, meta: 'Shre · Local' }]);
+      // Surface any structured content blocks the reply carries to the canvas.
+      onReply?.(data);
     } catch {
       setMessages(prev => [...prev, { from: 'shre', text: 'I couldn’t reach the store brain just now. Try again in a moment — your stores and data are unaffected.', meta: 'Shre · Local' }]);
     } finally {

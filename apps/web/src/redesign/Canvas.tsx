@@ -19,10 +19,19 @@ const LOW_STOCK = [
 
 import { useCanvasDemo } from './data';
 
-export function Canvas() {
+/** Loose content-block shapes Shre's replies can carry (mib-widget family). */
+export type CanvasBlock =
+  | { type: 'kpis'; items: { value: string | number; label: string; delta?: string; up?: boolean }[] }
+  | { type: 'bars'; title?: string; items: { label: string; value: number }[] }
+  | { type: 'table'; title?: string; columns: string[]; rows: (string | number)[][] }
+  | { type: 'text'; title?: string; text: string }
+  | Record<string, any>;
+
+export function Canvas({ blocks }: { blocks?: CanvasBlock[] }) {
   const demo = useCanvasDemo();
   const max = Math.max(...SALES_BY_STORE.map(s => s.value));
   if (!demo) {
+    if (blocks && blocks.length) return <div className="rsx2-canvas"><BlockRenderer blocks={blocks} /></div>;
     return (
       <div className="rsx2-canvas">
         <div className="rsx2-empty rsx2-empty--tall">
@@ -88,5 +97,51 @@ function Kpi({ value, label, delta, up }: { value: string; label: string; delta:
       <div className="rsx2-kpi__label">{label}</div>
       <div className={`rsx2-kpi__delta ${up ? 'is-up' : ''}`}>{delta}</div>
     </div>
+  );
+}
+
+/** Renders the structured blocks a live reply carries. Defensive — unknown block
+ *  types are skipped, so a malformed payload never breaks the canvas. */
+function BlockRenderer({ blocks }: { blocks: CanvasBlock[] }) {
+  return (
+    <>
+      {(blocks as any[]).map((b: any, i: number) => {
+        if (b?.type === 'kpis' && Array.isArray(b.items)) {
+          return <div key={i} className="rsx2-kpis">{b.items.map((k: any, j: number) => <Kpi key={j} value={String(k.value)} label={k.label} delta={k.delta || ''} up={k.up} />)}</div>;
+        }
+        if (b?.type === 'bars' && Array.isArray(b.items)) {
+          const max = Math.max(1, ...b.items.map((x: any) => Number(x.value) || 0));
+          return (
+            <div key={i} className="rsx2-vizcard">
+              {b.title && <div className="rsx2-vizcard__title">{b.title}</div>}
+              <div className="rsx2-bars">
+                {b.items.map((s: any, j: number) => (
+                  <div key={j} className="rsx2-bar">
+                    <span className="rsx2-bar__label">{s.label}</span>
+                    <div className="rsx2-bar__track"><div className="rsx2-bar__fill" style={{ width: `${(Number(s.value) / max) * 100}%` }} /></div>
+                    <span className="rsx2-bar__val">{typeof s.value === 'number' ? s.value.toLocaleString() : s.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        }
+        if (b?.type === 'table' && Array.isArray(b.rows)) {
+          return (
+            <div key={i} className="rsx2-vizcard">
+              {b.title && <div className="rsx2-vizcard__title">{b.title}</div>}
+              <table className="rsx2-table">
+                {Array.isArray(b.columns) && <thead><tr>{b.columns.map((c: string, j: number) => <th key={j}>{c}</th>)}</tr></thead>}
+                <tbody>{b.rows.map((row: any[], r: number) => <tr key={r}>{row.map((cell, ci) => <td key={ci}>{String(cell)}</td>)}</tr>)}</tbody>
+              </table>
+            </div>
+          );
+        }
+        if (b?.type === 'text' && b.text) {
+          return <div key={i} className="rsx2-vizcard">{b.title && <div className="rsx2-vizcard__title">{b.title}</div>}<div style={{ fontSize: 14, color: 'var(--ink-2)', lineHeight: 1.6 }}>{b.text}</div></div>;
+        }
+        return null;
+      })}
+    </>
   );
 }
