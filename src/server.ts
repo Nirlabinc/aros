@@ -980,6 +980,15 @@ async function ensureSignupTenant(
     );
   }
 
+  // Core baseline: the concierge agent and connector-independent skills every
+  // workspace starts with. Non-fatal — the migration backfill reconciles any
+  // tenant this call misses.
+  const { error: baselineError } = await supabase.rpc('apply_provisioning_manifest', {
+    p_tenant_id: ensuredTenantId, p_source_kind: 'app', p_source_id: 'core',
+    p_manifest_key: 'app.core.v1', p_activate: true, p_actor: input.userId,
+  });
+  if (baselineError) console.error('[signup] Core baseline provisioning failed:', baselineError.message);
+
   return { tenantId: ensuredTenantId, licenseKey, existing: false };
 }
 
@@ -1634,7 +1643,9 @@ async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, app
   const supabase = createSupabaseAdmin();
   if (req.method === 'GET') {
     const [{ data: apps, error }, { data: grants }] = await Promise.all([supabase.from('platform_apps').select('*').order('name'), supabase.from('marketplace_app_entitlements').select('app_key,status,service_config').eq('tenant_id', auth.tenantId)]);
-    return error ? json(res, 500, { error: error.message }) : json(res, 200, { apps: apps || [], grants: grants || [] });
+    // Publish each app's capability bundle so the marketplace can show what
+    // activation unlocks (skills/agents/tools) before the user commits.
+    return error ? json(res, 500, { error: error.message }) : json(res, 200, { apps: (apps || []).map(app => ({ ...app, bundle: APP_CAPABILITY_BUNDLES[app.id] || null })), grants: grants || [] });
   }
   if (!appId) return json(res, 400, { error: 'app id required' });
   if (!['owner', 'admin'].includes(auth.role)) return json(res, 403, { error: 'Workspace admin access required' });
@@ -1673,18 +1684,31 @@ async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, app
   }, { onConflict: 'tenant_id,kind,name' });
   if (resourceError) return json(res, 500, { error: resourceError.message });
   const bundle = APP_CAPABILITY_BUNDLES[appId];
-  if (bundle?.skills.length) {
-    const skillRows = bundle.skills.map(skill => ({
-      tenant_id: auth.tenantId, kind: 'skill', provider: appId, name: skill.name,
-      status: activationState === 'ready' ? 'active' : 'configuring', capabilities: skill.capabilities,
+  const bundleResources = [
+    ...(bundle?.skills || []).map(skill => ({ ...skill, kind: 'skill' as const })),
+    ...(bundle?.agents || []).map(agent => ({ ...agent, kind: 'agent' as const })),
+  ];
+  if (bundleResources.length) {
+    const resourceRows = bundleResources.map(resource => ({
+      tenant_id: auth.tenantId, kind: resource.kind, provider: appId, name: resource.name,
+      status: activationState === 'ready' ? 'active' : 'configuring', capabilities: resource.capabilities,
       config: { appKey: appId, managedByApp: true }, store_ids: storeIds,
       health: { state: activationState, checkedAt: new Date().toISOString() }, created_by: auth.userId,
     }));
-    const { error: skillError } = await supabase.from('tenant_resources').upsert(skillRows, { onConflict: 'tenant_id,kind,name' });
-    if (skillError) return json(res, 500, { error: skillError.message });
+    const { error: bundleError } = await supabase.from('tenant_resources').upsert(resourceRows, { onConflict: 'tenant_id,kind,name' });
+    if (bundleError) return json(res, 500, { error: bundleError.message });
   }
-  await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'app.granted', resource: `app:${appId}`, detail: { scopes: requested, storeIds, activationState, capabilities }, ip: getClientIp(req) });
-  json(res, 200, { grant: data });
+  // What this activation just made available — lets the UI show the
+  // "you unlocked N skills / agents / tools" moment instead of a bare grant.
+  const unlocked = {
+    app: app.name,
+    skills: (bundle?.skills || []).map(skill => skill.name),
+    agents: (bundle?.agents || []).map(agent => agent.name),
+    tools: bundle?.tools || [],
+    activationState,
+  };
+  await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'app.granted', resource: `app:${appId}`, detail: { scopes: requested, storeIds, activationState, capabilities, unlocked: { skills: unlocked.skills.length, agents: unlocked.agents.length, tools: unlocked.tools.length } }, ip: getClientIp(req) });
+  json(res, 200, { grant: data, unlocked });
 }
 
 async function handleWorkspaceCompat(req: IncomingMessage, res: ServerResponse, workspaceId: string): Promise<void> {
@@ -2246,7 +2270,7 @@ async function handleStoreSales(req: IncomingMessage, res: ServerResponse): Prom
   }
 }
 
-const APP_CAPABILITY_BUNDLES: Record<string, { tools: string[]; skills: Array<{ name: string; capabilities: string[] }> }> = {
+const APP_CAPABILITY_BUNDLES: Record<string, { tools: string[]; skills: Array<{ name: string; capabilities: string[] }>; agents: Array<{ name: string; capabilities: string[] }> }> = {
   storepulse: {
     tools: ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_item_search', 'mib_low_inventory'],
     skills: [
@@ -2254,9 +2278,12 @@ const APP_CAPABILITY_BUNDLES: Record<string, { tools: string[]; skills: Array<{ 
       { name: 'Inventory Health', capabilities: ['pos.inventory.read'] },
       { name: 'Store Performance', capabilities: ['stores.read', 'pos.sales.read'] },
     ],
+    // Agent names match the provisioning-manifest seeds so both systems
+    // converge on the same tenant_resources rows.
+    agents: [{ name: 'Retail Analyst Agent', capabilities: ['pos.sales.read', 'pos.inventory.read', 'analytics.insights'] }],
   },
-  mib: { tools: ['mib_get_workspace', 'mib_list_agents', 'mib_list_tasks'], skills: [{ name: 'Workspace Operations', capabilities: ['workspace.admin'] }] },
-  centrix: { tools: ['centrix_search_contacts', 'centrix_list_contacts', 'centrix_list_tasks', 'centrix_list_deals'], skills: [{ name: 'Customer Operations', capabilities: ['crm.read', 'tasks.read'] }] },
+  mib: { tools: ['mib_get_workspace', 'mib_list_agents', 'mib_list_tasks'], skills: [{ name: 'Workspace Operations', capabilities: ['workspace.admin'] }], agents: [] },
+  centrix: { tools: ['centrix_search_contacts', 'centrix_list_contacts', 'centrix_list_tasks', 'centrix_list_deals'], skills: [{ name: 'Customer Operations', capabilities: ['crm.read', 'tasks.read'] }], agents: [{ name: 'Customer Operations Agent', capabilities: ['crm.read', 'tasks.read'] }] },
 };
 
 const CONNECTOR_CAPABILITY_TOOLS: Record<string, string[]> = {

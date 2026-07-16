@@ -12,6 +12,12 @@ export type StoreConnector = {
   created_at?: string;
 };
 
+export type AppCapabilityBundle = {
+  tools: string[];
+  skills: Array<{ name: string; capabilities: string[] }>;
+  agents: Array<{ name: string; capabilities: string[] }>;
+};
+
 export type PlatformApp = {
   id: string;
   name: string;
@@ -23,7 +29,10 @@ export type PlatformApp = {
   icon?: string | null;
   repo?: string | null;
   vault_namespace?: string | null;
+  bundle?: AppCapabilityBundle | null;
 };
+
+export type UnlockedDelta = { app?: string; skills: string[]; agents: string[]; tools: string[]; activationState?: string };
 
 export type CapabilityResource = { id: string; name: string; provider?: string | null; status?: string | null; capabilities?: string[] | null };
 
@@ -98,10 +107,11 @@ export async function listCapabilityResources(auth: AuthScope, kind: 'skill' | '
   return data.resources || [];
 }
 
-export async function grantApp(auth: AuthScope, app: PlatformApp, storeIds: string[] = []): Promise<void> {
-  await request(`/api/apps/${encodeURIComponent(app.id)}/grant`, auth, {
+export async function grantApp(auth: AuthScope, app: PlatformApp, storeIds: string[] = []): Promise<UnlockedDelta | null> {
+  const result = await request<{ unlocked?: UnlockedDelta }>(`/api/apps/${encodeURIComponent(app.id)}/grant`, auth, {
     method: 'POST', body: JSON.stringify({ scopes: app.required_scopes || [], storeIds }),
   });
+  return result.unlocked ?? null;
 }
 
 export async function disableApp(auth: AuthScope, appId: string): Promise<void> {

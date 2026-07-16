@@ -171,3 +171,40 @@ export function createSkillRegistry(): SkillRegistry {
   }
   return registry;
 }
+
+// ── Skill catalog (skills as data) ──
+// Machine-readable view of the registry so provisioning manifests and the
+// marketplace can publish these skills with their connector requirements,
+// instead of the catalog living only in code.
+
+/** Data sets each store connector type can serve to skills. */
+export const CONNECTOR_DATA_COVERAGE: Record<string, readonly string[]> = {
+  'rapidrms-api': [
+    'invoices', 'invoice_items', 'inventory', 'vendor_prices', 'employees',
+    'register_readings', 'reviews', 'checklist_templates', 'checklist_completions',
+    'timecards', 'inventory_adjustments', 'waste_logs', 'bank_deposits',
+  ],
+};
+
+export interface SkillCatalogEntry {
+  id: string;
+  name: string;
+  category: import('./types.js').SkillCategory;
+  frequency: import('./types.js').SkillFrequency;
+  requiredData: string[];
+  /** Store connector types whose data coverage satisfies requiredData. */
+  requiredConnectorTypes: string[];
+}
+
+export function buildSkillCatalog(): SkillCatalogEntry[] {
+  return [...createSkillRegistry().values()].map(skill => ({
+    id: skill.id,
+    name: skill.name,
+    category: skill.category,
+    frequency: skill.frequency,
+    requiredData: [...skill.requiredData],
+    requiredConnectorTypes: Object.entries(CONNECTOR_DATA_COVERAGE)
+      .filter(([, coverage]) => skill.requiredData.every(data => coverage.includes(data)))
+      .map(([type]) => type),
+  }));
+}
