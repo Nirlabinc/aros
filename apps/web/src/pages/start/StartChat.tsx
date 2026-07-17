@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, type FormEvent } from 'react';
+import { chatReplyText } from '../../lib/chatReply';
 
 /**
  * StartChat — the day-one landing surface for a freshly signed-up tenant.
@@ -103,7 +104,7 @@ export function StartChat() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const reply = data.response || data.message || data.content || 'No response received.';
+      const reply = chatReplyText(data);
       setMessages((prev) => [...prev, { role: 'agent', content: reply }]);
     } catch {
       setMessages((prev) => [...prev, { role: 'agent', content: 'Something went wrong reaching your agent. Please try again.' }]);

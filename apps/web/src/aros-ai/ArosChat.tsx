@@ -4,6 +4,7 @@ import { useChatTheme } from './chatTheme';
 import { ChatMessageRenderer } from './ChatMessageRenderer';
 import { useCanvas } from './CanvasContext';
 import { itemsFromMessages } from './canvas';
+import { chatReplyText } from '../lib/chatReply';
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -115,7 +116,7 @@ export function ArosChat() {
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const reply = data.response || data.message || data.content || 'No response received.';
+      const reply = chatReplyText(data);
       setMessages((prev) => [...prev, { role: 'agent', content: reply, timestamp: Date.now() }]);
     } catch {
       setMessages((prev) => [...prev, { role: 'agent', content: 'Something went wrong. Please try again.', timestamp: Date.now() }]);
