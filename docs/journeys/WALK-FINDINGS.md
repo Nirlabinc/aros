@@ -6,21 +6,13 @@ code, from a code-level walk + a live seam walk of app.aros.live
 calling the journey done; delete entries as they close (this file trends to
 empty).
 
-## J1 / J2 — `/start` shows fabricated data to a real signed-in user
-
-`StartChat.tsx` force-enables demo for the *authenticated* new user (POST
-`/v1/demo/enable`, every turn sends `demoMode:true` —
-`apps/web/src/pages/start/StartChat.tsx:53-113`). This is the only surface
-that breaks the repo's demo guarantee (`useDemo() = !session`,
-`apps/web/src/redesign/data.ts:9-23`). Badged "sample data", but Ramesh's
-first signed-in screen is fabricated sales. J1's contract is fine with
-sample data *when labeled and expected*; the defect is it persists as the
-default surface until connect.
-
-*(Fixed 2026-07-17: the live `/v1/demo/activation` 404 — root cause was the
-route only existing on unmerged shreai#761; restored via shreai#1007 +
-public-allowlist shreai#1012, patched onto the serving pm2 router, prod walk
-J1 now WALKS CLEAN.)*
+*(J1/J2 `/start` force-demo finding CLOSED 2026-07-17: the journey contract
+resolves it — sample data is for tenants with NO connector, labeled and
+expected. `/start` now checks the tenant's store state first and redirects
+already-connected tenants into the setup journey (`/onboarding`) instead of
+ever showing them the sample store; brand-new tenants keep the labeled demo
+surface by design. Earlier same day: the `/v1/demo/activation` 404 was
+restored via shreai#1007/#1012.)*
 
 ## Residual debt (from the closed demo-chat $0.00 finding)
 
