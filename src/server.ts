@@ -20,6 +20,7 @@ import { handleStripeWebhook } from './billing/webhook.js';
 import { provisionLicense } from './billing/license.js';
 import { listTasks } from '../tasks/store.js';
 import { createSupabaseAdmin } from './supabase.js';
+import { handlePublicBusinessApi } from './public/customer-api.js';
 import { createEventBus } from 'shre-sdk/events';
 import { createHeartbeatMonitor } from 'shre-sdk/heartbeat';
 import {
@@ -3534,6 +3535,13 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (pathname.startsWith('/v1/') && !pathname.startsWith('/v1/traces/')) {
     return proxyRequest(req, res, SHRE_ROUTER_URL);
+  }
+
+  // ── Public customer commerce (Regulars Phase 1) ─────────────────────────
+  // Unauthenticated, rate-limited, strict projection; serves the customer MCP
+  // gateway. Journey: docs/journeys/customer-orders-through-their-assistant.md
+  if (pathname.startsWith('/api/public/businesses/')) {
+    if (await handlePublicBusinessApi(req, res, requestUrl)) return;
   }
 
   // ── Billing ─────────────────────────────────────────────────
