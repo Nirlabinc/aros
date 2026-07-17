@@ -22,20 +22,15 @@ default surface until connect, and:
   Router-side drift — owned by the routing/data-wiring session, do not
   hand-patch from here.
 
-## J2 steps 4–5 — no "we found your store" detail; readiness state machine pending
+## J2 steps 4–5 — readiness state machine pending activation-contract merge
 
 Fixed so far: in-flight "Checking with <provider>…"; success copy scoped
-honestly (sync promise only for summary-capable providers, calm "connected"
-otherwise); the KPI mapping drift that prevented real numbers from EVER
-rendering (`buildKpis` read fields the server never returned); live data
-carries a "live from <source>" marker; and `/api/store/summary`'s end-user
-path now emits `hasConnector` + `summaryCapable` alongside the unchanged
-strict `connected`, so Home renders four honest states (none / syncing /
-connected-no-dashboard-numbers / live) instead of telling a connected owner
-to "connect a register". Remaining:
+honestly per provider; the KPI mapping drift that prevented real numbers
+from EVER rendering; "live from <source>" marker; four honest Home states
+via `hasConnector` + `summaryCapable`; and connect success now echoes a
+recognizable live detail ("we found <store>: N transactions today") from
+`/api/connectors/test`. Remaining:
 
-- No recognizable store detail echoed on connect success (needs the test
-  endpoint to return a store name / today's transaction count).
 - The full readiness state machine (`store_connector_bindings.status`,
   `tenant_app_activation_status`: `waiting_for_store → syncing → ready →
   attention`) lives on the **unmerged activation-contract branch** (chat
@@ -58,9 +53,11 @@ in `AppShell` (adds SCOPE and Verifone Edge-pairing steps,
 `/api/connectors` + `/test` contract, drifting step lists. Consolidate or
 share step components before the next connect-flow change.
 
-## Tooling — no browser E2E runner behind the gate
+## Tooling — browser E2E runner exists; deepest live step still manual
 
-`scripts/e2e.sh` expects a `pnpm e2e` script no package defines. The seam
-walk (`scripts/journey-walk.mjs`) covers HTTP-level wiring; steps marked
-`NEEDS-BROWSER` have no automated runner yet — they rely on the
-`journey-walker` subagent until a Playwright suite lands.
+`pnpm e2e` (Playwright) now runs: public J1 seams + draft-safety + fail-closed
+checks locally against the real frontend with mocked `/api/*` (no backend, no
+seeded state), and a live J2 spec against a deployed surface when
+`E2E_BASE_URL`/`E2E_EMAIL`/`E2E_PASSWORD` are set. Still manual: the deepest
+J2 step (a real POS connect) needs test-store credentials — until then it's
+the `journey-walker` subagent's job on beta.

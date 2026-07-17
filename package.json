@@ -18,9 +18,11 @@
     "marketplace:sync": "tsx marketplace/registry.ts",
     "security:auth": "tsx scripts/auth-conformance.mts",
     "test:auth-conformance": "vitest run src/__tests__/auth-conformance.test.ts",
-    "serve": "tsx src/server.ts"
+    "serve": "tsx src/server.ts",
+    "e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/node": "^20.14.0",
     "tsx": "^4.19.0",
     "turbo": "^2.3.0",
