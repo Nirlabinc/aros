@@ -83,6 +83,14 @@ function isVoided(row: Record<string, unknown>): boolean {
   return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
 }
 
+/** Live item rows carry isDeleted + active — dead catalog entries must not surface as low stock. */
+function isInactiveItem(row: Record<string, unknown>): boolean {
+  const deleted = row.isDeleted ?? row.IsDeleted;
+  if (deleted === true || deleted === 1 || deleted === '1' || String(deleted).toLowerCase() === 'true') return true;
+  const active = row.active ?? row.Active;
+  return active === false || active === 0 || active === '0';
+}
+
 // TODO(real-tenant): field-name lists below are validated against RapidRMS's
 // documented endpoints but not yet against a live tenant response. The
 // defensive design means an unrecognized shape yields an empty (partial)
@@ -91,9 +99,9 @@ function isVoided(row: Record<string, unknown>): boolean {
 const REVENUE_FIELDS = ['Total', 'NetSales', 'NetTotal', 'GrandTotal', 'SalesAmount', 'Amount', 'TotalAmount', 'BillAmount', 'billAmount', 'subTotal', 'grandTotal', 'bill_amount'];
 const SALES_DATE_FIELDS = ['InvoiceDate', 'invoiceDate', 'invoice_date', 'CreatedDate', 'createdDate', 'BusinessDate', 'business_date', 'datetime', 'Date', 'date'];
 const INVOICE_FIELDS = ['InvoiceNo', 'invoiceNo', 'invoice_no', 'InvoiceNumber', 'TransactionId', 'transaction_id'];
-const QTY_FIELDS = ['OnHand', 'QtyOnHand', 'Quantity', 'Qty', 'StockOnHand', 'CurrentStock'];
-const REORDER_FIELDS = ['ReorderPoint', 'ReorderLevel', 'MinQty', 'MinimumQty', 'Threshold', 'ParLevel'];
-const NAME_FIELDS = ['Name', 'ItemName', 'Description', 'ProductName', 'Product'];
+const QTY_FIELDS = ['iteM_InStock', 'OnHand', 'QtyOnHand', 'Quantity', 'Qty', 'StockOnHand', 'CurrentStock'];
+const REORDER_FIELDS = ['iteM_MinStockLevel', 'ReorderPoint', 'ReorderLevel', 'MinQty', 'MinimumQty', 'Threshold', 'ParLevel'];
+const NAME_FIELDS = ['description', 'iteM_ShortName', 'Name', 'ItemName', 'Description', 'ProductName', 'Product'];
 
 function todayRange(): { from: string; to: string } {
   const now = new Date();
@@ -199,10 +207,14 @@ async function fetchRapidRmsSummary(
       const invRaw = await rapidRms.getInventory(session, {});
       const rows = toRows(invRaw);
       for (const r of rows) {
+        if (isInactiveItem(r)) continue;
         const current = pickNum(r, QTY_FIELDS);
         const threshold = pickNum(r, REORDER_FIELDS);
         const name = pickStr(r, NAME_FIELDS);
-        if (current !== null && threshold !== null && name && current < threshold) {
+        // threshold must be a real configured level (>0) — a 0/unset min
+        // stock level would otherwise never match, but guard explicitly so
+        // catalog entries without replenishment config are never "low".
+        if (current !== null && threshold !== null && threshold > 0 && name && current < threshold) {
           items.push({ name, current, threshold });
         }
       }

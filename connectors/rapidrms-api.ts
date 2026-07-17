@@ -175,7 +175,10 @@ export async function getInvoiceReport(session: RapidRmsSession, params?: Record
 }
 
 export async function getInventory(session: RapidRmsSession, params?: Record<string, unknown>) {
-  return request(session, 'POST', '/api/Inventory/Get', params);
+  // Live API (verified 2026-07-17): the item catalog is GET /api/Item —
+  // /api/Inventory/Get does not exist (404). Rows carry iteM_InStock /
+  // iteM_MinStockLevel / description (+ active, isDeleted flags).
+  return request(session, 'GET', '/api/Item', params);
 }
 
 export async function getPricing(session: RapidRmsSession, params?: Record<string, unknown>) {
