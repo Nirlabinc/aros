@@ -78,6 +78,12 @@ const SHRE_ROUTER_URL = process.env.SHRE_ROUTER_URL || 'http://127.0.0.1:5497';
 // shre-rapidrms live-server — the canonical warehouse's API (owner digest,
 // gold views). Same convention as the other SHRE_*_URL upstreams above.
 const SHRE_RAPIDRMS_URL = process.env.SHRE_RAPIDRMS_URL || 'http://127.0.0.1:5443';
+// Service token for the warehouse digest API (live-server session gate has a
+// scoped /api/digest/* bypass for machine consumers — shreai#1017). Optional:
+// without it, deploys without a session gate still work.
+const SHRE_RAPIDRMS_TOKEN = process.env.SHRE_RAPIDRMS_TOKEN || '';
+const digestHeaders = (extra: Record<string, string> = {}): Record<string, string> =>
+  SHRE_RAPIDRMS_TOKEN ? { ...extra, 'x-service-token': SHRE_RAPIDRMS_TOKEN } : extra;
 const WEB_DIST = process.env.AROS_WEB_DIST || join(process.cwd(), 'apps', 'web', 'dist');
 
 // ── Platform Integrations ────────────────────────────────────────
@@ -2327,7 +2333,7 @@ async function handleOwnerDigest(req: IncomingMessage, res: ServerResponse): Pro
     if (scope) {
       const upstream = await fetch(
         `${SHRE_RAPIDRMS_URL}/api/digest/latest?provider=${encodeURIComponent(scope.provider)}&store_id=${encodeURIComponent(scope.storeId)}`,
-        { signal: AbortSignal.timeout(5000) },
+        { signal: AbortSignal.timeout(5000), headers: digestHeaders() },
       );
       if (upstream.ok) {
         const row = (await upstream.json()) as Record<string, unknown> | null;
@@ -2358,7 +2364,7 @@ async function requestFirstRunDigest(tenantId: string): Promise<void> {
     if (!scope) return;
     const upstream = await fetch(`${SHRE_RAPIDRMS_URL}/api/digest/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: digestHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ provider: scope.provider, store_id: scope.storeId }),
       signal: AbortSignal.timeout(60_000),
     });
