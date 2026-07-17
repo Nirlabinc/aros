@@ -45,13 +45,16 @@ exists — but `captureStoreSnapshots` is env-gated + scheduled
 "collecting history" forever. Enable the snapshotter as part of tenant
 activation.
 
-## Structural — two divergent connect UIs on one API
+## Structural — connect UIs share one provider catalogue; step flows still differ
 
-`ConnectStorePage` (pre-onboarding, `/connect`) vs the `ConnectWizard` modal
-in `AppShell` (adds SCOPE and Verifone Edge-pairing steps,
-`apps/web/src/redesign/ConnectWizard.tsx:39-88`). Same
-`/api/connectors` + `/test` contract, drifting step lists. Consolidate or
-share step components before the next connect-flow change.
+Provider/field definitions are consolidated in `lib/posProviders.ts` (single
+source of truth for both `/connect` and the `ConnectWizard`, incl. hints and
+wire types), and the wizard now reports the REAL test outcome (failed API
+test keeps the wizard open; unconfirmable tunnel says "saved — couldn't
+confirm yet" instead of claiming success). Remaining: the two surfaces still
+render separate step flows (page = single form; wizard = 4 steps with SCOPE/
+REVIEW) — acceptable while both consume the shared catalogue, revisit if
+either grows another step.
 
 ## Tooling — browser E2E runner exists; deepest live step still manual
 

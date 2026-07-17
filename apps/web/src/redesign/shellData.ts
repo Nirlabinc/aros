@@ -241,35 +241,8 @@ export const SECTIONS: Record<Exclude<SectionKey, 'chat'>, SectionSpec> = {
 // `type` + field `key`s match the real connectors API (POST /api/connectors:
 // { type, name, config, secrets }) — see pages/connect/ConnectStorePage + the
 // backend rapidrms-api / verifone connectors.
-export interface WizField { key: string; label: string; ph: string; secret?: boolean; optional?: boolean; }
-export interface PosProvider {
-  id: string; type: string; name: string; mark: string; desc: string; tag?: string;
-  kind: 'api' | 'tunnel'; blurb: string; fields: WizField[];
-}
-export const POS_PROVIDERS: PosProvider[] = [
-  {
-    id: 'rapidrms', type: 'rapidrms-api', name: 'RapidRMS', mark: 'RMS', tag: 'Recommended', kind: 'api',
-    desc: 'Cloud POS for convenience & fuel. Live sales, inventory, price book.',
-    blurb: 'Sign in with your RapidRMS account. AROS connects over HTTPS for read access to live sales, inventory, and the price book — no on-site hardware needed.',
-    fields: [
-      { key: 'clientId', label: 'Client ID', ph: 'Your RapidRMS client ID' },
-      { key: 'email', label: 'Account email', ph: 'you@yourstore.com', secret: true },
-      { key: 'password', label: 'Password', ph: '••••••••', secret: true },
-    ],
-  },
-  {
-    id: 'verifone', type: 'verifone-commander', name: 'Verifone Commander', mark: 'VF', kind: 'tunnel',
-    desc: 'Fuel controller & forecourt. Secure tunnel to the site controller.',
-    blurb: 'Enter the Commander’s LAN address and its CGI service credentials. Traffic stays on an encrypted tunnel to the site controller — nothing is exposed publicly.',
-    fields: [
-      { key: 'storeName', label: 'Store name', ph: 'Main Street Store' },
-      { key: 'storeNumber', label: 'Store #', ph: 'Optional location number', optional: true },
-      { key: 'commanderIp', label: 'Commander IP', ph: '192.168.31.11' },
-      { key: 'username', label: 'CGI username', ph: 'Commander username' },
-      { key: 'password', label: 'Password', ph: '••••••••', secret: true },
-    ],
-  },
-];
+// POS provider catalogue moved to lib/posProviders.ts — single source of
+// truth shared with the /connect page (was a drifting duplicate here).
 export const STORES_SCOPE = ['Main St', 'Oak Ave', '3rd St Express', 'Harbor', 'Elm St Express'];
 
 export const SECTION_TITLES: Record<SectionKey, string> = {

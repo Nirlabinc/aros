@@ -271,9 +271,16 @@ export function AppShell() {
       )}
 
       {wizardOpen && (
-        <ConnectWizard onClose={() => setWizardOpen(false)} onDone={name => { setWizardOpen(false); setToast(`${name} connected — discovering stores…`); }} />
+        <ConnectWizard onClose={() => setWizardOpen(false)} onDone={outcome => {
+          setWizardOpen(false);
+          setToast(outcome.status === 'connected'
+            ? (outcome.found && outcome.found.transactionsToday > 0
+              ? `✓ ${outcome.name} connected — we found ${outcome.found.store}: ${outcome.found.transactionsToday.toLocaleString()} transactions today.`
+              : `✓ ${outcome.name} connected — syncing your data…`)
+            : `${outcome.name} saved — we couldn't confirm the connection yet. Check Connectors for its status.`);
+        }} />
       )}
-      {toast && <div className="rsx-toast">✓ {toast}</div>}
+      {toast && <div className="rsx-toast">{toast}</div>}
     </div>
   );
 }

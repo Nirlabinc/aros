@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, type FormEvent } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { PROVIDERS, type ProviderDef, type ProviderId } from '../../lib/posProviders';
 
 /**
  * ConnectStorePage — the "connect your store" step of the journey.
@@ -12,49 +13,8 @@ import { useAuth } from '../../contexts/AuthContext';
 const API_BASE = (window as any).__AROS_API_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
 
-type ProviderId = 'rapidrms-api' | 'verifone-commander' | 'azure-db';
-
-interface ProviderDef {
-  id: ProviderId;
-  label: string;
-  tagline: string;
-  fields: Array<{ key: string; label: string; placeholder: string; hint?: string; secret?: boolean; optional?: boolean }>;
-}
-
-const PROVIDERS: ProviderDef[] = [
-  {
-    id: 'rapidrms-api',
-    label: 'RapidRMS POS',
-    tagline: 'Cloud POS — sales, inventory, pricing, promotions',
-    fields: [
-      { key: 'clientId', label: 'Client ID', placeholder: 'Your RapidRMS client ID', hint: 'Identifies your store to RapidRMS — it’s in your RapidRMS back office, or ask RapidRMS support for it' },
-      { key: 'email', label: 'Account Email', placeholder: 'you@yourstore.com', secret: true, hint: 'The email you use to sign in to RapidRMS' },
-      { key: 'password', label: 'Password', placeholder: 'RapidRMS password', secret: true, hint: 'Your RapidRMS sign-in password' },
-    ],
-  },
-  {
-    id: 'verifone-commander',
-    label: 'Verifone Commander',
-    tagline: 'On-site Commander — fuel + c-store transaction data',
-    fields: [
-      { key: 'commanderIp', label: 'Commander IP', placeholder: '192.168.31.11', hint: 'The Commander’s address on your store network — your POS installer set this up' },
-      { key: 'username', label: 'CGI Username', placeholder: 'Commander username', hint: 'The CGI user configured on the Commander' },
-      { key: 'password', label: 'Password', placeholder: 'Commander password', secret: true, hint: 'That user’s password' },
-    ],
-  },
-  {
-    id: 'azure-db',
-    label: 'Azure SQL Database',
-    tagline: 'Direct database access to your back-office data',
-    fields: [
-      { key: 'server', label: 'Server', placeholder: 'yourserver.database.windows.net', hint: 'Your database server address — ends in database.windows.net' },
-      { key: 'database', label: 'Database', placeholder: 'Database name' },
-      { key: 'username', label: 'Username', placeholder: 'SQL username' },
-      { key: 'port', label: 'Port', placeholder: '1433', optional: true },
-      { key: 'password', label: 'Password', placeholder: 'SQL password', secret: true },
-    ],
-  },
-];
+// Provider catalogue is shared with the AppShell ConnectWizard — single
+// source of truth in lib/posProviders.ts.
 
 interface ConnectorRow {
   id: string;
