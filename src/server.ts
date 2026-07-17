@@ -2589,13 +2589,14 @@ async function handleConnectorsTest(req: IncomingMessage, res: ServerResponse): 
     const config = (row.config ?? {}) as Record<string, any>;
 
     // Bridge decrypted secrets into the connector vault for this test only.
-    setTenantSecret(vaultSecretFor(auth.tenantId));
-    const passwordRef = await storeCredential(`${row.id}:password`, secrets.password ?? '');
+    const tenantVaultSecret = vaultSecretFor(auth.tenantId);
+    setTenantSecret(tenantVaultSecret);
+    const passwordRef = await storeCredential(`${row.id}:password`, secrets.password ?? '', tenantVaultSecret);
     refs.push(passwordRef);
 
     let result;
     if (row.type === 'rapidrms-api') {
-      const emailRef = await storeCredential(`${row.id}:email`, secrets.email ?? '');
+      const emailRef = await storeCredential(`${row.id}:email`, secrets.email ?? '', tenantVaultSecret);
       refs.push(emailRef);
       result = await testRapidRmsConnector(
         {
@@ -2761,9 +2762,10 @@ async function withTenantEdiSession<T>(
   const clientId = String(config.clientId || '');
   if (!clientId) throw new Error('RapidRMS connection is missing its Client ID');
 
-  setTenantSecret(vaultSecretFor(tenantId));
-  const emailRef = await storeCredential(`${row.id}:edi:email`, secrets.email ?? '');
-  const passwordRef = await storeCredential(`${row.id}:edi:password`, secrets.password ?? '');
+  const ediVaultSecret = vaultSecretFor(tenantId);
+  setTenantSecret(ediVaultSecret);
+  const emailRef = await storeCredential(`${row.id}:edi:email`, secrets.email ?? '', ediVaultSecret);
+  const passwordRef = await storeCredential(`${row.id}:edi:password`, secrets.password ?? '', ediVaultSecret);
   try {
     const ediBaseUrl = resolveEdiBaseUrl(apiUrlOverride, { allowOverride: ediOverrideAllowed() });
     const session = await buildEdiSession({

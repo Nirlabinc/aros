@@ -138,8 +138,8 @@ async function fetchRapidRmsSummary(
   const refs: string[] = [];
   try {
     setTenantSecret(vaultSecret);
-    const emailRef = await storeCredential(`${record.id}:email`, record.secrets.email ?? '');
-    const passwordRef = await storeCredential(`${record.id}:password`, record.secrets.password ?? '');
+    const emailRef = await storeCredential(`${record.id}:email`, record.secrets.email ?? '', vaultSecret);
+    const passwordRef = await storeCredential(`${record.id}:password`, record.secrets.password ?? '', vaultSecret);
     refs.push(emailRef, passwordRef);
 
     const session = await rapidRms.authenticate(
@@ -242,8 +242,8 @@ export async function fetchStoreSalesRange(
   const refs: string[] = [];
   try {
     setTenantSecret(vaultSecret);
-    const emailRef = await storeCredential(`${record.id}:sales-email`, record.secrets.email ?? '');
-    const passwordRef = await storeCredential(`${record.id}:sales-password`, record.secrets.password ?? '');
+    const emailRef = await storeCredential(`${record.id}:sales-email`, record.secrets.email ?? '', vaultSecret);
+    const passwordRef = await storeCredential(`${record.id}:sales-password`, record.secrets.password ?? '', vaultSecret);
     refs.push(emailRef, passwordRef);
     const session = await rapidRms.authenticate({ baseUrl: String(record.config.baseUrl || 'https://rapidrmsapi.azurewebsites.net'), clientId: String(record.config.clientId || ''), sessionTimeout: Number(record.config.sessionTimeout) || 420 }, emailRef, passwordRef);
     // Match MIB's proven RapidRMS contract: InvoiceReport expects calendar
