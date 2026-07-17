@@ -1,0 +1,63 @@
+{
+  "name": "AROS Retail Operations",
+  "publisher": "Nirlab Inc.",
+  "status": "draft",
+  "distribution": "Claude remote MCP connector",
+  "serverUrl": "https://mcp.shre.ai/aros/operator",
+  "customerServerUrl": "https://mcp.shre.ai/aros/customer",
+  "transport": "streamable-http",
+  "authentication": {
+    "type": "oauth2",
+    "issuer": "https://id.shre.ai",
+    "resourceMetadataUrl": "https://mcp.shre.ai/.well-known/oauth-protected-resource",
+    "claudeCodeLocalRedirectUri": "http://localhost:8765/callback",
+    "claudeCodeClientId": "382142423410671619",
+    "scopes": [
+      "aros.store.read",
+      "aros.connector.read",
+      "aros.inventory.read",
+      "aros.exceptions.read",
+      "aros.action.draft"
+    ]
+  },
+  "capabilities": {
+    "read": [
+      "store sales summary",
+      "connector health",
+      "inventory risks",
+      "exception summary"
+    ],
+    "write": [
+      "draft AROS action only; no direct POS mutation"
+    ]
+  },
+  "surfaces": {
+    "operator": {
+      "audience": "business users",
+      "auth": "required tenant-bound OAuth",
+      "data": "operator-scoped connected app and POS data"
+    },
+    "customer": {
+      "audience": "end customers",
+      "auth": "public projection reads; customer session for cart and checkout",
+      "data": "customer-safe public catalog, promotions, hours, cart, checkout"
+    }
+  },
+  "toolPolicy": {
+    "default": "read-only",
+    "writeTools": ["aros_draft_action"],
+    "destructiveTools": []
+  },
+  "reviewDemo": {
+    "tenant": "NirLab Demo Market",
+    "store": "Demo Store 001",
+    "data": "synthetic RapidRMS-compatible dataset",
+    "credentials": "No real POS credentials or customer data"
+  },
+  "submissionBlockers": [
+    "Register Claude OAuth client after hosted connector UI provides redirect URI",
+    "Run production token test and then set AROS_MCP_DEMO_MODE=false",
+    "Counsel signoff for public legal pages",
+    "Connector screenshots"
+  ]
+}

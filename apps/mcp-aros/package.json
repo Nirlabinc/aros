@@ -1,0 +1,23 @@
+{
+  "name": "@aros/mcp-aros",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Remote MCP facade for AROS marketplace integrations",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "verify:oauth": "node scripts/verify-oauth.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "jose": "^6.0.10"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
