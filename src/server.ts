@@ -19,8 +19,9 @@ import {
 import { handleStripeWebhook } from './billing/webhook.js';
 import { provisionLicense } from './billing/license.js';
 import { listTasks } from '../tasks/store.js';
-import { approveGoLive } from '../appfactory/index.js';
+import { approveGoLive, provisionApp } from '../appfactory/index.js';
 import type { AppFactoryDeps, RegistryClient } from '../appfactory/index.js';
+import { createProvisioningSqlExecutor, storeRoleSecret } from '../appfactory/sql-executor.js';
 import { createSupabaseAdmin } from './supabase.js';
 import { createEventBus } from 'shre-sdk/events';
 import { createHeartbeatMonitor } from 'shre-sdk/heartbeat';
@@ -1591,6 +1592,69 @@ async function handlePluginConfirm(req: IncomingMessage, res: ServerResponse, ap
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to publish plugin';
     console.error('[plugins.confirm]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+// Register/provision a tenant-built app — the write path that makes an app
+// appear under Plugins. SERVICE AUTH ONLY: the App Factory (Sia) / build
+// pipeline calls this on behalf of a tenant, carrying the tenantId and the
+// requesting user's uuid. Creates the tenant_apps row (status 'draft') + the
+// app's private schema + scoped role via provisionApp; the generated role
+// password lands in the file-vault, never in the response.
+async function handlePluginProvision(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!pluginServiceAuth(req)) return json(res, 401, { error: 'Service authentication required' });
+
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+
+  const tenantId = typeof body.tenantId === 'string' && body.tenantId
+    ? body.tenantId
+    : getRequestUrl(req).searchParams.get('tenantId') || '';
+  const slug = typeof body.slug === 'string' ? body.slug : '';
+  const displayName = typeof body.displayName === 'string' ? body.displayName : '';
+  if (!tenantId || !slug || !displayName) {
+    return json(res, 400, { error: 'tenantId, slug and displayName are required' });
+  }
+
+  const executor = createProvisioningSqlExecutor();
+  if (!executor) {
+    return json(res, 501, { error: 'App provisioning backend not configured (set APP_FACTORY_DATABASE_URL or ~/.shre/vault/app-factory-db.json)' });
+  }
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const deps: AppFactoryDeps = { registry: supabase as unknown as RegistryClient, sql: executor };
+    const result = await provisionApp(deps, {
+      tenantId,
+      slug,
+      displayName,
+      description: typeof body.description === 'string' ? body.description : undefined,
+      subdomain: typeof body.subdomain === 'string' ? body.subdomain : undefined,
+      createdBy: typeof body.createdBy === 'string' ? body.createdBy : undefined,
+      hostingFeeCents: typeof body.hostingFeeCents === 'number' ? body.hostingFeeCents : undefined,
+      metadata: isRecord(body.metadata) ? body.metadata : undefined,
+    });
+
+    // The role credential is returned once by provisionApp — vault it here,
+    // never send it back over the API.
+    const vaultFile = storeRoleSecret(result.app.subdomain, {
+      role: result.role,
+      password: result.rolePassword,
+      schema: result.schema,
+      tenantId,
+    });
+
+    json(res, 201, {
+      app: result.app,
+      schema: result.schema,
+      role: result.role,
+      subdomain: result.app.subdomain,
+      credentialVaulted: Boolean(vaultFile),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to provision app';
+    console.error('[plugins.provision]', message);
     json(res, 500, { error: message });
   }
 }
@@ -3267,6 +3331,9 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   }
   if (pathname === '/api/plugins' && method === 'GET') {
     return handlePluginsList(req, res);
+  }
+  if (pathname === '/api/plugins' && method === 'POST') {
+    return handlePluginProvision(req, res);
   }
   const pluginConfirmMatch = pathname.match(/^\/api\/plugins\/([0-9a-f-]+)\/confirm$/);
   if (pluginConfirmMatch && method === 'POST') {
