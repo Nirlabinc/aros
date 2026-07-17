@@ -20,22 +20,42 @@ const vault = new Map<string, Buffer>();
 
 let _tenantSecret: string | undefined;
 
-/** Set per-tenant secret for key derivation. Each tenant is isolated. */
+/**
+ * The secret each ref was ENCRYPTED with, bound at store time. Concurrent
+ * requests for different tenants interleave at await points — deriving the
+ * decrypt key from whatever the module-global holds at RETRIEVE time decrypts
+ * with the wrong tenant's key (GCM auth failure) whenever another request has
+ * called setTenantSecret() in between. The binding makes each ref
+ * self-contained regardless of interleaving.
+ */
+const refSecrets = new Map<string, string>();
+
+/**
+ * Set the ambient per-tenant secret for key derivation. Interleaving hazard:
+ * prefer passing the secret explicitly to storeCredential — the ambient value
+ * is only safe when set in the same synchronous block as the store call.
+ */
 export function setTenantSecret(secret: string): void {
   _tenantSecret = secret;
 }
 
-function deriveKey(salt: Buffer): Buffer {
-  if (!_tenantSecret) throw new Error('Tenant secret not set — call setTenantSecret() first');
-  return scryptSync(_tenantSecret, salt, KEY_LEN);
+function requireSecret(explicit?: string): string {
+  const secret = explicit ?? _tenantSecret;
+  if (!secret) throw new Error('Tenant secret not set — pass tenantSecret or call setTenantSecret() first');
+  return secret;
 }
 
 // ── Public API ──────────────────────────────────────────────────
 
-/** Encrypt value, store in vault, return vaultRef (not the value). */
-export async function storeCredential(key: string, value: string): Promise<string> {
+/**
+ * Encrypt value, store in vault, return vaultRef (not the value).
+ * Pass tenantSecret explicitly whenever the call may follow an await —
+ * the ambient setTenantSecret() value can belong to another request by then.
+ */
+export async function storeCredential(key: string, value: string, tenantSecret?: string): Promise<string> {
+  const secret = requireSecret(tenantSecret);
   const salt = randomBytes(SALT_LEN);
-  const derivedKey = deriveKey(salt);
+  const derivedKey = scryptSync(secret, salt, KEY_LEN);
   const iv = randomBytes(IV_LEN);
 
   const cipher = createCipheriv(ALGO, derivedKey, iv);
@@ -47,6 +67,7 @@ export async function storeCredential(key: string, value: string): Promise<strin
   const ref = `vault:${key}:${randomBytes(8).toString('hex')}`;
 
   vault.set(ref, packed);
+  refSecrets.set(ref, secret);
   return ref;
 }
 
@@ -60,7 +81,9 @@ export async function retrieveCredential(vaultRef: string): Promise<string> {
   const tag = packed.subarray(SALT_LEN + IV_LEN, SALT_LEN + IV_LEN + TAG_LEN);
   const ciphertext = packed.subarray(SALT_LEN + IV_LEN + TAG_LEN);
 
-  const derivedKey = deriveKey(salt);
+  // Decrypt with the secret the ref was stored under — never the ambient
+  // global, which may belong to a concurrent request's tenant by now.
+  const derivedKey = scryptSync(requireSecret(refSecrets.get(vaultRef)), salt, KEY_LEN);
   const decipher = createDecipheriv(ALGO, derivedKey, iv);
   decipher.setAuthTag(tag);
 
@@ -71,14 +94,16 @@ export async function retrieveCredential(vaultRef: string): Promise<string> {
 /** Delete credential from vault. */
 export async function deleteCredential(vaultRef: string): Promise<void> {
   vault.delete(vaultRef);
+  refSecrets.delete(vaultRef);
 }
 
-/** Rotate: delete old, store new value under same key prefix. */
+/** Rotate: delete old, store new value under same key prefix and same secret. */
 export async function rotateCredential(vaultRef: string, newValue: string): Promise<string> {
   // Extract key name from ref
   const parts = vaultRef.split(':');
   const key = parts[1] ?? 'rotated';
 
+  const secret = refSecrets.get(vaultRef);
   await deleteCredential(vaultRef);
-  return storeCredential(key, newValue);
+  return storeCredential(key, newValue, secret);
 }
