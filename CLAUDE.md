@@ -47,3 +47,23 @@ license validation at boot via `enforceBootGuard()` before any services or plugi
 - This is a git submodule in the shre-router monorepo
 - Shre integration is optional (`shre.enabled` in aros.config.json)
 - Whitelabel support via `whitelabel/` directory
+
+## Journey gate (define the journey before code)
+
+No new user-facing capability starts as code — it starts as a Journey Spec at
+`docs/journeys/<slug>.md` (template + rules: `.claude/JOURNEY_GATE.md`; golden
+journeys index: `docs/journeys/README.md`; the `journey-council` subagent
+drafts specs). A PR that adds or alters a journey merges only with the spec
+created/updated AND a golden-path E2E that drives the real UI the way a
+stranger would — from the entry point, reading only what's on screen, no
+seeded state, no API shortcuts — asserting the user-visible success signal.
+Two invariants: "must already know" trends to zero, and every failure state
+recovers without support. If the capability needs activation (flag,
+credential, operator step) to show real data, the UI states that honestly
+until wired — plausible output from an unwired surface is a defect. Before a
+user-facing release is called done, walk the deployed surface:
+`node scripts/journey-walk.mjs --base <url>` (seam-level), then the
+`journey-walker` subagent for steps it marks NEEDS-BROWSER. Done = the
+persona (Ramesh, `docs/journeys/README.md`) completes the journey on beta
+without help. Changes that don't alter a journey skip this — say so
+explicitly.
