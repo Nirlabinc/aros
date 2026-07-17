@@ -1595,6 +1595,76 @@ async function handlePluginConfirm(req: IncomingMessage, res: ServerResponse, ap
   }
 }
 
+// Cross-tenant plugins listing for the operator ops console (mib-desktop).
+// SERVICE AUTH ONLY — there is no end-user path; this returns every tenant's
+// plugins, so it must never run off a customer session. Grouped by tenant.
+async function handlePluginsAll(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!pluginServiceAuth(req)) return json(res, 401, { error: 'Service authentication required' });
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const limit = Math.min(Number(getRequestUrl(req).searchParams.get('limit')) || 500, 2000);
+
+    const [builtRes, installedRes] = await Promise.all([
+      supabase
+        .from('tenant_apps')
+        .select('id, tenant_id, slug, display_name, status, subdomain, updated_at')
+        .neq('status', 'retired')
+        .order('updated_at', { ascending: false })
+        .limit(limit),
+      supabase
+        .from('marketplace_app_entitlements')
+        .select('tenant_id, app_key, status, source')
+        .eq('source', 'plugin')
+        .eq('status', 'active')
+        .limit(limit),
+    ]);
+
+    if (builtRes.error && !isMissingRelation(builtRes.error)) throw builtRes.error;
+    if (installedRes.error) throw installedRes.error;
+
+    const builtRows = builtRes.data || [];
+    const installedRows = installedRes.data || [];
+
+    const tenantIds = [...new Set([...builtRows.map((r) => r.tenant_id), ...installedRows.map((r) => r.tenant_id)])];
+    const names: Record<string, string> = {};
+    if (tenantIds.length) {
+      const { data: tenants } = await supabase.from('tenants').select('id, name').in('id', tenantIds);
+      for (const t of tenants || []) names[t.id] = t.name;
+    }
+
+    type Group = { tenantId: string; tenantName: string; built: unknown[]; installed: unknown[] };
+    const byTenant = new Map<string, Group>();
+    const ensure = (tid: string): Group => {
+      let g = byTenant.get(tid);
+      if (!g) { g = { tenantId: tid, tenantName: names[tid] || tid, built: [], installed: [] }; byTenant.set(tid, g); }
+      return g;
+    };
+
+    for (const b of builtRows) {
+      const status = String(b.status);
+      const hasHost = status === 'live' || status === 'preview';
+      ensure(b.tenant_id).built.push({
+        id: b.id, slug: b.slug, name: b.display_name, status, subdomain: b.subdomain,
+        url: hasHost ? `https://${b.subdomain}.${APPS_HOST}` : null, updated_at: b.updated_at,
+      });
+    }
+    for (const i of installedRows) {
+      ensure(i.tenant_id).installed.push({
+        app_key: i.app_key,
+        name: String(i.app_key).split('-').map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' '),
+        status: i.status,
+      });
+    }
+
+    json(res, 200, { tenants: [...byTenant.values()], totalBuilt: builtRows.length, totalInstalled: installedRows.length });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to list plugins across tenants';
+    console.error('[plugins.all]', message);
+    json(res, 500, { error: message });
+  }
+}
+
 async function handleMarketplaceInstall(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const auth = await authenticateRequest(req);
   if (!auth) return json(res, 401, { error: 'Authentication required' });
@@ -3192,6 +3262,9 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     return handleMarketplaceEntitlements(req, res);
   }
 
+  if (pathname === '/api/plugins/all' && method === 'GET') {
+    return handlePluginsAll(req, res);
+  }
   if (pathname === '/api/plugins' && method === 'GET') {
     return handlePluginsList(req, res);
   }
