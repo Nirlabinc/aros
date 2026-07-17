@@ -75,6 +75,9 @@ const startedAt = new Date().toISOString();
 const SHRE_METER_URL = process.env.SHRE_METER_URL || 'http://127.0.0.1:5495';
 const SHRE_TASKS_URL = process.env.SHRE_TASKS_URL || 'http://127.0.0.1:5460';
 const SHRE_ROUTER_URL = process.env.SHRE_ROUTER_URL || 'http://127.0.0.1:5497';
+// shre-rapidrms live-server — the canonical warehouse's API (owner digest,
+// gold views). Same convention as the other SHRE_*_URL upstreams above.
+const SHRE_RAPIDRMS_URL = process.env.SHRE_RAPIDRMS_URL || 'http://127.0.0.1:5443';
 const WEB_DIST = process.env.AROS_WEB_DIST || join(process.cwd(), 'apps', 'web', 'dist');
 
 // ── Platform Integrations ────────────────────────────────────────
@@ -2260,6 +2263,112 @@ async function connectedConnectorState(tenantId: string): Promise<{ hasConnector
   }
 }
 
+// ── Weekly Owner Brief (digest) — proxy to the shre-rapidrms warehouse ──
+// The owner-digest engine (shre-rapidrms, docs/planning/OWNER-DIGEST-PLAN.md)
+// persists one brief per (provider, store_id) over the shre.* gold views and
+// serves it at GET /api/digest/latest. This proxy resolves the authenticated
+// tenant to that scope and forwards — strictly read-only and fail-soft: any
+// upstream problem degrades to { digest: null } with HTTP 200 so the Home
+// card simply doesn't render. It must never break Home/onboarding.
+
+interface DigestScope { provider: string; storeId: string }
+
+/**
+ * Tenant → warehouse digest scope. The warehouse keys stores by
+ * (provider, provider_store_id); for RapidRMS its canonical map derives
+ * provider_store_id as `'client-' || client_id` (shre-rapidrms
+ * src/canonical/map-rapidrms.mjs), and the tenant's client id lives on the
+ * `rapidrms-api` connector row's config.clientId — the same row every other
+ * store-scoped read here (summary / sales / EDI) resolves through.
+ * Verifone/Azure connectors have no canonical map yet, so they resolve to
+ * null (no digest) rather than a guessed scope.
+ */
+async function resolveDigestScope(tenantId: string): Promise<DigestScope | null> {
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data: rows } = await supabase
+      .from('tenant_connectors')
+      .select('type, config')
+      .eq('tenant_id', tenantId)
+      .eq('type', 'rapidrms-api')
+      .eq('status', 'connected')
+      .limit(1);
+    const row = rows?.[0];
+    if (!row) return null;
+    const config = (row.config ?? {}) as Record<string, unknown>;
+    const clientId = String(config.clientId ?? '').trim();
+    if (!clientId) return null;
+    return { provider: 'rapidrms', storeId: clientId.startsWith('client-') ? clientId : `client-${clientId}` };
+  } catch (err) {
+    console.error('[owner-digest] scope resolution failed:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+// Small TTL cache (same pattern as storeSummaryCache) so a Home load doesn't
+// re-hit the warehouse every render, and an unreachable upstream doesn't add
+// a timeout wait to every request for the next minute.
+const OWNER_DIGEST_TTL_MS = 60_000;
+const ownerDigestCache = new Map<string, { at: number; body: Record<string, unknown> }>();
+
+async function handleOwnerDigest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  const cached = ownerDigestCache.get(auth.tenantId);
+  if (cached && Date.now() - cached.at < OWNER_DIGEST_TTL_MS) return json(res, 200, cached.body);
+
+  // Fail-soft contract: always 200, always a `digest` key. `null` means
+  // "nothing to show" (no POS mapped, or no digest built yet); the optional
+  // `error: 'unavailable'` marks a transient upstream failure.
+  let body: Record<string, unknown> = { digest: null };
+  try {
+    const scope = await resolveDigestScope(auth.tenantId);
+    if (scope) {
+      const upstream = await fetch(
+        `${SHRE_RAPIDRMS_URL}/api/digest/latest?provider=${encodeURIComponent(scope.provider)}&store_id=${encodeURIComponent(scope.storeId)}`,
+        { signal: AbortSignal.timeout(5000) },
+      );
+      if (upstream.ok) {
+        const row = (await upstream.json()) as Record<string, unknown> | null;
+        if (row && typeof row === 'object' && row.digest) body = row;
+      } else if (upstream.status !== 404) {
+        // 404 = no digest generated yet — an expected, quiet state.
+        body = { digest: null, error: 'unavailable' };
+      }
+    }
+  } catch (err) {
+    console.error('[owner-digest]', err instanceof Error ? err.message : err);
+    body = { digest: null, error: 'unavailable' };
+  }
+  ownerDigestCache.set(auth.tenantId, { at: Date.now(), body });
+  json(res, 200, body);
+}
+
+/**
+ * Day-0 first-run digest (OWNER-DIGEST-PLAN Phase 2): the moment a POS
+ * connector activates, ask the warehouse to build this store's first brief so
+ * Home gets a Weekly Brief card without waiting for Monday's weekly job.
+ * Strictly fire-and-forget — every failure is logged and swallowed; connector
+ * activation must never depend on the digest engine being reachable.
+ */
+async function requestFirstRunDigest(tenantId: string): Promise<void> {
+  try {
+    const scope = await resolveDigestScope(tenantId);
+    if (!scope) return;
+    const upstream = await fetch(`${SHRE_RAPIDRMS_URL}/api/digest/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: scope.provider, store_id: scope.storeId }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (upstream.ok) ownerDigestCache.delete(tenantId);
+    console.log(`[owner-digest] first-run generate ${scope.provider}/${scope.storeId} for tenant ${tenantId}: ${upstream.status}`);
+  } catch (err) {
+    console.error('[owner-digest] first-run generate failed:', err instanceof Error ? err.message : err);
+  }
+}
+
 async function handleStoreSales(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const auth = await authenticateRequest(req);
   const request = getRequestUrl(req);
@@ -2646,6 +2755,10 @@ async function handleConnectorsTest(req: IncomingMessage, res: ServerResponse): 
         connectorId: row.id, connectorType: row.type,
       });
       await setOnboardingComponent(auth.tenantId, 'sync', 'pending', { connectorId: row.id });
+      // Day-0 brief: kick the digest engine now that a store is connected, so
+      // the owner's first Home visit already has a Weekly Brief. Fire-and-
+      // forget — see requestFirstRunDigest; never blocks or fails activation.
+      void requestFirstRunDigest(auth.tenantId);
     } else {
       await setOnboardingComponent(auth.tenantId, 'store', 'error', { connectorId: row.id }, result.error ?? 'Connection test failed');
     }
@@ -3510,6 +3623,10 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (pathname === '/api/store/summary' && method === 'GET') {
     return handleStoreSummary(req, res);
   }
+  if (pathname === '/api/digest' && method === 'GET') {
+    return handleOwnerDigest(req, res);
+  }
+
   if (pathname === '/api/store/sales' && method === 'GET') {
     return handleStoreSales(req, res);
   }

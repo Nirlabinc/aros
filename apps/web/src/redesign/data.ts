@@ -283,6 +283,114 @@ export function useHomeData(): HomeData {
   return data;
 }
 
+// ── Weekly Owner Brief (GET /api/digest → shre-rapidrms owner-digest row) ──
+// Same guarantee as the rest of this file: demo brief only on the public
+// preview; a live build renders only what the API returns, and any missing or
+// malformed field maps to "render nothing" — never a fabricated number.
+
+export interface BriefTile { value: string; label: string; delta: string; up?: boolean; down?: boolean }
+export interface OwnerBrief {
+  /** Human period-end label ("Jul 13"), or '' when unknown. */
+  periodEnd: string;
+  /** Scorecard tiles — same visual shape as the Home KPI tiles. */
+  tiles: BriefTile[];
+  /** The single "do this today" recommendation (may be ''). */
+  action: string;
+  reason: string;
+  leakCount: number;
+  reorderCount: number;
+  reorderCost: number | null;
+  deadStockCapital: number | null;
+}
+
+const DEMO_BRIEF: OwnerBrief = {
+  periodEnd: 'this week',
+  tiles: [
+    { value: '$41,320', label: 'Revenue (7d)', delta: '+4.2% vs last week', up: true },
+    { value: '2,860', label: 'Transactions (7d)', delta: '+1.8% vs last week', up: true },
+    { value: '$14.45', label: 'Avg ticket', delta: '' },
+    { value: '$3.12', label: 'Est. profit / basket', delta: '-2.1% vs last week', down: true },
+  ],
+  action: 'Fix pricing on 3 items selling below cost',
+  reason: 'Three top-velocity SKUs are priced under invoice cost — every sale loses money.',
+  leakCount: 3, reorderCount: 19, reorderCost: 1240, deadStockCapital: 5180,
+};
+
+function briefMoney(n: any, cents = false): string | null {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return null;
+  return `$${v.toLocaleString(undefined, cents ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 0 })}`;
+}
+function briefDelta(n: any): { delta: string; up?: boolean; down?: boolean } {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return { delta: 'collecting history' };
+  return { delta: `${v > 0 ? '+' : ''}${v}% vs last week`, up: v > 0, down: v < 0 };
+}
+function briefDay(iso: any): string {
+  try {
+    const d = new Date(`${String(iso).slice(0, 10)}T00:00:00Z`);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  } catch { return ''; }
+}
+
+/** Server contract (src/server.ts handleOwnerDigest): always 200 with a
+ * `digest` key — the owner-digest row's JSON, or null (no POS mapped / no
+ * digest yet / upstream unavailable). Null in → null out → no card. */
+export function buildBrief(raw: any): OwnerBrief | null {
+  const digest = raw?.digest;
+  const score = digest?.scorecard;
+  if (!score || typeof score !== 'object') return null;
+
+  const tiles: BriefTile[] = [];
+  const revenue = briefMoney(score.revenue_7d);
+  if (revenue) tiles.push({ value: revenue, label: 'Revenue (7d)', ...briefDelta(score.revenue_wow_pct) });
+  const tx = Number(score.transactions_7d);
+  if (Number.isFinite(tx)) tiles.push({ value: tx.toLocaleString(), label: 'Transactions (7d)', ...briefDelta(score.transactions_wow_pct) });
+  const ticket = briefMoney(score.avg_ticket_7d, true);
+  if (ticket) tiles.push({ value: ticket, label: 'Avg ticket', delta: '' });
+  const basket = briefMoney(score.est_profit_per_basket, true);
+  if (basket) {
+    const coverage = Number(score.cost_coverage_pct);
+    tiles.push({
+      value: basket,
+      label: Number.isFinite(coverage) ? `Est. profit / basket (${Math.round(coverage)}% cost data)` : 'Est. profit / basket',
+      ...briefDelta(score.est_profit_per_basket_wow_pct),
+    });
+  }
+  if (tiles.length === 0) return null; // a digest with no numbers is not worth a card
+
+  const reorderCandidates = Number(digest?.reorder_total_candidates);
+  const reorderCost = Number(digest?.reorder_total_cost);
+  const deadStock = Number(digest?.dead_stock_total_capital);
+  return {
+    periodEnd: briefDay(raw?.period_end ?? digest?.period?.end),
+    tiles,
+    action: typeof digest?.recommendation?.action === 'string' ? digest.recommendation.action : '',
+    reason: typeof digest?.recommendation?.reason === 'string' ? digest.recommendation.reason : '',
+    leakCount: Array.isArray(digest?.margin_leaks) ? digest.margin_leaks.length : 0,
+    reorderCount: Number.isFinite(reorderCandidates) ? reorderCandidates : (Array.isArray(digest?.reorder) ? digest.reorder.length : 0),
+    reorderCost: Number.isFinite(reorderCost) ? reorderCost : null,
+    deadStockCapital: Number.isFinite(deadStock) ? deadStock : null,
+  };
+}
+
+export function useOwnerDigest(): OwnerBrief | null {
+  const { session, tenant } = useAuth();
+  const demo = useDemo();
+  const [brief, setBrief] = useState<OwnerBrief | null>(demo ? DEMO_BRIEF : null);
+  useEffect(() => {
+    if (demo) { setBrief(DEMO_BRIEF); return; }
+    let alive = true;
+    // getJson never throws (network/parse errors → null → no card).
+    getJson('/api/digest', session, tenant).then(data => {
+      if (!alive) return;
+      try { setBrief(buildBrief(data)); } catch { setBrief(null); }
+    });
+    return () => { alive = false; };
+  }, [demo, session, tenant]);
+  return brief;
+}
+
 export function useCanvasDemo(): boolean { return useDemo(); }
 
 export function useConversations(): { list: Conversation[]; demo: boolean } {

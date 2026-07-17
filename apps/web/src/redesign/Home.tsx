@@ -1,4 +1,4 @@
-import { useIdentity, useHomeData } from './data';
+import { useIdentity, useHomeData, useOwnerDigest, type OwnerBrief } from './data';
 
 // Home — the calm retail "command home". Content comes from useHomeData: rich
 // demo data in preview, real/empty data in a live build (never the demo persona).
@@ -10,6 +10,7 @@ export function Home({ onAskShre, onConnect, onSection }: {
 }) {
   const id = useIdentity();
   const data = useHomeData();
+  const brief = useOwnerDigest();
   const hour = 12; // no Date in preview harness; a fixed, safe greeting.
   const partOfDay = hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening';
 
@@ -31,6 +32,8 @@ export function Home({ onAskShre, onConnect, onSection }: {
             <button key={q} className="aros-suggest__btn" onClick={() => onAskShre(q)}>{q}</button>
           ))}
         </div>
+
+        <WeeklyBrief brief={brief} hasPos={data.dataState !== 'none'} />
 
         {data.kpis.length > 0 && (
           <div className="rsx2-home__kpis">
@@ -88,6 +91,50 @@ export function Home({ onAskShre, onConnect, onSection }: {
         </div>
       </div>
     </div>
+  );
+}
+
+// Weekly Owner Brief — renders only when a digest exists (useOwnerDigest maps
+// every missing/failed state to null). With a connected POS but no digest yet,
+// a single quiet line; with no POS at all, nothing.
+function WeeklyBrief({ brief, hasPos }: { brief: OwnerBrief | null; hasPos: boolean }) {
+  if (!brief) {
+    return hasPos ? <div className="rsx2-brief__pending">Your weekly brief arrives Monday.</div> : null;
+  }
+  const counts = [
+    brief.leakCount > 0 ? `${brief.leakCount} margin leak${brief.leakCount === 1 ? '' : 's'}` : null,
+    brief.reorderCount > 0
+      ? `${brief.reorderCount} item${brief.reorderCount === 1 ? '' : 's'} to reorder${brief.reorderCost != null ? ` (~$${brief.reorderCost.toLocaleString()})` : ''}`
+      : null,
+    brief.deadStockCapital != null && brief.deadStockCapital > 0 ? `$${brief.deadStockCapital.toLocaleString()} tied up in dead stock` : null,
+  ].filter(Boolean) as string[];
+
+  return (
+    <section className="rsx2-panelcard rsx2-brief">
+      <div className="rsx2-panelcard__head">
+        <h3>Weekly Brief</h3>
+        {brief.periodEnd && <span className="rsx2-canvas__src">week ending {brief.periodEnd}</span>}
+      </div>
+      <div className="rsx2-home__kpis rsx2-brief__kpis">
+        {brief.tiles.map(t => (
+          <div key={t.label} className="rsx2-kpi">
+            <div className="rsx2-kpi__value">{t.value}</div>
+            <div className="rsx2-kpi__label">{t.label}</div>
+            <div className={`rsx2-kpi__delta ${t.up ? 'is-up' : ''} ${t.down ? 'is-down' : ''}`}>{t.delta}</div>
+          </div>
+        ))}
+      </div>
+      {brief.action && (
+        <div className="rsx2-brief__action">
+          <span className="rsx2-brief__actiontag">Do this today</span>
+          <div className="rsx2-feed__body">
+            <div className="rsx2-feed__title">{brief.action}</div>
+            {brief.reason && <div className="rsx2-feed__meta">{brief.reason}</div>}
+          </div>
+        </div>
+      )}
+      {counts.length > 0 && <div className="rsx2-brief__counts">{counts.join(' · ')}</div>}
+    </section>
   );
 }
 
