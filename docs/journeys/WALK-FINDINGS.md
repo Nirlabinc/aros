@@ -22,6 +22,26 @@ route only existing on unmerged shreai#761; restored via shreai#1007 +
 public-allowlist shreai#1012, patched onto the serving pm2 router, prod walk
 J1 now WALKS CLEAN.)*
 
+## J1 step 5 — 🔴 LIVE (public path): demo chat answers $0.00 from the real empty tenant
+
+Found by the **persona walk** (fresh signup → `/start` → tap "Why are sales
+down vs last week?"): the router's deterministic paths (fast-path templates,
+octopus arms) ignore `demoMode`, query the live warehouse scoped to the
+brand-new empty tenant, and answer **"Total Sales: $0.00"** — or worse, a raw
+psql error table via `arm:sales → pos_sales_by_tender`. The sample store's
+numbers never appear in chat.
+
+**Router fix MERGED (shreai#1020, beta-E2E-verified in 5 rounds):** demo
+requests skip all four deterministic families, run tools-off against the
+grounded scenario context, skip the real-tenant data-access preamble, and
+pin the clean instruct model. Beta answer: "Total Sales: $4,823.00 … -10.4%".
+**Still broken on app.aros.live** — the public `/v1` is served by the
+hand-run pm2 router (hand-patched `chat-proxy`, not transplantable); the fix
+lands with the deploy-unification cutover to the launch.sh-managed router.
+Related debt (real tenants, any path that reaches them):
+`tool-forge/output/*` tools still shell to psql — one hardcodes PGPASSWORD —
+needs the #991-style pg-client migration + a security-lane look.
+
 ## J2 steps 4–5 — readiness state machine pending activation-contract merge
 
 Fixed so far: in-flight "Checking with <provider>…"; success copy scoped
