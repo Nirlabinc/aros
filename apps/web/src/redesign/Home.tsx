@@ -64,7 +64,11 @@ export function Home({ onAskShre, onConnect, onSection }: {
           <section className="rsx2-panelcard">
             <div className="rsx2-panelcard__head"><h3>What Shre did</h3>{data.activity.length > 0 && <span className="rsx2-canvas__src">today</span>}</div>
             {data.activity.length === 0
-              ? <div className="rsx2-empty"><div className="rsx2-empty__text">Activity will appear here once your stores are connected.</div></div>
+              ? <div className="rsx2-empty"><div className="rsx2-empty__text">{data.dataState === 'syncing'
+                  ? 'Store connected — your latest numbers are on the way.'
+                  : data.dataState === 'connected'
+                    ? 'Store connected — dashboard numbers for this register type are coming soon.'
+                    : 'Activity will appear here once your stores are connected.'}</div></div>
               : data.activity.map(a => (
                 <div key={a.text} className="rsx2-feed">
                   <span className="rsx2-feed__icon">{a.icon}</span>
@@ -78,7 +82,7 @@ export function Home({ onAskShre, onConnect, onSection }: {
         </div>
 
         <div className="rsx2-home__actions">
-          <QuickAction icon="🛒" label="Connect a register" hint="RapidRMS or Verifone" onClick={onConnect} />
+          <QuickAction icon="🛒" label={data.dataState === 'none' ? 'Connect a register' : 'Manage connections'} hint="RapidRMS or Verifone" onClick={onConnect} />
           <QuickAction icon="⚡" label="Browse skills" hint="Automate your store" onClick={() => onSection('skills')} />
           <QuickAction icon="🤖" label="View agents" hint="Always-on helpers" onClick={() => onSection('agents')} />
         </div>

@@ -183,8 +183,16 @@ export interface HomeData {
   kpis: { value: string; label: string; delta: string; up?: boolean }[];
   approvals: { icon: string; title: string; by: string; when: string }[];
   activity: { icon: string; text: string; when: string }[];
+  /**
+   * Honest data state: no connector yet / connector whose numbers are on the
+   * way (summary-capable, none fetched yet or a transient failure) / connector
+   * whose type can't feed the dashboard (e.g. Verifone, Azure — no summary
+   * mapper yet) / live numbers rendering.
+   */
+  dataState: 'none' | 'syncing' | 'connected' | 'live';
 }
 const DEMO_HOME: HomeData = {
+  dataState: 'live',
   greetingSub: `${DEMO_USER.workspace} Market · 5 stores live`,
   suggestions: SUGGESTIONS,
   kpis: [
@@ -205,15 +213,26 @@ const DEMO_HOME: HomeData = {
 };
 
 function fmtMoney(n: any): string | null { const v = Number(n); return Number.isFinite(v) ? `$${v.toLocaleString()}` : null; }
-function buildKpis(sum: any): HomeData['kpis'] {
-  if (!sum || typeof sum !== 'object') return [];
+// Maps the server's StoreSummary shape (GET /api/store/summary → { connected,
+// summary: { todaySales, lowStock, source } }, see connectors/data-service.ts).
+function buildKpis(summary: any): HomeData['kpis'] {
+  if (!summary || typeof summary !== 'object') return [];
   const out: HomeData['kpis'] = [];
-  const sales = fmtMoney(sum.salesToday ?? sum.netSales ?? sum.sales?.today ?? sum.sales);
-  if (sales) out.push({ value: sales, label: 'Sales today', delta: sum.salesDelta || '', up: Number(sum.changePercent ?? 0) >= 0 });
-  const tx = sum.transactions ?? sum.txCount ?? sum.sales?.transactions;
+  const today = summary.todaySales ?? {};
+  const sales = today.revenue == null ? null : fmtMoney(today.revenue);
+  if (sales) {
+    const pct = typeof today.changePercent === 'number' ? today.changePercent : null;
+    out.push({
+      value: sales,
+      label: 'Sales today',
+      delta: pct !== null ? `${pct > 0 ? '+' : ''}${pct}% vs last week` : 'collecting history',
+      up: pct !== null ? pct > 0 : undefined,
+    });
+  }
+  const tx = today.transactions;
   if (Number.isFinite(Number(tx))) out.push({ value: Number(tx).toLocaleString(), label: 'Transactions', delta: '' });
-  const low = sum.lowStock ?? sum.lowStockCount;
-  if (Number.isFinite(Number(low))) out.push({ value: String(low), label: 'Low-stock SKUs', delta: 'needs reorder' });
+  const low = summary.lowStock?.count;
+  if (Number.isFinite(Number(low))) out.push({ value: String(low), label: 'Low-stock SKUs', delta: Number(low) > 0 ? 'needs reorder' : 'all stocked' });
   return out;
 }
 
@@ -221,26 +240,42 @@ export function useHomeData(): HomeData {
   const { session, tenant } = useAuth();
   const demo = useDemo();
   const id = useIdentity();
-  const empty: HomeData = { greetingSub: `${id.workspace} · connect a register to see live numbers`, suggestions: SUGGESTIONS, kpis: [], approvals: [], activity: [] };
+  const empty: HomeData = { greetingSub: `${id.workspace} · connect a register to see live numbers`, suggestions: SUGGESTIONS, kpis: [], approvals: [], activity: [], dataState: 'none' };
   const [data, setData] = useState<HomeData>(demo ? DEMO_HOME : empty);
 
   useEffect(() => {
     if (demo) { setData(DEMO_HOME); return; }
     let alive = true;
     (async () => {
-      const [dash, sum] = await Promise.all([
+      const [dash, res] = await Promise.all([
         getJson('/api/dashboard', session, tenant),
         getJson('/api/store/summary', session, tenant),
       ]);
       if (!alive) return;
-      const kpis = buildKpis(sum);
+      // Server contract (src/server.ts handleStoreSummary, end-user path):
+      // { connected, summary } plus — only when summary is null —
+      // { hasConnector, summaryCapable }. `connected` strictly means live data
+      // was fetched; the extra fields distinguish "no connector" from
+      // "connector saved, numbers pending (or never coming for its type)".
+      const summary = res?.summary ?? null;
+      const kpis = buildKpis(summary);
+      const dataState: HomeData['dataState'] = summary
+        ? 'live'
+        : res?.summaryCapable
+          ? 'syncing'
+          : res?.hasConnector
+            ? 'connected'
+            : 'none';
+      const greetingSub = dataState === 'live'
+        ? `${id.workspace} · live from ${summary?.source?.name || 'your store'}`
+        : dataState === 'syncing'
+          ? `${id.workspace} · store connected — fetching your latest numbers`
+          : dataState === 'connected'
+            ? `${id.workspace} · store connected`
+            : empty.greetingSub;
       const activity = (((dash?.recentActivity) || []) as any[]).slice(0, 4).map(a => ({ icon: '•', text: a.action || a.description || String(a), when: a.timestamp || '' }));
       const approvals = (((dash?.tasks) || []) as any[]).filter(t => (t.status || '') !== 'done').slice(0, 4).map(t => ({ icon: '📋', title: t.title || t.name || String(t), by: t.agent || 'Shre', when: t.timestamp || '' }));
-      const live = Number(sum?.storesLive ?? sum?.stores);
-      setData({
-        greetingSub: Number.isFinite(live) ? `${id.workspace} · ${live} stores live` : empty.greetingSub,
-        suggestions: SUGGESTIONS, kpis, approvals, activity,
-      });
+      setData({ greetingSub, suggestions: SUGGESTIONS, kpis, approvals, activity, dataState });
     })();
     return () => { alive = false; };
   }, [demo, session, tenant, id.workspace]); // eslint-disable-line react-hooks/exhaustive-deps

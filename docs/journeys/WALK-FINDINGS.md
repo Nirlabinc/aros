@@ -22,37 +22,33 @@ default surface until connect, and:
   Router-side drift — owned by the routing/data-wiring session, do not
   hand-patch from here.
 
-## J2 step 2 — "Client ID" is not knowledge Ramesh has
+## J2 steps 4–5 — no "we found your store" detail; readiness state machine pending
 
-`connect-my-store.md` step 2 allows "his POS login". The actual RapidRMS
-form also requires **Client ID** (`ConnectStorePage.tsx:24-57`) — a
-per-store identifier from the RapidRMS portal, not login knowledge. Needs
-the spec's one-line explainer plus a "Where do I find this?" helper (or
-lookup-by-account-email server-side).
+Fixed so far: in-flight "Checking with <provider>…"; success copy scoped
+honestly (sync promise only for summary-capable providers, calm "connected"
+otherwise); the KPI mapping drift that prevented real numbers from EVER
+rendering (`buildKpis` read fields the server never returned); live data
+carries a "live from <source>" marker; and `/api/store/summary`'s end-user
+path now emits `hasConnector` + `summaryCapable` alongside the unchanged
+strict `connected`, so Home renders four honest states (none / syncing /
+connected-no-dashboard-numbers / live) instead of telling a connected owner
+to "connect a register". Remaining:
 
-## J2 steps 4–5 — success is claimed before data flows, and readiness is invisible
+- No recognizable store detail echoed on connect success (needs the test
+  endpoint to return a store name / today's transaction count).
+- The full readiness state machine (`store_connector_bindings.status`,
+  `tenant_app_activation_status`: `waiting_for_store → syncing → ready →
+  attention`) lives on the **unmerged activation-contract branch** (chat
+  data-wiring session). When it merges, replace the connector-row heuristic
+  behind `hasConnector`/`summaryCapable` with the real binding states.
 
-Spec requires: in-flight "Checking with RapidRMS…", then "Connected — we
-found your store" with a recognizable detail, then honest "syncing" until
-real rows. Current build:
+## J4 — trend history depends on an operator activation
 
-- Success bar fires at connector `status='connected'`
-  (`ConnectStorePage.tsx:192-197`) while bindings are created as
-  `status='syncing'` (`src/server.ts` `provisionCanonicalStores`,
-  :2312-2377).
-- The readiness state machine exists server-side —
-  `store_connector_bindings.status` and the `tenant_app_activation_status`
-  view (`waiting_for_store → syncing → ready → attention`, migration
-  `20260716_app_data_activation_contract.sql`) — but is **surfaced in no
-  UI**. No screen ever confirms "your real numbers are flowing".
-- No recognizable store detail is echoed back on success.
-
-## J4 — trends silently null right after connect
-
-Week-over-week `changePercent` needs `store_snapshots` history;
-`captureStoreSnapshots` is env-gated + scheduled (`src/server.ts:2047-2135`)
-— an **operator activation** the journey depends on. Until a week exists,
-trend UI must say "collecting history", not render nothing.
+`changePercent` shows "collecting history" until a week of `store_snapshots`
+exists — but `captureStoreSnapshots` is env-gated + scheduled
+(`src/server.ts:2127`); if the operator never enables it in prod, trends stay
+"collecting history" forever. Enable the snapshotter as part of tenant
+activation.
 
 ## Structural — two divergent connect UIs on one API
 

@@ -18,7 +18,7 @@ interface ProviderDef {
   id: ProviderId;
   label: string;
   tagline: string;
-  fields: Array<{ key: string; label: string; placeholder: string; secret?: boolean; optional?: boolean }>;
+  fields: Array<{ key: string; label: string; placeholder: string; hint?: string; secret?: boolean; optional?: boolean }>;
 }
 
 const PROVIDERS: ProviderDef[] = [
@@ -27,9 +27,9 @@ const PROVIDERS: ProviderDef[] = [
     label: 'RapidRMS POS',
     tagline: 'Cloud POS — sales, inventory, pricing, promotions',
     fields: [
-      { key: 'clientId', label: 'Client ID', placeholder: 'Your RapidRMS client ID' },
-      { key: 'email', label: 'Account Email', placeholder: 'you@yourstore.com', secret: true },
-      { key: 'password', label: 'Password', placeholder: 'RapidRMS password', secret: true },
+      { key: 'clientId', label: 'Client ID', placeholder: 'Your RapidRMS client ID', hint: 'Identifies your store to RapidRMS — it’s in your RapidRMS back office, or ask RapidRMS support for it' },
+      { key: 'email', label: 'Account Email', placeholder: 'you@yourstore.com', secret: true, hint: 'The email you use to sign in to RapidRMS' },
+      { key: 'password', label: 'Password', placeholder: 'RapidRMS password', secret: true, hint: 'Your RapidRMS sign-in password' },
     ],
   },
   {
@@ -37,9 +37,9 @@ const PROVIDERS: ProviderDef[] = [
     label: 'Verifone Commander',
     tagline: 'On-site Commander — fuel + c-store transaction data',
     fields: [
-      { key: 'commanderIp', label: 'Commander IP', placeholder: '192.168.31.11' },
-      { key: 'username', label: 'CGI Username', placeholder: 'Commander username' },
-      { key: 'password', label: 'Password', placeholder: 'Commander password', secret: true },
+      { key: 'commanderIp', label: 'Commander IP', placeholder: '192.168.31.11', hint: 'The Commander’s address on your store network — your POS installer set this up' },
+      { key: 'username', label: 'CGI Username', placeholder: 'Commander username', hint: 'The CGI user configured on the Commander' },
+      { key: 'password', label: 'Password', placeholder: 'Commander password', secret: true, hint: 'That user’s password' },
     ],
   },
   {
@@ -47,7 +47,7 @@ const PROVIDERS: ProviderDef[] = [
     label: 'Azure SQL Database',
     tagline: 'Direct database access to your back-office data',
     fields: [
-      { key: 'server', label: 'Server', placeholder: 'yourserver.database.windows.net' },
+      { key: 'server', label: 'Server', placeholder: 'yourserver.database.windows.net', hint: 'Your database server address — ends in database.windows.net' },
       { key: 'database', label: 'Database', placeholder: 'Database name' },
       { key: 'username', label: 'Username', placeholder: 'SQL username' },
       { key: 'port', label: 'Port', placeholder: '1433', optional: true },
@@ -191,7 +191,11 @@ export function ConnectStorePage({ onboarded }: { onboarded: boolean }) {
 
         {(justConnected || hasConnected) && (
           <div style={s.successBar}>
-            <span>✓ Store connected — your agents are switching to live data.</span>
+            <span>{justConnected
+              ? (provider.id === 'rapidrms-api'
+                ? '✓ Store connected — now syncing your data. Your numbers appear on the dashboard shortly.'
+                : `✓ ${provider.label} connected.`)
+              : '✓ Store connected.'}</span>
             <a href={nextHref} style={s.successCta}>{nextLabel}</a>
           </div>
         )}
@@ -239,11 +243,13 @@ export function ConnectStorePage({ onboarded }: { onboarded: boolean }) {
               </button>
             ))}
           </div>
+          <p style={s.notSure}>Not sure which one? It’s the name on your register screen or your receipts.</p>
 
           <form onSubmit={handleSubmit} style={s.form}>
             <div style={s.field}>
-              <label style={s.label}>Connection Name</label>
+              <label style={s.label} htmlFor="conn-name">Connection Name</label>
               <input
+                id="conn-name"
                 value={storeName}
                 onChange={(e) => setStoreName(e.target.value)}
                 placeholder={`e.g. Main Street — ${provider.label}`}
@@ -252,20 +258,23 @@ export function ConnectStorePage({ onboarded }: { onboarded: boolean }) {
             </div>
             {provider.fields.map((f) => (
               <div key={f.key} style={s.field}>
-                <label style={s.label}>{f.label}{f.optional ? ' (optional)' : ''}</label>
+                <label style={s.label} htmlFor={`conn-${f.key}`}>{f.label}{f.optional ? ' (optional)' : ''}</label>
                 <input
+                  id={`conn-${f.key}`}
                   type={f.secret && f.key !== 'email' ? 'password' : 'text'}
                   value={values[f.key] || ''}
                   onChange={(e) => setValues((prev) => ({ ...prev, [f.key]: e.target.value }))}
                   placeholder={f.placeholder}
                   autoComplete="off"
+                  aria-describedby={f.hint ? `conn-${f.key}-hint` : undefined}
                   style={s.input}
                 />
+                {f.hint && <span id={`conn-${f.key}-hint`} style={s.fieldHint}>{f.hint}</span>}
               </div>
             ))}
             {formError && <div style={s.error}>{formError}</div>}
             <button type="submit" disabled={busy !== null} style={s.primaryBtn}>
-              {busy === 'save' ? 'Connecting…' : 'Save & Test Connection'}
+              {busy === 'save' ? `Checking with ${provider.label}…` : 'Save & Test Connection'}
             </button>
           </form>
         </section>
@@ -296,7 +305,9 @@ const s: Record<string, React.CSSProperties> = {
   connMeta: { fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
   pill: { marginLeft: 'auto', fontSize: 12, fontWeight: 700, padding: '3px 10px', borderRadius: 20, whiteSpace: 'nowrap' },
   smallBtn: { background: 'none', border: '1px solid #d1d5db', borderRadius: 8, padding: '5px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer', color: '#374151', fontFamily: 'inherit' },
-  providerGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 20 },
+  providerGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 8 },
+  notSure: { fontSize: 12, color: '#6b7280', margin: '0 0 16px', lineHeight: 1.4 },
+  fieldHint: { fontSize: 12, color: '#6b7280', lineHeight: 1.4 },
   providerCard: { display: 'flex', flexDirection: 'column', gap: 4, textAlign: 'left', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 12, padding: '12px 14px', cursor: 'pointer', fontFamily: 'inherit' },
   providerCardActive: { border: `2px solid ${ACCENT}`, background: '#f0f4ff', padding: '11px 13px' },
   providerLabel: { fontSize: 14, fontWeight: 700, color: '#1a1a2e' },

@@ -56,7 +56,7 @@ import {
   getEdiItems,
   revertEdi,
 } from '../connectors/rapidrms-edi.js';
-import { fetchStoreSalesRange, fetchStoreSummary, type StoreSummary } from '../connectors/data-service.js';
+import { fetchStoreSalesRange, fetchStoreSummary, hasSummaryMapper, type StoreSummary } from '../connectors/data-service.js';
 import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
 import { proxyToMib } from '../connectors/mib-documents.js';
 import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
@@ -2230,7 +2230,34 @@ async function handleStoreSummary(req: IncomingMessage, res: ServerResponse): Pr
   const auth = await authenticateRequest(req);
   if (!auth) return json(res, 401, { error: 'Authentication required' });
   const summary = await getTenantStoreSummary(auth.tenantId);
-  json(res, 200, summary ? { connected: true, summary } : { connected: false, summary: null });
+  if (summary) return json(res, 200, { connected: true, summary });
+  // No live summary. `connected` keeps its strict meaning (live data actually
+  // fetched — onboarding readiness depends on it); the extra fields let the
+  // dashboard distinguish "no connector" from "connector saved, numbers not
+  // available (yet or ever)" instead of telling a connected owner to connect.
+  // Service path above is unchanged.
+  const { hasConnector, summaryCapable } = await connectedConnectorState(auth.tenantId);
+  json(res, 200, { connected: false, summary: null, hasConnector, summaryCapable });
+}
+
+/**
+ * Whether the tenant has any connected connector row, and whether any of them
+ * is a type that can ever produce a live summary (hasSummaryMapper).
+ */
+async function connectedConnectorState(tenantId: string): Promise<{ hasConnector: boolean; summaryCapable: boolean }> {
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data: rows } = await supabase
+      .from('tenant_connectors')
+      .select('type')
+      .eq('tenant_id', tenantId)
+      .eq('status', 'connected')
+      .limit(10);
+    const types = (rows ?? []).map((r) => String(r.type));
+    return { hasConnector: types.length > 0, summaryCapable: types.some(hasSummaryMapper) };
+  } catch {
+    return { hasConnector: false, summaryCapable: false };
+  }
 }
 
 async function handleStoreSales(req: IncomingMessage, res: ServerResponse): Promise<void> {

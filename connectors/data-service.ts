@@ -205,25 +205,28 @@ async function fetchRapidRmsSummary(
 // ── Public entry ────────────────────────────────────────────────
 
 /**
+ * Whether a connector type can produce a live StoreSummary. Single source of
+ * truth for "will the dashboard ever get numbers from this connector" — the
+ * UI uses it to say "syncing" only when numbers can actually arrive.
+ * Azure SQL + Verifone expose data methods (query / fetchReports) but need a
+ * schema/report mapping per deployment — not yet generalized.
+ */
+export function hasSummaryMapper(type: string): boolean {
+  return type === 'rapidrms-api';
+}
+
+/**
  * Fetch a normalized live summary for a connected connector.
  * Throws on auth/transport failure (caller falls back to placeholder).
- * Returns null for connector types that don't yet have a summary mapper.
+ * Returns null for connector types that don't yet have a summary mapper —
+ * keeping the dashboard on its honest placeholder rather than guessing.
  */
 export async function fetchStoreSummary(
   record: ConnectorRecord,
   vaultSecret: string,
 ): Promise<StoreSummary | null> {
-  switch (record.type) {
-    case 'rapidrms-api':
-      return fetchRapidRmsSummary(record, vaultSecret);
-    // Azure SQL + Verifone expose data methods (query / fetchReports) but need
-    // a schema/report mapping per deployment — not yet generalized. Returning
-    // null keeps the dashboard on its honest placeholder rather than guessing.
-    case 'azure-db':
-    case 'verifone-commander':
-    default:
-      return null;
-  }
+  if (!hasSummaryMapper(record.type)) return null;
+  return fetchRapidRmsSummary(record, vaultSecret);
 }
 
 export type DailyStoreSales = { businessDate: string; revenue: number; transactions: number };
