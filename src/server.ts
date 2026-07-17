@@ -2652,7 +2652,28 @@ async function handleConnectorsTest(req: IncomingMessage, res: ServerResponse): 
     // dashboard immediately, not after the summary TTL expires.
     storeSummaryCache.delete(auth.tenantId);
 
-    json(res, 200, { ok: true, result });
+    // Echo a recognizable live detail with success ("we found your store —
+    // N transactions today") so the user can sanity-check it against their
+    // register. Best-effort: a failed echo never fails the test response.
+    // A partial summary is excluded — its zeros are fetch failures, and a
+    // confident "0 transactions today" built on one would be a lie.
+    let found: { store: string; transactionsToday: number } | null = null;
+    if (result.success && hasSummaryMapper(row.type)) {
+      try {
+        const summary = await fetchStoreSummary(
+          { id: row.id, type: row.type, name: row.name, config: (row.config ?? {}) as Record<string, unknown>, secrets },
+          vaultSecretFor(auth.tenantId),
+        );
+        if (summary && !summary.partial) {
+          found = {
+            store: summary.source.name || row.name,
+            transactionsToday: summary.todaySales.transactions,
+          };
+        }
+      } catch { /* optional detail; the connection test itself already passed */ }
+    }
+
+    json(res, 200, found ? { ok: true, result, found } : { ok: true, result });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Connection test failed';
     console.error('[connectors.test]', message);

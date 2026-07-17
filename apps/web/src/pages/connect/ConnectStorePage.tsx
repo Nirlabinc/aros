@@ -81,6 +81,7 @@ export function ConnectStorePage({ onboarded }: { onboarded: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [formError, setFormError] = useState('');
   const [justConnected, setJustConnected] = useState(false);
+  const [found, setFound] = useState<{ store: string; transactionsToday: number } | null>(null);
 
   const authHeaders = useCallback((): Record<string, string> => ({
     'Content-Type': 'application/json',
@@ -111,12 +112,15 @@ export function ConnectStorePage({ onboarded }: { onboarded: boolean }) {
     const data = await res.json().catch(() => ({}));
     await loadConnectors();
     if (!res.ok) throw new Error(data.error || 'Connection test failed');
+    if (data.found?.store) setFound(data.found);
     return Boolean(data.result?.success);
   }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setFormError('');
+    setFound(null);
+    setJustConnected(false);
     setBusy('save');
     try {
       const secrets: Record<string, string> = {};
@@ -193,7 +197,9 @@ export function ConnectStorePage({ onboarded }: { onboarded: boolean }) {
           <div style={s.successBar}>
             <span>{justConnected
               ? (provider.id === 'rapidrms-api'
-                ? '✓ Store connected — now syncing your data. Your numbers appear on the dashboard shortly.'
+                ? (found && found.transactionsToday > 0
+                  ? `✓ Connected — we found ${found.store}: ${found.transactionsToday.toLocaleString()} transaction${found.transactionsToday === 1 ? '' : 's'} today. Your numbers appear on the dashboard shortly.`
+                  : '✓ Store connected — now syncing your data. Your numbers appear on the dashboard shortly.')
                 : `✓ ${provider.label} connected.`)
               : '✓ Store connected.'}</span>
             <a href={nextHref} style={s.successCta}>{nextLabel}</a>
@@ -235,7 +241,7 @@ export function ConnectStorePage({ onboarded }: { onboarded: boolean }) {
               <button
                 key={p.id}
                 type="button"
-                onClick={() => { setProvider(p); setValues({}); setFormError(''); }}
+                onClick={() => { setProvider(p); setValues({}); setFormError(''); setFound(null); setJustConnected(false); }}
                 style={{ ...s.providerCard, ...(provider.id === p.id ? s.providerCardActive : {}) }}
               >
                 <span style={s.providerLabel}>{p.label}</span>
