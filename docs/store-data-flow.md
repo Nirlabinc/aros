@@ -68,8 +68,10 @@ Server helper `getTenantStoreSummary(tenantId)`:
   crafted prompt cannot pull a foreign tenant's data. Non-demo AROS chat answers
   from real numbers.
 - **Warehouse (`store_snapshots`)** — **added here.** A scheduled snapshotter
-  (`captureStoreSnapshots`, env-gated by `STORE_SNAPSHOT_INTERVAL_MIN`, off by
-  default) pulls each connected connector's summary and upserts one row per
+  (`captureStoreSnapshots`, **on by default** every 6h; opt out with
+  `STORE_SNAPSHOT_INTERVAL_MIN=0`, override cadence with any other value —
+  default-on so trend history is not an operator activation step) pulls each
+  connected connector's summary and upserts one row per
   tenant per `business_date` into `store_snapshots` (aros Supabase). This gives
   the self-serve path **history** — so it stops being live-pull-only and
   converges with the warehouse-backed internal stores. `changePercent` is now

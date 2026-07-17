@@ -37,13 +37,13 @@ recognizable live detail ("we found <store>: N transactions today") from
   data-wiring session). When it merges, replace the connector-row heuristic
   behind `hasConnector`/`summaryCapable` with the real binding states.
 
-## J4 — trend history depends on an operator activation
+## J4 — trend history needs a week of snapshots (by design)
 
-`changePercent` shows "collecting history" until a week of `store_snapshots`
-exists — but `captureStoreSnapshots` is env-gated + scheduled
-(`src/server.ts:2127`); if the operator never enables it in prod, trends stay
-"collecting history" forever. Enable the snapshotter as part of tenant
-activation.
+The snapshotter now runs **by default** (every 6h; `STORE_SNAPSHOT_INTERVAL_MIN=0`
+to opt out), so trends accrue from day one of a connected store with no
+operator step. "Collecting history" remains the honest label for the first
+week — that part is physics, not a defect. Verify after the next prod
+deploy that the `[aros-platform] store snapshotter enabled` boot log appears.
 
 ## Structural — connect UIs share one provider catalogue; step flows still differ
 

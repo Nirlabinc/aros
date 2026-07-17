@@ -3620,10 +3620,15 @@ server.listen(PORT, '0.0.0.0', () => {
       });
   }, 15_000).unref();
 
-  // Warehouse snapshotter — env-gated (STORE_SNAPSHOT_INTERVAL_MIN>0 to enable).
-  // Off by default: no env, no background work.
-  const snapshotMin = Number(process.env.STORE_SNAPSHOT_INTERVAL_MIN || 0);
-  if (snapshotMin > 0) {
+  // Warehouse snapshotter — ON by default (every 6h) so week-over-week trends
+  // accrue from day one of a connected store instead of depending on an
+  // operator remembering an env flag (journey J4 activation dependency).
+  // Opt out with STORE_SNAPSHOT_INTERVAL_MIN=0; override the cadence with any
+  // other value. Cheap when idle: one connector query, no connected
+  // connectors → no work.
+  const snapshotEnv = process.env.STORE_SNAPSHOT_INTERVAL_MIN;
+  const snapshotMin = snapshotEnv === undefined || snapshotEnv === '' ? 360 : Number(snapshotEnv);
+  if (Number.isFinite(snapshotMin) && snapshotMin > 0) {
     const run = () =>
       captureStoreSnapshots()
         .then((r) => console.log(`[snapshot] captured=${r.captured} failed=${r.failed} skipped=${r.skipped}`))
