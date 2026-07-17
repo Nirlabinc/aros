@@ -1,5 +1,6 @@
 import { ReactNode } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { TermsGate } from './TermsGate';
 
 interface ProtectedRouteProps {
   children: ReactNode;
@@ -43,7 +44,9 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     return null;
   }
 
-  return <>{children}</>;
+  // Flag-gated clickwrap terms gate (TERMS_GATE_ENABLED) — pass-through when
+  // the flag is off or the user has already accepted the current version.
+  return <TermsGate>{children}</TermsGate>;
 }
 
 const styles: Record<string, React.CSSProperties> = {

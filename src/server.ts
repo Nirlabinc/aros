@@ -20,6 +20,7 @@ import { handleStripeWebhook } from './billing/webhook.js';
 import { provisionLicense } from './billing/license.js';
 import { listTasks } from '../tasks/store.js';
 import { createSupabaseAdmin } from './supabase.js';
+import { createTermsModule } from './terms/gate.js';
 import { createEventBus } from 'shre-sdk/events';
 import { createHeartbeatMonitor } from 'shre-sdk/heartbeat';
 import {
@@ -3443,6 +3444,15 @@ async function handleDocuments(req: IncomingMessage, res: ServerResponse): Promi
   }
 }
 
+// ── Terms & AI-disclosure consent (flag-gated: TERMS_GATE_ENABLED) ──
+// Inert by default — enforceGate() is a no-op unless the env flag is truthy.
+const terms = createTermsModule({
+  createClient: createSupabaseAdmin,
+  authenticate: authenticateRequest,
+  getClientIp,
+  auditLog,
+});
+
 async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? '/';
   const requestUrl = getRequestUrl(req);
@@ -3535,6 +3545,27 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (pathname.startsWith('/v1/') && !pathname.startsWith('/v1/traces/')) {
     return proxyRequest(req, res, SHRE_ROUTER_URL);
   }
+
+  // ── Terms acceptance + AI disclosure (flag-gated) ──────────
+  if (pathname === '/api/terms/status' && method === 'GET') {
+    return terms.handleStatus(req, res);
+  }
+  if (pathname === '/api/terms/accept' && method === 'POST') {
+    if (!rateLimit(req, 10, 60_000)) {
+      return json(res, 429, { error: 'Too many requests. Please wait.' });
+    }
+    return terms.handleAccept(req, res);
+  }
+  if (pathname === '/api/disclosures/ack' && method === 'POST') {
+    if (!rateLimit(req, 20, 60_000)) {
+      return json(res, 429, { error: 'Too many requests. Please wait.' });
+    }
+    return terms.handleDisclosureAck(req, res);
+  }
+  // When TERMS_GATE_ENABLED, authenticated API access without a
+  // current-version acceptance gets a distinct 428 the SPA turns into the
+  // clickwrap screen. With the flag off (default) this is a strict no-op.
+  if (await terms.enforceGate(req, res, pathname)) return;
 
   // ── Billing ─────────────────────────────────────────────────
   if (url === '/api/billing/checkout' && method === 'POST') {

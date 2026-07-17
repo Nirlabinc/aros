@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { chatReplyText } from '../../lib/chatReply';
+import { AiDisclosureModal, AiDisclosureNotice, useAiDisclosure } from '../../components/AiDisclosure';
 
 /**
  * StartChat — the day-one landing surface for a freshly signed-up tenant.
@@ -52,6 +53,7 @@ function getDemoSessionId(): string {
 }
 
 export function StartChat() {
+  const aiDisclosure = useAiDisclosure();
   const sessionId = useRef<string>(getDemoSessionId());
   const intent = useRef<string>(getIntent());
   const [messages, setMessages] = useState<Message[]>([]);
@@ -118,6 +120,8 @@ export function StartChat() {
 
   return (
     <div style={s.wrapper}>
+      {/* First-chat AI disclosure — renders nothing unless TERMS_GATE_ENABLED */}
+      <AiDisclosureModal show={aiDisclosure.showModal} onAcknowledge={() => void aiDisclosure.acknowledge()} />
       {/* Top bar with in-context connect CTA */}
       <header style={s.topbar}>
         <div style={s.brand}>AROS</div>
@@ -181,6 +185,7 @@ export function StartChat() {
               Send
             </button>
           </form>
+          <AiDisclosureNotice />
         </div>
       </footer>
     </div>
