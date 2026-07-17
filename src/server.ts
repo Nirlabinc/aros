@@ -1418,6 +1418,41 @@ async function handleMarketplaceEntitlements(req: IncomingMessage, res: ServerRe
 // The frontend groups them under two headers; MIB reads the same contract.
 const APPS_HOST = process.env.AROS_APPS_HOST || 'apps.aros.live';
 
+// Trusted MIB surfaces that read a tenant's plugins service-to-service (bearer
+// = the AROS service token, tenantId passed explicitly). The header is
+// spoofable on its own — the token is the real gate; the allow-list is for
+// audit clarity, mirroring ALLOWED_SERVICE_SOURCES on the store-summary path.
+const ALLOWED_PLUGIN_SERVICE_SOURCES = new Set(['shre-router', 'mib007', 'shre-command-center', 'mib-desktop']);
+
+function pluginServiceAuth(req: IncomingMessage): boolean {
+  const serviceToken = readServiceToken();
+  if (!serviceToken) return false;
+  const presentedToken = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const rawSource = req.headers['x-service-source'];
+  const serviceSource = Array.isArray(rawSource) ? rawSource[0] : rawSource;
+  const claimsService = Boolean(serviceSource) && ALLOWED_PLUGIN_SERVICE_SOURCES.has(String(serviceSource));
+  return claimsService && tokensMatch(presentedToken, serviceToken);
+}
+
+type PluginAccess =
+  | { tenantId: string; userId: string | null; role: string; isService: boolean }
+  | { error: string; status: number };
+
+// A plugins request is authorized either as a workspace user (cookie/bearer →
+// tenant membership) OR as a trusted MIB service (service token + allow-listed
+// source + explicit tenantId). This is the single boundary both AROS's own UI
+// and the MIB surfaces flow through.
+async function resolvePluginAccess(req: IncomingMessage): Promise<PluginAccess> {
+  const auth = await authenticateRequest(req);
+  if (auth) return { tenantId: auth.tenantId, userId: auth.userId, role: auth.role, isService: false };
+  if (pluginServiceAuth(req)) {
+    const tenantId = getRequestUrl(req).searchParams.get('tenantId') || '';
+    if (!tenantId) return { error: 'tenantId query param required for service requests', status: 400 };
+    return { tenantId, userId: null, role: 'service', isService: true };
+  }
+  return { error: 'Authentication required', status: 401 };
+}
+
 type PgError = { code?: string; message?: string };
 
 /** tenant_apps may not be applied yet (migration is staged-apply). Treat a
@@ -1429,8 +1464,8 @@ function isMissingRelation(error: unknown): boolean {
 }
 
 async function handlePluginsList(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const auth = await authenticateRequest(req);
-  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const access = await resolvePluginAccess(req);
+  if ('error' in access) return json(res, access.status, { error: access.error });
 
   try {
     const supabase = createSupabaseAdmin();
@@ -1439,13 +1474,13 @@ async function handlePluginsList(req: IncomingMessage, res: ServerResponse): Pro
       supabase
         .from('tenant_apps')
         .select('id, slug, display_name, description, status, subdomain, image_version, promoted_at, updated_at')
-        .eq('tenant_id', auth.tenantId)
+        .eq('tenant_id', access.tenantId)
         .neq('status', 'retired')
         .order('updated_at', { ascending: false }),
       supabase
         .from('marketplace_app_entitlements')
         .select('app_key, status, source, enabled_at')
-        .eq('tenant_id', auth.tenantId)
+        .eq('tenant_id', access.tenantId)
         .eq('source', 'plugin')
         .order('app_key', { ascending: true }),
     ]);
@@ -1506,9 +1541,22 @@ function appFactoryDeps(supabase: ReturnType<typeof createSupabaseAdmin>): AppFa
 // actor of the 'promoted' event. A tenant admin cannot self-promote via a
 // stolen anon session; only this pipeline-side path can.
 async function handlePluginConfirm(req: IncomingMessage, res: ServerResponse, appId: string): Promise<void> {
-  const auth = await authenticateRequest(req);
-  if (!auth) return json(res, 401, { error: 'Authentication required' });
-  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
+  const access = await resolvePluginAccess(req);
+  if ('error' in access) return json(res, access.status, { error: access.error });
+  // Only owners/admins publish. A trusted MIB service is pre-authorized (it
+  // has already gated the human on its own surface) and carries the approver.
+  if (!access.isService && !canManageMarketplace(access.role)) {
+    return json(res, 403, { error: 'Owner or admin role required' });
+  }
+
+  // preview -> live ALWAYS records a human approver. User path: the caller.
+  // Service path: the approving user's uuid must come in the body.
+  const body = access.isService ? (await parseJsonBody(req)) : null;
+  const bodyUserId = typeof body?.userId === 'string' ? body.userId : '';
+  const approvedBy = access.isService ? bodyUserId : (access.userId || '');
+  if (!approvedBy) {
+    return json(res, 400, { error: access.isService ? 'userId (approving user uuid) required in body for service requests' : 'Authentication required' });
+  }
 
   try {
     const supabase = createSupabaseAdmin();
@@ -1522,20 +1570,20 @@ async function handlePluginConfirm(req: IncomingMessage, res: ServerResponse, ap
       .maybeSingle();
 
     if (lookupError && !isMissingRelation(lookupError)) throw lookupError;
-    if (!app || app.tenant_id !== auth.tenantId) return json(res, 404, { error: 'Plugin not found' });
+    if (!app || app.tenant_id !== access.tenantId) return json(res, 404, { error: 'Plugin not found' });
     if (app.status === 'live') return json(res, 200, { ok: true, app, alreadyLive: true });
     if (app.status !== 'preview') {
       return json(res, 409, { error: `Only apps in preview can be published (this app is ${app.status})` });
     }
 
-    const updated = await approveGoLive(appFactoryDeps(supabase), appId, { approvedBy: auth.userId });
+    const updated = await approveGoLive(appFactoryDeps(supabase), appId, { approvedBy });
 
     await auditLog({
-      tenantId: auth.tenantId,
-      userId: auth.userId,
+      tenantId: access.tenantId,
+      userId: approvedBy,
       action: 'plugin.published',
       resource: appId,
-      detail: { slug: app.slug, from: 'preview', to: 'live' },
+      detail: { slug: app.slug, from: 'preview', to: 'live', via: access.isService ? 'service' : 'user' },
       ip: getClientIp(req),
     });
 
