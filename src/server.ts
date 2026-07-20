@@ -19,7 +19,7 @@ import {
 import { handleStripeWebhook } from './billing/webhook.js';
 import { provisionLicense } from './billing/license.js';
 import { listTasks } from '../tasks/store.js';
-import { createSupabaseAdmin } from './supabase.js';
+import { createSupabaseAdmin, createSupabaseAuthClient } from './supabase.js';
 import { createTermsModule } from './terms/gate.js';
 import { createEventBus } from 'shre-sdk/events';
 import { createHeartbeatMonitor } from 'shre-sdk/heartbeat';
@@ -642,8 +642,9 @@ async function handleSendOtp(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   try {
-    const supabase = createSupabaseAdmin();
-    const { error } = await supabase.auth.signInWithOtp({
+    // Ephemeral client — see createSupabaseAuthClient: auth flows must never
+    // run on the shared admin singleton.
+    const { error } = await createSupabaseAuthClient().auth.signInWithOtp({
       email: email.trim(),
       options: { shouldCreateUser: false },
     });
@@ -678,8 +679,11 @@ async function handleVerifyOtp(req: IncomingMessage, res: ServerResponse): Promi
   }
 
   try {
-    const supabase = createSupabaseAdmin();
-    const { error } = await supabase.auth.verifyOtp({
+    // Ephemeral client: a successful verifyOtp RETURNS A SESSION, and on the
+    // shared admin singleton that session would RLS-scope every later admin
+    // query. This is the onboarding verify-email step — the possessed client
+    // is exactly why the connect-store step right after it kept failing.
+    const { error } = await createSupabaseAuthClient().auth.verifyOtp({
       email: email.trim(),
       token: String(otp).trim(),
       type: 'email',
@@ -1125,7 +1129,9 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
     if (authError || !authData.user) {
       const msg = authError?.message || 'Failed to create user';
       if (msg.includes('already') || msg.includes('duplicate')) {
-        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        // Ephemeral client: signing in on the shared admin client would store
+        // this user's session on it and RLS-scope every later admin query.
+        const { data: signInData, error: signInError } = await createSupabaseAuthClient().auth.signInWithPassword({
           email: safeEmail,
           password: String(password),
         });
@@ -1168,7 +1174,7 @@ async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<
       return json(res, 400, { error: msg });
     }
 
-    const { data: createdSignInData, error: createdSignInError } = await supabase.auth.signInWithPassword({
+    const { data: createdSignInData, error: createdSignInError } = await createSupabaseAuthClient().auth.signInWithPassword({
       email: safeEmail,
       password: String(password),
     });
@@ -1259,10 +1265,13 @@ async function handleLogin(req: IncomingMessage, res: ServerResponse): Promise<v
   }
 
   try {
-    const supabase = createSupabaseAdmin();
-
-    // Use admin client to verify credentials
-    const { data, error } = await supabase.auth.signInWithPassword({
+    // Verify credentials on an ephemeral client — NEVER on the shared admin
+    // singleton: signInWithPassword stores the session on the client, and the
+    // possessed singleton would then run every "admin" PostgREST query as this
+    // user (RLS-scoped) until the captured session expired. That broke
+    // connector saves platform-wide (RLS 42501) and caused fleet-wide 401s
+    // once the stale session expired.
+    const { data, error } = await createSupabaseAuthClient().auth.signInWithPassword({
       email: safeEmail,
       password: String(password),
     });
@@ -2667,6 +2676,20 @@ function validateConnectorInput(
   return gaps.length ? `Missing required fields: ${gaps.join(', ')}` : null;
 }
 
+/**
+ * Error → user-facing message. Supabase/PostgREST errors are plain objects
+ * (not Error instances) — surface their message instead of masking them with
+ * the generic fallback. The RLS incident behind this hid `42501 new row
+ * violates row-level security policy` as "Failed to save connector".
+ */
+function connectorErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === 'object' && typeof (err as { message?: unknown }).message === 'string') {
+    return (err as { message: string }).message;
+  }
+  return fallback;
+}
+
 async function handleConnectorsList(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const auth = await authenticateRequest(req);
   if (!auth) return json(res, 401, { error: 'Authentication required' });
@@ -2682,7 +2705,7 @@ async function handleConnectorsList(req: IncomingMessage, res: ServerResponse): 
     if (error) throw error;
     json(res, 200, { connectors: data || [] });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to list connectors';
+    const message = connectorErrorMessage(err, 'Failed to list connectors');
     console.error('[connectors.list]', message);
     json(res, 500, { error: message });
   }
@@ -2742,7 +2765,7 @@ async function handleConnectorsCreate(req: IncomingMessage, res: ServerResponse)
 
     json(res, 200, { ok: true, connector: data });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to save connector';
+    const message = connectorErrorMessage(err, 'Failed to save connector');
     console.error('[connectors.create]', message);
     json(res, 500, { error: message });
   }
@@ -2864,7 +2887,7 @@ async function handleConnectorsTest(req: IncomingMessage, res: ServerResponse): 
 
     json(res, 200, found ? { ok: true, result, found } : { ok: true, result });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Connection test failed';
+    const message = connectorErrorMessage(err, 'Connection test failed');
     console.error('[connectors.test]', message);
     json(res, 500, { error: message });
   } finally {
