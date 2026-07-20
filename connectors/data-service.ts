@@ -201,24 +201,11 @@ async function fetchRapidRmsSummary(
     // Inventory — low-stock items (current below reorder point). Section is
     // best-effort: when unreadable, report it UNAVAILABLE rather than
     // claiming "0 low stock" (a lie) or flagging the sales numbers partial.
-    const items: Array<{ name: string; current: number; threshold: number }> = [];
+    let items: Array<{ name: string; current: number; threshold: number }> = [];
     let inventoryAvailable = true;
     try {
       const invRaw = await rapidRms.getInventory(session, {});
-      const rows = toRows(invRaw);
-      for (const r of rows) {
-        if (isInactiveItem(r)) continue;
-        const current = pickNum(r, QTY_FIELDS);
-        const threshold = pickNum(r, REORDER_FIELDS);
-        const name = pickStr(r, NAME_FIELDS);
-        // threshold must be a real configured level (>0) — a 0/unset min
-        // stock level would otherwise never match, but guard explicitly so
-        // catalog entries without replenishment config are never "low".
-        if (current !== null && threshold !== null && threshold > 0 && name && current < threshold) {
-          items.push({ name, current, threshold });
-        }
-      }
-      items.sort((a, b) => a.current - b.current);
+      items = collectInventoryRisks(toRows(invRaw)).map(({ name, current, threshold }) => ({ name, current, threshold }));
     } catch {
       inventoryAvailable = false;
     }
@@ -260,6 +247,189 @@ export async function fetchStoreSummary(
 ): Promise<StoreSummary | null> {
   if (!hasSummaryMapper(record.type)) return null;
   return fetchRapidRmsSummary(record, vaultSecret);
+}
+
+// ── Inventory risks (mcp-aros honesty: aros_get_inventory_risks) ─
+// Derived from the same live-verified item-catalog fields the summary's
+// low-stock section reads (iteM_InStock / iteM_MinStockLevel / description).
+// Signals we can actually stand behind today: `stockout` (nothing on hand)
+// and `low_stock` (below the configured reorder point). Fast-moving / stale
+// classification would need per-item sales velocity, which the RapidRMS API
+// layer does not expose in a verified shape — we do NOT fabricate it.
+
+export interface InventoryRiskItem {
+  name: string;
+  current: number;
+  threshold: number;
+  risk: 'stockout' | 'low_stock';
+}
+
+export interface InventoryRiskReport {
+  risks: InventoryRiskItem[];
+  /** False when the item catalog could not be read — consumers must not
+   * present an empty list as "no risks" in that case. */
+  available: boolean;
+  source: { type: string; name: string };
+  fetchedAt: string;
+}
+
+/** Pure classification over normalized catalog rows (exported for tests). */
+export function collectInventoryRisks(rows: Array<Record<string, unknown>>): InventoryRiskItem[] {
+  const items: InventoryRiskItem[] = [];
+  for (const r of rows) {
+    if (isInactiveItem(r)) continue;
+    const current = pickNum(r, QTY_FIELDS);
+    const threshold = pickNum(r, REORDER_FIELDS);
+    const name = pickStr(r, NAME_FIELDS);
+    // threshold must be a real configured level (>0) — a 0/unset min
+    // stock level would otherwise never match, but guard explicitly so
+    // catalog entries without replenishment config are never "low".
+    if (current !== null && threshold !== null && threshold > 0 && name && current < threshold) {
+      items.push({ name, current, threshold, risk: current <= 0 ? 'stockout' : 'low_stock' });
+    }
+  }
+  items.sort((a, b) => a.current - b.current);
+  return items;
+}
+
+/**
+ * Fetch live inventory risk signals for a connected connector. Returns null
+ * for connector types without a mapper (verifone / azure / aws — callers
+ * report "no data source" per store rather than erroring). Auth/transport
+ * failure throws; an unreadable item catalog yields `available: false`.
+ */
+export async function fetchInventoryRisks(
+  record: ConnectorRecord,
+  vaultSecret: string,
+): Promise<InventoryRiskReport | null> {
+  if (!hasSummaryMapper(record.type)) return null;
+  const refs: string[] = [];
+  try {
+    setTenantSecret(vaultSecret);
+    const emailRef = await storeCredential(`${record.id}:risks-email`, record.secrets.email ?? '', vaultSecret);
+    const passwordRef = await storeCredential(`${record.id}:risks-password`, record.secrets.password ?? '', vaultSecret);
+    refs.push(emailRef, passwordRef);
+    const session = await rapidRms.authenticate(
+      {
+        baseUrl: String(record.config.baseUrl || 'https://rapidrmsapi.azurewebsites.net'),
+        clientId: String(record.config.clientId || ''),
+        sessionTimeout: Number(record.config.sessionTimeout) || 420,
+      },
+      emailRef,
+      passwordRef,
+    );
+    let risks: InventoryRiskItem[] = [];
+    let available = true;
+    try {
+      risks = collectInventoryRisks(toRows(await rapidRms.getInventory(session, {})));
+    } catch {
+      available = false;
+    }
+    return {
+      risks,
+      available,
+      source: { type: record.type, name: record.name },
+      fetchedAt: new Date().toISOString(),
+    };
+  } finally {
+    await Promise.all(refs.map((ref) => deleteCredential(ref).catch(() => {})));
+  }
+}
+
+// ── Exception summary (mcp-aros honesty: aros_get_exception_summary) ─
+// The only exception marker the live RapidRMS invoice payload verifiably
+// carries is isVoid (the same flag the sales summary uses to exclude voided
+// revenue). Refund / no-sale / per-cashier exception attribution is NOT
+// available through the RapidRMS API layer — the summary says so explicitly
+// via supportedTypes/unsupportedTypes instead of inventing zeros.
+
+export const EXCEPTION_SUPPORTED_TYPES = ['void'] as const;
+export const EXCEPTION_UNSUPPORTED_TYPES = ['refund', 'no_sale', 'cashier'] as const;
+
+export interface VoidExceptionBucket { businessDate: string; count: number; amount: number }
+
+export interface ExceptionSummaryReport {
+  totals: { void: { count: number; amount: number } };
+  daily: VoidExceptionBucket[];
+  supportedTypes: string[];
+  unsupportedTypes: string[];
+  /** True when one or more voided rows carried no parsable amount — the
+   * count is still real, the amount is a lower bound. */
+  partial: boolean;
+  source: { type: string; name: string };
+  fetchedAt: string;
+}
+
+/** Pure void-exception aggregation over invoice rows (exported for tests). */
+export function computeVoidExceptions(
+  rows: Array<Record<string, unknown>>,
+  from: string,
+  to: string,
+): { totals: { void: { count: number; amount: number } }; daily: VoidExceptionBucket[]; partial: boolean } {
+  const buckets = new Map<string, { count: number; amount: number }>();
+  let count = 0;
+  let amount = 0;
+  let partial = false;
+  for (const row of rows) {
+    if (!isVoided(row)) continue;
+    const businessDate = normalizeBusinessDate(pickStr(row, SALES_DATE_FIELDS)) || (from === to ? from : null);
+    if (!businessDate || businessDate < from || businessDate > to) continue;
+    const value = pickNum(row, REVENUE_FIELDS);
+    if (value === null) partial = true;
+    const bucket = buckets.get(businessDate) || { count: 0, amount: 0 };
+    bucket.count++;
+    bucket.amount += value ?? 0;
+    buckets.set(businessDate, bucket);
+    count++;
+    amount += value ?? 0;
+  }
+  const daily = [...buckets.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([businessDate, bucket]) => ({ businessDate, count: bucket.count, amount: Math.round(bucket.amount * 100) / 100 }));
+  return { totals: { void: { count, amount: Math.round(amount * 100) / 100 } }, daily, partial };
+}
+
+/**
+ * Fetch a void-exception summary for a bounded date range. Returns null for
+ * connector types without a mapper (caller reports "no data source" for that
+ * store). Auth/transport failure throws.
+ */
+export async function fetchExceptionSummary(
+  record: ConnectorRecord,
+  vaultSecret: string,
+  from: string,
+  to: string,
+): Promise<ExceptionSummaryReport | null> {
+  if (!hasSummaryMapper(record.type)) return null;
+  const refs: string[] = [];
+  try {
+    setTenantSecret(vaultSecret);
+    const emailRef = await storeCredential(`${record.id}:exceptions-email`, record.secrets.email ?? '', vaultSecret);
+    const passwordRef = await storeCredential(`${record.id}:exceptions-password`, record.secrets.password ?? '', vaultSecret);
+    refs.push(emailRef, passwordRef);
+    const session = await rapidRms.authenticate(
+      {
+        baseUrl: String(record.config.baseUrl || 'https://rapidrmsapi.azurewebsites.net'),
+        clientId: String(record.config.clientId || ''),
+        sessionTimeout: Number(record.config.sessionTimeout) || 420,
+      },
+      emailRef,
+      passwordRef,
+    );
+    const rows = await fetchInvoiceRows(session, { FromDate: from, ToDate: to });
+    const { totals, daily, partial } = computeVoidExceptions(rows, from, to);
+    return {
+      totals,
+      daily,
+      supportedTypes: [...EXCEPTION_SUPPORTED_TYPES],
+      unsupportedTypes: [...EXCEPTION_UNSUPPORTED_TYPES],
+      partial,
+      source: { type: record.type, name: record.name },
+      fetchedAt: new Date().toISOString(),
+    };
+  } finally {
+    await Promise.all(refs.map((ref) => deleteCredential(ref).catch(() => {})));
+  }
 }
 
 export type DailyStoreSales = { businessDate: string; revenue: number; transactions: number };
