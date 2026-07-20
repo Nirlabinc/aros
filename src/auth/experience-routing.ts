@@ -106,7 +106,7 @@ export function decideExperienceRoute(
   const appOrigin = origin(config.appOrigin || process.env.AROS_APP_ORIGIN, 'https://app.aros.live');
   const mibOrigin = origin(config.mibOrigin || process.env.AROS_MIB_ORIGIN, 'https://mib.aros.live');
   if (experience === 'mib') {
-    const startPath = config.mibStartPath || process.env.AROS_MIB_OIDC_START_PATH || '/api/auth/aros/start';
+    const startPath = config.mibStartPath || process.env.AROS_MIB_OIDC_START_PATH || '/api/auth/shre/start';
     const url = new URL(startPath, mibOrigin);
     url.searchParams.set('returnTo', path);
     url.searchParams.set('workspaceId', input.workspaceId);
