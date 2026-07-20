@@ -13,12 +13,31 @@ CREATE TABLE IF NOT EXISTS public.canonical_entity (
   display_name text,
   match_keys jsonb NOT NULL DEFAULT '{}'::jsonb,    -- strong keys (upc/sku/gtin, geohash) used to dedup
   status text NOT NULL DEFAULT 'active',            -- active | merged_away
-  merged_into uuid REFERENCES public.canonical_entity(id), -- set when this record was merged into another
+  merged_into uuid REFERENCES public.canonical_entity(id) ON DELETE SET NULL, -- set when this record was merged into another
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_canonical_entity_tenant_type
   ON public.canonical_entity(tenant_id, entity_type, status);
+
+-- ── canonical_strong_key: the ATOMIC dedup backstop ────────────────────────
+-- One row per strong key (upc/gtin/sku, geohash, phone_hash) held by a
+-- canonical. The UNIQUE constraint is what makes dedup concurrency-safe:
+-- two racing ingests of the same UPC cannot both win the insert, so they
+-- cannot create two golden records. Resolution goes THROUGH this table, not
+-- the jsonb match_keys (which is now display/audit only).
+CREATE TABLE IF NOT EXISTS public.canonical_strong_key (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+  entity_type text NOT NULL,
+  key_type text NOT NULL,                          -- upc | gtin | sku | geohash | phone_hash | ...
+  key_value text NOT NULL,
+  canonical_id uuid NOT NULL REFERENCES public.canonical_entity(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, entity_type, key_type, key_value) -- the backstop
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_strong_key_canon
+  ON public.canonical_strong_key(canonical_id);
 
 -- ── entity_alias: (source_system, source_id) -> canonical_id ───────────────
 -- The persistence that guarantees "a resolved duplicate never comes back":
@@ -62,7 +81,9 @@ CREATE TABLE IF NOT EXISTS public.negative_pair (
   id_a uuid NOT NULL REFERENCES public.canonical_entity(id) ON DELETE CASCADE,
   id_b uuid NOT NULL REFERENCES public.canonical_entity(id) ON DELETE CASCADE,
   created_at timestamptz NOT NULL DEFAULT now(),
-  -- order-independent uniqueness via least/greatest
+  -- Order-independent uniqueness ENFORCED: the CHECK forces callers to store
+  -- the pair with id_a < id_b, so (A,B) and (B,A) collapse to one row.
+  CONSTRAINT negative_pair_ordered CHECK (id_a < id_b),
   UNIQUE (tenant_id, entity_type, id_a, id_b)
 );
 
@@ -71,8 +92,8 @@ CREATE TABLE IF NOT EXISTS public.merge_event (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
   entity_type text NOT NULL,
-  winner_id uuid NOT NULL REFERENCES public.canonical_entity(id),  -- surviving canonical
-  loser_id uuid NOT NULL REFERENCES public.canonical_entity(id),   -- merged_away canonical
+  winner_id uuid NOT NULL REFERENCES public.canonical_entity(id) ON DELETE CASCADE,  -- surviving canonical
+  loser_id uuid NOT NULL REFERENCES public.canonical_entity(id) ON DELETE CASCADE,   -- merged_away canonical
   action text NOT NULL,                             -- merge | unmerge
   by_actor text,
   aliases_moved jsonb,                              -- snapshot of aliases repointed, for reversal
