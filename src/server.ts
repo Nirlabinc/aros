@@ -66,7 +66,7 @@ import { handleEdgeProvisioningRequest } from './edge/provisioning-http.js';
 import { EdgeProvisioningService } from './edge/provisioning.js';
 import { SupabaseEdgeProvisioningRepository } from './edge/supabase-provisioning-repository.js';
 import { createOidcRelyingParty } from './auth/oidc-rp.js';
-import { DEFAULT_SHRE_ID_PROJECT_ID, bundleConnectorMode, effectiveAppSkills, resolveBundle } from './auth/role-bundle.js';
+import { DEFAULT_SHRE_ID_PROJECT_ID, bundleConnectorMode, bundleDataScope, effectiveAppSkills, filterStoresForBundle, resolveBundle } from './auth/role-bundle.js';
 import { createMemoryOidcStore, createSupabaseOidcStore } from './auth/oidc-store.js';
 
 const PORT = Number(process.env.PORT || 5457);
@@ -1497,7 +1497,19 @@ async function handleAppLaunchCreate(req: IncomingMessage, res: ServerResponse, 
   if (entitlement?.status !== 'active') return json(res, 403, { error: 'Activate this app before opening it' });
   if (appKey !== 'storepulse') return json(res, 409, { error: 'This app has not completed the workspace SSO contract' });
   const code = randomBytes(32).toString('base64url');
-  const storeIds = Array.isArray(entitlement.service_config?.storeIds) ? entitlement.service_config.storeIds.map(String) : [];
+  const tenantStoreIds = Array.isArray(entitlement.service_config?.storeIds) ? entitlement.service_config.storeIds.map(String) : [];
+  // Role-bundle data_scope: site-scoped bundles get the member's assigned
+  // stores (adoption gate: a tenant with zero assignments anywhere keeps the
+  // legacy all-stores behavior; once any member is assigned, unassigned
+  // site-scoped members get NOTHING — fail closed).
+  let storeIds = tenantStoreIds;
+  if (bundleDataScope(auth.bundle) !== 'all' && tenantStoreIds.length) {
+    const [{ count: tenantAssignmentCount }, { data: memberRows }] = await Promise.all([
+      supabase.from('tenant_member_stores').select('connector_id', { count: 'exact', head: true }).eq('tenant_id', auth.tenantId),
+      supabase.from('tenant_member_stores').select('connector_id').eq('tenant_id', auth.tenantId).eq('user_id', auth.userId),
+    ]);
+    storeIds = filterStoresForBundle(auth.bundle, tenantStoreIds, (memberRows || []).map(r => String(r.connector_id)), (tenantAssignmentCount ?? 0) > 0);
+  }
   appLaunchGrants.set(hashAppLaunchCode(code), { appKey, tenantId: auth.tenantId, userId: auth.userId, role: auth.role, bundle: auth.bundle, storeIds, expiresAt: Date.now() + APP_LAUNCH_TTL_MS });
   for (const [key, grant] of appLaunchGrants) if (grant.expiresAt <= Date.now()) appLaunchGrants.delete(key);
   await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'app.launch_started', resource: `app:${appKey}`, detail: { appKey, storeCount: storeIds.length }, ip: getClientIp(req) });

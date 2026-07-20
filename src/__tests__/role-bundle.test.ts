@@ -135,3 +135,36 @@ describe('effectiveAppSkills (per-bundle grants: override > preset > none)', () 
     expect(effectiveAppSkills('not-a-bundle', APP_SKILLS)).toEqual([]);
   });
 });
+
+describe('data_scope store filtering (site membership + adoption gate)', () => {
+  const STORES = ['c1', 'c2', 'c3'];
+
+  it('scope "all" bundles (owner, bookkeeper) get every tenant store', async () => {
+    const { bundleDataScope, filterStoresForBundle } = await import('../auth/role-bundle');
+    expect(bundleDataScope('owner')).toBe('all');
+    expect(bundleDataScope('bookkeeper')).toBe('all');
+    expect(filterStoresForBundle('owner', STORES, [], true)).toEqual(STORES);
+  });
+
+  it('site-scoped bundles intersect with the member assignment', async () => {
+    const { filterStoresForBundle } = await import('../auth/role-bundle');
+    expect(filterStoresForBundle('store-manager', STORES, ['c2'], true)).toEqual(['c2']);
+    expect(filterStoresForBundle('shift-lead', STORES, ['c1', 'c3'], true)).toEqual(['c1', 'c3']);
+  });
+
+  it('adoption gate: tenant with zero assignments keeps legacy all-stores behavior', async () => {
+    const { filterStoresForBundle } = await import('../auth/role-bundle');
+    expect(filterStoresForBundle('store-manager', STORES, [], false)).toEqual(STORES);
+  });
+
+  it('once adopted, an unassigned site-scoped member sees NOTHING (fail closed)', async () => {
+    const { filterStoresForBundle } = await import('../auth/role-bundle');
+    expect(filterStoresForBundle('store-manager', STORES, [], true)).toEqual([]);
+  });
+
+  it('unknown/absent bundle is site-scoped (most restricted under adoption)', async () => {
+    const { bundleDataScope, filterStoresForBundle } = await import('../auth/role-bundle');
+    expect(bundleDataScope(null)).toBe('assigned_sites');
+    expect(filterStoresForBundle(null, STORES, [], true)).toEqual([]);
+  });
+});
