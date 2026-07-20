@@ -20,6 +20,7 @@ import { handleStripeWebhook } from './billing/webhook.js';
 import { provisionLicense } from './billing/license.js';
 import { listTasks } from '../tasks/store.js';
 import { createSupabaseAdmin, createSupabaseAuthClient } from './supabase.js';
+import { validateAddMemberInput, INVITEE_NOT_REGISTERED } from './workspace-members.js';
 import { createTermsModule } from './terms/gate.js';
 import { createEventBus } from 'shre-sdk/events';
 import { createHeartbeatMonitor } from 'shre-sdk/heartbeat';
@@ -1883,6 +1884,76 @@ async function workspaceMembers(workspaceId: string) {
   }));
 }
 
+/**
+ * Add a registered user to the workspace by email (v1 of invites:
+ * registration-first — no email delivery dependency; the invitee signs up at
+ * app.aros.live themselves, then an owner/admin adds them here). Role is
+ * capped at admin/member; ownership is a deliberate follow-up role change.
+ */
+async function handleWorkspaceMemberAdd(
+  req: IncomingMessage,
+  res: ServerResponse,
+  workspaceId: string,
+  auth: { userId: string; role: string },
+): Promise<void> {
+  const body = await parseJsonBody(req);
+  const input = validateAddMemberInput(body);
+  if ('error' in input) return json(res, 400, { error: input.error });
+
+  const supabase = createSupabaseAdmin();
+
+  // GoTrue's admin API has no email-lookup endpoint in this SDK version —
+  // page through users (newest projects are small; hard cap keeps this
+  // bounded). Case-insensitive match on the normalized address.
+  let invitee: { id: string; email: string } | null = null;
+  for (let page = 1; page <= 25 && !invitee; page += 1) {
+    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 200 });
+    if (error) return json(res, 500, { error: `User lookup failed: ${error.message}` });
+    for (const user of data.users) {
+      if ((user.email || '').toLowerCase() === input.email) { invitee = { id: user.id, email: user.email || input.email }; break; }
+    }
+    if (data.users.length < 200) break;
+  }
+  if (!invitee) return json(res, 404, { error: INVITEE_NOT_REGISTERED });
+
+  const { data: existing } = await supabase
+    .from('tenant_members')
+    .select('id,status')
+    .eq('tenant_id', workspaceId)
+    .eq('user_id', invitee.id)
+    .maybeSingle();
+  if (existing) {
+    return json(res, 409, { error: existing.status === 'active' ? 'That person is already a member of this workspace' : `That person already has a ${existing.status} membership — manage it from the list below` });
+  }
+
+  const now = new Date().toISOString();
+  const { data: member, error: insertError } = await supabase
+    .from('tenant_members')
+    .insert({ tenant_id: workspaceId, user_id: invitee.id, role: input.role, status: 'active', is_default: false, invited_at: now, accepted_at: now, joined_at: now })
+    .select('id,user_id,role,status,joined_at')
+    .single();
+  if (insertError || !member) return json(res, 500, { error: insertError?.message || 'Could not add member' });
+
+  await auditLog({
+    tenantId: workspaceId,
+    userId: auth.userId,
+    action: 'workspace.member_added',
+    resource: `member:${member.id}`,
+    detail: { email: invitee.email, role: input.role },
+    ip: getClientIp(req),
+  });
+  json(res, 201, {
+    id: member.id,
+    principalType: 'user',
+    principalId: member.user_id,
+    status: member.status,
+    membershipRole: member.role,
+    createdAt: member.joined_at,
+    updatedAt: member.joined_at,
+    user: { id: invitee.id, name: invitee.email.split('@')[0], email: invitee.email },
+  });
+}
+
 async function handleWorkspaceMembersCompat(req: IncomingMessage, res: ServerResponse, workspaceId: string, memberId?: string): Promise<void> {
   const auth = await authenticateRequest(req);
   if (!auth) return json(res, 401, { error: 'Authentication required' });
@@ -1890,6 +1961,7 @@ async function handleWorkspaceMembersCompat(req: IncomingMessage, res: ServerRes
   try {
     if (req.method === 'GET' && !memberId) return json(res, 200, await workspaceMembers(workspaceId));
     if (!['owner', 'admin'].includes(auth.role)) return json(res, 403, { error: 'Workspace admin access required' });
+    if (req.method === 'POST' && !memberId) return handleWorkspaceMemberAdd(req, res, workspaceId, auth);
     if (!memberId) return json(res, 400, { error: 'Member id required' });
     const supabase = createSupabaseAdmin();
     const { data: target } = await supabase.from('tenant_members').select('id,user_id,role').eq('tenant_id', workspaceId).eq('id', memberId).single();
@@ -4104,7 +4176,7 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   const workspaceCompatMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)$/);
   if (workspaceCompatMatch && ['GET', 'PATCH'].includes(method)) return handleWorkspaceCompat(req, res, workspaceCompatMatch[1]);
   const workspaceMembersMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/members(?:\/([0-9a-f-]+)(?:\/role)?)?$/);
-  if (workspaceMembersMatch && ['GET', 'PATCH', 'DELETE'].includes(method)) return handleWorkspaceMembersCompat(req, res, workspaceMembersMatch[1], workspaceMembersMatch[2]);
+  if (workspaceMembersMatch && ['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) return handleWorkspaceMembersCompat(req, res, workspaceMembersMatch[1], workspaceMembersMatch[2]);
   const workspaceRolesMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/roles$/);
   if (workspaceRolesMatch && method === 'GET') return handleWorkspaceMembersCompat(req, res, workspaceRolesMatch[1]);
   if (pathname === '/api/apps' && method === 'GET') return handlePlatformApps(req, res);

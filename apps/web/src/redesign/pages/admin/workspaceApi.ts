@@ -26,6 +26,7 @@ export const workspaceApi = {
   update: (auth: WorkspaceAuth, input: Pick<WorkspaceRecord, 'name' | 'timezone' | 'currency'>) => request<WorkspaceRecord>(auth, `/workspaces/${encodeURIComponent(auth.workspaceId)}`, { method: 'PATCH', body: JSON.stringify(input) }),
   members: (auth: WorkspaceAuth) => request<WorkspaceMember[]>(auth, `/workspaces/${encodeURIComponent(auth.workspaceId)}/members`),
   roles: (auth: WorkspaceAuth) => request<WorkspaceMember[]>(auth, `/workspaces/${encodeURIComponent(auth.workspaceId)}/roles`),
+  addMember: (auth: WorkspaceAuth, email: string, role: string) => request<WorkspaceMember>(auth, `/workspaces/${encodeURIComponent(auth.workspaceId)}/members`, { method: 'POST', body: JSON.stringify({ email, role }) }),
   updateRole: (auth: WorkspaceAuth, memberId: string, role: string) => request<{ id: string; membershipRole: string }>(auth, `/workspaces/${encodeURIComponent(auth.workspaceId)}/members/${encodeURIComponent(memberId)}/role`, { method: 'PATCH', body: JSON.stringify({ role }) }),
   removeMember: (auth: WorkspaceAuth, memberId: string) => request<{ id: string }>(auth, `/workspaces/${encodeURIComponent(auth.workspaceId)}/members/${encodeURIComponent(memberId)}`, { method: 'DELETE' }),
 };
