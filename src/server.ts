@@ -79,6 +79,8 @@ import { SupabaseEdgeProvisioningRepository } from './edge/supabase-provisioning
 import { createOidcRelyingParty } from './auth/oidc-rp.js';
 import { DEFAULT_SHRE_ID_PROJECT_ID, bundleConnectorMode, bundleDataScope, effectiveAppSkills, filterStoresForBundle, resolveBundle } from './auth/role-bundle.js';
 import { createMemoryOidcStore, createSupabaseOidcStore } from './auth/oidc-store.js';
+import { resolveLinkedIdentity } from './auth/identity-link.js';
+import { decideExperienceRoute, loadExperiencePolicy } from './auth/experience-routing.js';
 
 const PORT = Number(process.env.PORT || 5457);
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
@@ -161,7 +163,20 @@ const oidcStore = oidcStoreMode === 'supabase' ? createSupabaseOidcStore(createS
 try { await oidcStore.cleanup(Date.now()); } catch (error) { if (process.env.NODE_ENV === 'production') throw new Error(`Durable OIDC store unavailable: ${error instanceof Error ? error.message : String(error)}`); }
 const oidcCleanupTimer = setInterval(() => { void oidcStore.cleanup(Date.now()).catch(error => console.error('[oidc.cleanup]', error instanceof Error ? error.message : error)); }, 300_000);
 oidcCleanupTimer.unref();
-const oidcRp = createOidcRelyingParty({ store: oidcStore, redirectUri: process.env.OIDC_REDIRECT_URI || 'https://app.aros.live/auth/callback', sessionTtlMs: Number(process.env.OIDC_SESSION_TTL_SECONDS || 3600) * 1000, mapWorkspace: async (subject, requestedWorkspace) => { const supabase = createSupabaseAdmin(); let query = supabase.from('tenant_members').select('tenant_id,role,status').eq('user_id', subject).eq('status', 'active'); if (requestedWorkspace) query = query.eq('tenant_id', requestedWorkspace); const { data } = await query.order('is_default', { ascending: false }).limit(1); const membership = data?.[0]; return membership ? { workspaceId: membership.tenant_id, role: membership.role } : null; } });
+const oidcRp = createOidcRelyingParty({
+  store: oidcStore,
+  redirectUri: process.env.OIDC_REDIRECT_URI || 'https://app.aros.live/auth/callback',
+  sessionTtlMs: Number(process.env.OIDC_SESSION_TTL_SECONDS || 3600) * 1000,
+  mapWorkspace: async (subject, requestedWorkspace, claims) => {
+    const supabase = createSupabaseAdmin();
+    const identity = await resolveLinkedIdentity(supabase, 'shre-id', subject, claims as Record<string, unknown>);
+    let query = supabase.from('tenant_members').select('tenant_id,role,status').eq('user_id', identity.userId).eq('status', 'active');
+    if (requestedWorkspace) query = query.eq('tenant_id', requestedWorkspace);
+    const { data } = await query.order('is_default', { ascending: false }).limit(1);
+    const membership = data?.[0];
+    return membership ? { userId: identity.userId, workspaceId: membership.tenant_id, role: membership.role } : null;
+  },
+});
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -1417,7 +1432,16 @@ function getRequestedTenantId(req: IncomingMessage): string | null {
 
 async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | null> {
   const oidcSession = await oidcRp.authenticate(req.headers.cookie);
-  if (oidcSession) { const requestedTenantId = getRequestedTenantId(req); if (requestedTenantId && requestedTenantId !== oidcSession.workspaceId) return null; return { userId: oidcSession.subject, tenantId: oidcSession.workspaceId, role: oidcSession.role, bundle: resolveBundle(oidcSession.claims as Record<string, unknown>, oidcSession.role, SHRE_ID_PROJECT_ID) }; }
+  if (oidcSession) {
+    const requestedTenantId = getRequestedTenantId(req);
+    if (requestedTenantId && requestedTenantId !== oidcSession.workspaceId) return null;
+    return {
+      userId: oidcSession.userId || oidcSession.subject,
+      tenantId: oidcSession.workspaceId,
+      role: oidcSession.role,
+      bundle: resolveBundle(oidcSession.claims as Record<string, unknown>, oidcSession.role, SHRE_ID_PROJECT_ID),
+    };
+  }
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) return null;
 
@@ -3715,10 +3739,80 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     return;
   }
 
-  if (pathname === '/auth/oidc/start' && method === 'GET') { try { const result = await oidcRp.begin({ cookie: req.headers.cookie, returnTo: requestUrl.searchParams.get('returnTo') || undefined, workspaceId: requestUrl.searchParams.get('workspaceId') || undefined }); res.writeHead(302, { Location: result.location, 'Set-Cookie': result.setCookie, 'Cache-Control': 'no-store' }); res.end(); return; } catch { return json(res, 503, { error: 'Identity service unavailable' }); } }
-  if (pathname === '/auth/callback' && method === 'GET') { try { const result = await oidcRp.callback({ code: requestUrl.searchParams.get('code') || undefined, state: requestUrl.searchParams.get('state') || undefined, cookie: req.headers.cookie }); res.writeHead(302, { Location: result.location, 'Set-Cookie': result.setCookie, 'Cache-Control': 'no-store' }); res.end(); return; } catch { return json(res, 401, { error: 'OIDC authorization failed' }); } }
-  if (pathname === '/auth/session' && method === 'GET') { const session = await oidcRp.authenticate(req.headers.cookie); return session ? json(res, 200, { authenticated: true, subject: session.subject, workspaceId: session.workspaceId, role: session.role }) : json(res, 401, { authenticated: false }); }
-  if (pathname === '/auth/logout' && method === 'POST') { const result = await oidcRp.logout(req.headers.cookie); res.writeHead(204, { 'Set-Cookie': result.setCookie, 'Cache-Control': 'no-store' }); res.end(); return; }
+  if (pathname === '/auth/oidc/start' && method === 'GET') {
+    try {
+      const requestedExperience = requestUrl.searchParams.get('experience');
+      const result = await oidcRp.begin({
+        cookie: req.headers.cookie,
+        returnTo: requestUrl.searchParams.get('returnTo') || undefined,
+        workspaceId: requestUrl.searchParams.get('workspaceId') || undefined,
+        experience: requestedExperience === 'aros' || requestedExperience === 'mib' ? requestedExperience : undefined,
+      });
+      res.writeHead(302, { Location: result.location, 'Set-Cookie': result.setCookie, 'Cache-Control': 'no-store' }); res.end(); return;
+    } catch { return json(res, 503, { error: 'Identity service unavailable' }); }
+  }
+  if (pathname === '/auth/callback' && method === 'GET') {
+    try {
+      const result = await oidcRp.callback({ code: requestUrl.searchParams.get('code') || undefined, state: requestUrl.searchParams.get('state') || undefined, cookie: req.headers.cookie });
+      const policy = await loadExperiencePolicy(createSupabaseAdmin(), {
+        userId: result.session.userId || result.session.subject,
+        workspaceId: result.session.workspaceId,
+        role: result.session.role,
+      });
+      const routePolicy = result.requestedExperience ? { ...policy, preferredExperience: result.requestedExperience } : policy;
+      const decision = decideExperienceRoute({
+        userId: result.session.userId || result.session.subject,
+        subject: result.session.subject,
+        email: typeof result.session.claims.email === 'string' ? result.session.claims.email : undefined,
+        workspaceId: result.session.workspaceId,
+        role: result.session.role,
+        returnTo: result.location,
+        sourceIntent: requestUrl.searchParams.get('source') === 'developer-desktop' ? 'developer-desktop' : undefined,
+      }, routePolicy);
+      res.writeHead(302, { Location: decision.targetUrl, 'Set-Cookie': result.setCookie, 'Cache-Control': 'no-store' }); res.end(); return;
+    } catch { return json(res, 401, { error: 'OIDC authorization failed' }); }
+  }
+  if (pathname === '/auth/session' && method === 'GET') {
+    const session = await oidcRp.authenticate(req.headers.cookie);
+    return session ? json(res, 200, { authenticated: true, subject: session.subject, userId: session.userId || session.subject, workspaceId: session.workspaceId, role: session.role }) : json(res, 401, { authenticated: false });
+  }
+  if (pathname === '/auth/route-after-login' && method === 'GET') {
+    const auth = await authenticateRequest(req);
+    if (!auth) return json(res, 401, { error: 'Authentication required' });
+    const source = requestUrl.searchParams.get('source');
+    const policy = await loadExperiencePolicy(createSupabaseAdmin(), { userId: auth.userId, workspaceId: auth.tenantId, role: auth.role });
+    const decision = decideExperienceRoute({
+      userId: auth.userId,
+      workspaceId: auth.tenantId,
+      role: auth.role,
+      returnTo: requestUrl.searchParams.get('returnTo') || undefined,
+      sourceIntent: source === 'developer-desktop' ? 'developer-desktop' : source === 'standard-desktop' ? 'standard-desktop' : source === 'internal-builder' ? 'internal-builder' : source === 'operator' ? 'operator' : undefined,
+    }, policy);
+    return json(res, 200, decision);
+  }
+  if (pathname === '/auth/experience-preference' && method === 'POST') {
+    const auth = await authenticateRequest(req);
+    if (!auth) return json(res, 401, { error: 'Authentication required' });
+    const body = await parseJsonBody(req);
+    const preferred = (body as { preferredExperience?: string }).preferredExperience;
+    if (preferred !== 'aros' && preferred !== 'mib') return json(res, 400, { error: 'preferredExperience must be aros or mib' });
+    const supabase = createSupabaseAdmin();
+    const policy = await loadExperiencePolicy(supabase, { userId: auth.userId, workspaceId: auth.tenantId, role: auth.role });
+    const dryDecision = decideExperienceRoute({ userId: auth.userId, workspaceId: auth.tenantId, role: auth.role }, { ...policy, preferredExperience: preferred });
+    if (dryDecision.experience !== preferred) return json(res, 403, { error: `Workspace is not entitled to ${preferred}` });
+    const { error } = await supabase.from('user_experience_preferences').upsert({
+      user_id: auth.userId,
+      tenant_id: auth.tenantId,
+      preferred_experience: preferred,
+      last_selected_at: new Date().toISOString(),
+    }, { onConflict: 'user_id,tenant_id' });
+    if (error) return json(res, 500, { error: error.message });
+    return json(res, 200, dryDecision);
+  }
+  if (pathname === '/auth/logout' && method === 'POST') {
+    const result = await oidcRp.logout(req.headers.cookie);
+    res.writeHead(204, { 'Set-Cookie': result.setCookie, 'Cache-Control': 'no-store' }); res.end(); return;
+  }
 
   // ── Trace Middleware (SDK detects Express by 3 args: req, res, next) ──
   try { traceMiddleware(req, res, () => {}); } catch { /* non-fatal */ }

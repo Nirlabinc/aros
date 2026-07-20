@@ -24,6 +24,7 @@ import {
 const ChatIcon = () => (<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>);
 const MenuIcon = () => (<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>);
 const PlusIcon = () => (<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>);
+const API_BASE = (window as any).__AROS_API_URL__ || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
 
 const PATH_TO_SECTION: Record<string, Exclude<SectionKey, 'chat'>> = {
   '/stores': 'stores', '/apps': 'apps', '/skills': 'skills', '/agents': 'agents',
@@ -71,7 +72,7 @@ function UserRow({ onClick }: { onClick: () => void }) {
 }
 
 export function AppShell() {
-  const { signOut } = useAuth();
+  const { signOut, session, tenant } = useAuth();
   const b = branding();
   const ident = useIdentity();
   const demo = useDemo();
@@ -134,6 +135,24 @@ export function AppShell() {
     setMenuOpen(false); setProfileOpen(false);
     if (key === 'chat') { navigate('chat'); return; }
     navigate('app', key);
+  };
+  const switchToMib = async () => {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+      if (tenant?.id) headers['x-aros-tenant-id'] = tenant.id;
+      const res = await fetch(`${API_BASE}/auth/experience-preference`, {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+        body: JSON.stringify({ preferredExperience: 'mib' }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.targetUrl) throw new Error(data.error || 'MIB is not available for this workspace.');
+      window.location.assign(data.targetUrl);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'MIB is not available for this workspace.');
+    }
   };
   const title = mode === 'chat' ? 'Concierge' : mode === 'home' ? 'Home' : SECTION_TITLES[section];
   const renderSection = () => {
@@ -264,6 +283,7 @@ export function AppShell() {
             ))}
           </div>
           <div className="rsx2-nav__foot">
+            <button className="rsx2-signout" style={{ width: '100%', marginBottom: 8 }} onClick={() => void switchToMib()}>Open MIB</button>
             <button className="aros-topbar__toggle rsx2-show-sm" onClick={toggleTheme} style={{ width: '100%', marginBottom: 8 }}>{themeLabel} mode</button>
             <button className="rsx2-signout" style={{ width: '100%' }} onClick={() => void signOut()}>Sign out</button>
           </div>
