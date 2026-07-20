@@ -24,6 +24,7 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
   const { session, tenant } = useAuth();
   const [step, setStep] = useState(1);
   const [providerId, setProviderId] = useState<string | null>(null);
+  const [storeName, setStoreName] = useState('');
   const [values, setValues] = useState<Record<string, string>>({});
   const [visibleSecrets, setVisibleSecrets] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
@@ -58,7 +59,7 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
         headers: authHeaders(),
         body: JSON.stringify({
           type: provider.id,
-          name: `${provider.shortName} — ${tenant?.name || 'My Store'}`,
+          name: storeName.trim() || `${provider.shortName} — ${tenant?.name || 'My Store'}`,
           config,
           secrets,
         }),
@@ -142,6 +143,21 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
               <h3 className="rsx-modal__h">Connect {provider.shortName}</h3>
               <p className="rsx-modal__p">{provider.blurb}</p>
               <div className="rsx-form">
+                <label className="rsx-form__field">
+                  <span className="rsx-form__label">Store name (optional)</span>
+                  <input
+                    className="rsx-form__input"
+                    type="text"
+                    autoComplete="off"
+                    placeholder={`${provider.shortName} — ${tenant?.name || 'My Store'}`}
+                    value={storeName}
+                    onChange={e => setStoreName(e.target.value)}
+                    aria-describedby="wiz-store-name-hint"
+                  />
+                  <span id="wiz-store-name-hint" style={{ fontSize: 12, color: 'var(--ink-2, #6b7280)', lineHeight: 1.4 }}>
+                    How this store appears in AROS. Leave blank to use the suggested name.
+                  </span>
+                </label>
                 {provider.fields.map(f => (
                   <label key={f.key} className="rsx-form__field">
                     <span className="rsx-form__label">{f.label}{f.optional ? ' (optional)' : ''}</span>
@@ -183,6 +199,7 @@ export function ConnectWizard({ onClose, onDone }: { onClose: () => void; onDone
               <h3 className="rsx-modal__h">Review &amp; connect</h3>
               <p className="rsx-modal__p">Confirm the details below. Nothing changes in your stores until you approve it.</p>
               <div className="rsx-review">
+                <ReviewRow label="Store name" value={storeName.trim() || `${provider.shortName} — ${tenant?.name || 'My Store'}`} />
                 <ReviewRow label="Provider" value={provider.shortName} />
                 <ReviewRow label="Connection" value={provider.kind === 'tunnel' ? 'Secure tunnel to site controller' : 'HTTPS API'} />
                 <ReviewRow label="Store target" value={provider.id === 'rapidrms-api' ? `Client ID ${values.clientId}` : String(values.commanderIp || '')} />
