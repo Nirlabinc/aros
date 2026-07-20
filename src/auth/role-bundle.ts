@@ -137,6 +137,37 @@ export function bundleAllowedSkills(bundleId: string | null, catalog: Iterable<s
   return allowed;
 }
 
+/** The bundle's data-scope level; unknown/absent bundle ⇒ most restricted. */
+export function bundleDataScope(bundleId: string | null): 'assigned_sites' | 'region' | 'division' | 'all' {
+  const doc = bundleId ? loadPresetBundles().get(bundleId) : undefined;
+  const scope = doc?.data_scope?.scope;
+  return scope === 'all' || scope === 'region' || scope === 'division' ? scope : 'assigned_sites';
+}
+
+/**
+ * Which of the tenant's stores this caller may reach (role-bundle
+ * data_scope × per-member assignment).
+ *
+ * - scope 'all' → every tenant store.
+ * - site-level scopes ('assigned_sites'; 'region'/'division' resolve the same
+ *   until a region model exists) → the member's assigned stores — WITH the
+ *   adoption gate: a tenant with zero assignment rows anywhere has not
+ *   adopted site scoping, so site-scoped bundles see all stores (nothing
+ *   breaks for existing tenants). Once the tenant assigns ANY member,
+ *   enforcement is strict: unassigned site-scoped members see NOTHING.
+ */
+export function filterStoresForBundle(
+  bundleId: string | null,
+  tenantStoreIds: readonly string[],
+  memberAssignedIds: readonly string[],
+  tenantHasAssignments: boolean,
+): string[] {
+  if (bundleDataScope(bundleId) === 'all') return [...tenantStoreIds];
+  if (!tenantHasAssignments) return [...tenantStoreIds]; // adoption gate
+  const assigned = new Set(memberAssignedIds);
+  return tenantStoreIds.filter(id => assigned.has(id));
+}
+
 /**
  * Per-bundle effective skills for one app (task: per-bundle grants).
  *
