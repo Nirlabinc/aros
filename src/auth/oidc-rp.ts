@@ -9,9 +9,9 @@ export const AROS_APPLICATION: ApplicationIdentity = parseApplicationIdentity({
   requiredScopes: ['openid'], tokenAuthMethod: 'none', version: 1,
 });
 
-export type WorkspaceAccess = { workspaceId: string; role: string };
-export type OidcSession = { id: string; subject: string; workspaceId: string; role: string; claims: JWTPayload; refreshToken?: string; expiresAt: number };
-type Transaction = { verifier: string; nonce: string; browser: string; returnTo: string; expiresAt: number };
+export type WorkspaceAccess = { userId?: string; workspaceId: string; role: string };
+export type OidcSession = { id: string; subject: string; userId?: string; workspaceId: string; role: string; claims: JWTPayload; refreshToken?: string; expiresAt: number };
+type Transaction = { verifier: string; nonce: string; browser: string; returnTo: string; requestedExperience?: 'aros' | 'mib'; expiresAt: number };
 type Discovery = { issuer: string; authorization_endpoint: string; token_endpoint: string; jwks_uri: string; revocation_endpoint?: string; end_session_endpoint?: string };
 
 export interface OidcRpOptions {
@@ -39,9 +39,9 @@ export function createOidcRelyingParty(options: OidcRpOptions) {
   function browserCookie(raw = '') { return /(?:^|;\s*)aros_oidc_browser=([^;]+)/.exec(raw)?.[1]; }
   function sessionCookie(raw = '') { return /(?:^|;\s*)aros_session=([^;]+)/.exec(raw)?.[1]; }
 
-  async function begin(input: { cookie?: string; returnTo?: string; workspaceId?: string }) {
+  async function begin(input: { cookie?: string; returnTo?: string; workspaceId?: string; experience?: 'aros' | 'mib' }) {
     const metadata = await discovery(); const state = b64(); const verifier = b64(48); const nonce = b64(); const browser = browserCookie(input.cookie) || b64();
-    await store.putTransaction(sha(state), sha(browser), { verifier, nonce, returnTo: safeReturn(input.returnTo), expiresAt: now() + 600_000 });
+    await store.putTransaction(sha(state), sha(browser), { verifier, nonce, returnTo: safeReturn(input.returnTo), requestedExperience: input.experience, expiresAt: now() + 600_000 });
     const url = new URL(metadata.authorization_endpoint); url.search = new URLSearchParams({ response_type: 'code', client_id: application.id, redirect_uri: redirectUri, scope: 'openid profile email', state, nonce, code_challenge: sha(verifier), code_challenge_method: 'S256', ...(input.workspaceId ? { workspace_id: input.workspaceId } : {}) }).toString();
     return { location: url.toString(), setCookie: cookie('aros_oidc_browser', browser, 600) };
   }
@@ -63,8 +63,8 @@ export function createOidcRelyingParty(options: OidcRpOptions) {
     const subject = verified.payload.sub; if (!subject) throw new Error('OIDC subject missing');
     const requestedWorkspace = typeof verified.payload.workspace_id === 'string' ? verified.payload.workspace_id : typeof verified.payload.tenant_id === 'string' ? verified.payload.tenant_id : undefined;
     const access = await options.mapWorkspace(subject, requestedWorkspace, verified.payload); if (!access) throw new Error('Workspace access denied');
-    const opaque = b64(48); const id = sha(opaque); const stored: StoredSession = { subject, workspaceId: access.workspaceId, role: access.role, claims: verified.payload, refreshToken: tokens.refresh_token, expiresAt: now() + Math.min((tokens.expires_in || 3600) * 1000, options.sessionTtlMs || 3_600_000) }; await store.putSession(id, stored);
-    return { session: { id, ...stored } as OidcSession, location: transaction.returnTo, setCookie: cookie('aros_session', opaque, Math.floor((options.sessionTtlMs || 3_600_000) / 1000)) };
+    const opaque = b64(48); const id = sha(opaque); const stored: StoredSession = { subject, userId: access.userId, workspaceId: access.workspaceId, role: access.role, claims: verified.payload, refreshToken: tokens.refresh_token, expiresAt: now() + Math.min((tokens.expires_in || 3600) * 1000, options.sessionTtlMs || 3_600_000) }; await store.putSession(id, stored);
+    return { session: { id, ...stored } as OidcSession, location: transaction.returnTo, requestedExperience: transaction.requestedExperience, setCookie: cookie('aros_session', opaque, Math.floor((options.sessionTtlMs || 3_600_000) / 1000)) };
   }
 
   async function authenticate(rawCookie?: string) { const opaque = sessionCookie(rawCookie); if (!opaque) return null; const id = sha(opaque); const value = await store.getSession(id, now()); return value ? { id, ...value } as OidcSession : null; }

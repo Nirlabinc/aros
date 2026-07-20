@@ -1,0 +1,96 @@
+repo:
+  repo_id: "repo.aros-platform.v1"
+  name: "aros-platform"
+  owning_company_id: "company.aros"
+  source_system: "aros"
+  maintainers:
+    - "platform"
+
+apps:
+  - app_id: "app.aros.v1"
+    name: "AROS"
+    default_experience: "aros"
+  - app_id: "app.aros.marketplace.v1"
+    name: "AROS Marketplace"
+    default_experience: "aros"
+
+shared_dependencies:
+  auth:
+    issuer: "https://id.shre.ai"
+    identity_link_provider: "shre-id"
+    relying_party_domains:
+      - "app.aros.live"
+      - "aros.live"
+  workspace:
+    required: true
+    membership_required: true
+  marketplace:
+    installs_required: true
+
+owned_data:
+  postgres:
+    schemas:
+      - "public"
+    tables:
+      - name: "identity_links"
+        portable: true
+      - name: "tenant_members"
+        portable: true
+      - name: "workspace_experience_settings"
+        portable: true
+      - name: "user_experience_preferences"
+        portable: true
+  object_storage:
+    buckets: []
+  queues:
+    names: []
+    drain_before_export: true
+
+export:
+  filters:
+    workspace_id: "required"
+    app_id: "optional"
+  include:
+    - "users"
+    - "identity_links"
+    - "workspaces"
+    - "memberships"
+    - "app_entitlements"
+    - "marketplace_installs"
+    - "agents"
+    - "skills"
+    - "plugins"
+    - "app_data"
+    - "audit_events"
+    - "vault_references"
+  exclude_raw_secrets: true
+
+import:
+  idempotency_keys:
+    - "source_system"
+    - "external_id"
+  reject_if_missing:
+    - "workspace_id"
+    - "owning_company_id"
+
+secrets:
+  vault_references:
+    - path: "secret/aros/prod"
+      purpose: "runtime"
+      export_mode: "reference-only"
+      destination_action: "mint-or-rewrap"
+
+audit:
+  event_types:
+    - "repo.export.started"
+    - "repo.export.completed"
+    - "repo.import.started"
+    - "repo.import.completed"
+    - "identity.link.backfilled"
+  retain_receipts: true
+
+approval_gates:
+  live_export: "operator"
+  live_import: "operator"
+  secret_rewrap: "security-owner"
+  destructive_cleanup: "founder"
