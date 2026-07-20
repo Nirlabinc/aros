@@ -57,7 +57,18 @@ import {
   getEdiItems,
   revertEdi,
 } from '../connectors/rapidrms-edi.js';
-import { fetchStoreSalesRange, fetchStoreSummary, hasSummaryMapper, type StoreSummary } from '../connectors/data-service.js';
+import {
+  EXCEPTION_SUPPORTED_TYPES,
+  EXCEPTION_UNSUPPORTED_TYPES,
+  fetchExceptionSummary,
+  fetchInventoryRisks,
+  fetchStoreSalesRange,
+  fetchStoreSummary,
+  hasSummaryMapper,
+  type InventoryRiskItem,
+  type StoreSummary,
+  type VoidExceptionBucket,
+} from '../connectors/data-service.js';
 import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
 import { proxyToMib } from '../connectors/mib-documents.js';
 import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
@@ -2526,6 +2537,179 @@ async function handleStoreSales(req: IncomingMessage, res: ServerResponse): Prom
   }
 }
 
+// ── Store risk / exception reads (backing the mcp-aros operator tools) ──
+// Read-only, tenant-scoped like /api/store/summary. Both iterate EVERY
+// connected connector and degrade per store: connector types without a data
+// mapper (verifone / azure / aws today) are reported in `sources` as
+// unsupported instead of erroring or yielding fabricated zeros.
+
+type ConnectorSourceStatus = {
+  connectorId: string;
+  name: string;
+  type: string;
+  /** False = this connector type has no risk/exception mapper yet. */
+  supported: boolean;
+  /** Only meaningful when supported: did the live read succeed? */
+  available?: boolean;
+  error?: string;
+};
+
+type ConnectorRowWithSecrets = {
+  id: string; type: string; name: string;
+  config: Record<string, unknown> | null;
+  credentials_encrypted: string;
+};
+
+async function connectedConnectorRows(tenantId: string): Promise<ConnectorRowWithSecrets[]> {
+  const supabase = createSupabaseAdmin();
+  const { data: rows, error } = await supabase
+    .from('tenant_connectors')
+    .select(`${CONNECTOR_COLUMNS}, credentials_encrypted`)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'connected')
+    .limit(10);
+  if (error) throw new Error(error.message);
+  return (rows ?? []) as ConnectorRowWithSecrets[];
+}
+
+function decryptedConnectorRecord(row: ConnectorRowWithSecrets) {
+  ensureConnectorCrypto();
+  const secrets = JSON.parse(decryptValue(row.credentials_encrypted)) as Record<string, string>;
+  return { id: row.id, type: row.type, name: row.name, config: (row.config ?? {}) as Record<string, unknown>, secrets };
+}
+
+async function handleStoreInventoryRisks(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const request = getRequestUrl(req);
+  const limitRaw = Number(request.searchParams.get('limit'));
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 100) : 25;
+  try {
+    const rows = await connectedConnectorRows(auth.tenantId);
+    if (rows.length === 0) {
+      return json(res, 200, {
+        connected: false,
+        risks: [],
+        sources: [],
+        message: 'No store data source is connected to this workspace.',
+        fetchedAt: new Date().toISOString(),
+      });
+    }
+    const sources: ConnectorSourceStatus[] = [];
+    const risks: Array<InventoryRiskItem & { store: string }> = [];
+    let anyLive = false;
+    for (const row of rows) {
+      if (!hasSummaryMapper(row.type)) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false });
+        continue;
+      }
+      try {
+        const report = await fetchInventoryRisks(decryptedConnectorRecord(row), vaultSecretFor(auth.tenantId));
+        if (!report) { sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false }); continue; }
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: report.available });
+        if (report.available) anyLive = true;
+        risks.push(...report.risks.map((risk) => ({ ...risk, store: row.name })));
+      } catch (err) {
+        sources.push({
+          connectorId: row.id, name: row.name, type: row.type, supported: true, available: false,
+          error: err instanceof Error ? err.message : 'unreachable',
+        });
+      }
+    }
+    risks.sort((a, b) => a.current - b.current);
+    await auditLog({
+      tenantId: auth.tenantId, userId: auth.userId, action: 'store.inventory_risks.read',
+      resource: `tenant:${auth.tenantId}`, detail: { sources: sources.length, risks: risks.length }, ip: getClientIp(req),
+    });
+    json(res, 200, { connected: anyLive, risks: risks.slice(0, limit), sources, fetchedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error('[inventory-risks]', err instanceof Error ? err.message : err);
+    json(res, 502, { error: 'Inventory risk data could not be retrieved' });
+  }
+}
+
+async function handleStoreExceptions(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const request = getRequestUrl(req);
+  const to = request.searchParams.get('to') || request.searchParams.get('endDate') || businessDate();
+  const from = request.searchParams.get('from') || request.searchParams.get('startDate') || to;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) {
+    return json(res, 400, { error: 'from and to must be a valid date range' });
+  }
+  const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000) + 1;
+  if (days > 31) return json(res, 413, { error: 'Exception queries are limited to 31 days.' });
+  try {
+    const rows = await connectedConnectorRows(auth.tenantId);
+    if (rows.length === 0) {
+      return json(res, 200, {
+        connected: false,
+        totals: null,
+        daily: [],
+        supportedTypes: [...EXCEPTION_SUPPORTED_TYPES],
+        unsupportedTypes: [...EXCEPTION_UNSUPPORTED_TYPES],
+        sources: [],
+        message: 'No store data source is connected to this workspace.',
+        from, to,
+        fetchedAt: new Date().toISOString(),
+      });
+    }
+    const sources: ConnectorSourceStatus[] = [];
+    const dailyBuckets = new Map<string, { count: number; amount: number }>();
+    let count = 0;
+    let amount = 0;
+    let partial = false;
+    let anyLive = false;
+    for (const row of rows) {
+      if (!hasSummaryMapper(row.type)) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false });
+        continue;
+      }
+      try {
+        const report = await fetchExceptionSummary(decryptedConnectorRecord(row), vaultSecretFor(auth.tenantId), from, to);
+        if (!report) { sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false }); continue; }
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: true });
+        anyLive = true;
+        count += report.totals.void.count;
+        amount += report.totals.void.amount;
+        partial = partial || report.partial;
+        for (const day of report.daily) {
+          const bucket = dailyBuckets.get(day.businessDate) || { count: 0, amount: 0 };
+          bucket.count += day.count;
+          bucket.amount += day.amount;
+          dailyBuckets.set(day.businessDate, bucket);
+        }
+      } catch (err) {
+        sources.push({
+          connectorId: row.id, name: row.name, type: row.type, supported: true, available: false,
+          error: err instanceof Error ? err.message : 'unreachable',
+        });
+      }
+    }
+    const daily: VoidExceptionBucket[] = [...dailyBuckets.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([businessDate, bucket]) => ({ businessDate, count: bucket.count, amount: Math.round(bucket.amount * 100) / 100 }));
+    await auditLog({
+      tenantId: auth.tenantId, userId: auth.userId, action: 'store.exceptions.read',
+      resource: `tenant:${auth.tenantId}`, detail: { from, to, sources: sources.length, voids: count }, ip: getClientIp(req),
+    });
+    json(res, 200, {
+      connected: anyLive,
+      totals: anyLive ? { void: { count, amount: Math.round(amount * 100) / 100 } } : null,
+      daily,
+      supportedTypes: [...EXCEPTION_SUPPORTED_TYPES],
+      unsupportedTypes: [...EXCEPTION_UNSUPPORTED_TYPES],
+      partial,
+      sources,
+      from, to,
+      fetchedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[store-exceptions]', err instanceof Error ? err.message : err);
+    json(res, 502, { error: 'Exception data could not be retrieved' });
+  }
+}
+
 const APP_CAPABILITY_BUNDLES: Record<string, { tools: string[]; skills: Array<{ name: string; capabilities: string[] }>; agents: Array<{ name: string; capabilities: string[] }> }> = {
   storepulse: {
     tools: ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_item_search', 'mib_low_inventory'],
@@ -3873,6 +4057,14 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (pathname === '/api/store/sales' && method === 'GET') {
     return handleStoreSales(req, res);
+  }
+
+  if (pathname === '/api/store/inventory-risks' && method === 'GET') {
+    return handleStoreInventoryRisks(req, res);
+  }
+
+  if (pathname === '/api/store/exceptions' && method === 'GET') {
+    return handleStoreExceptions(req, res);
   }
   if (pathname === '/api/workspace/capabilities' && method === 'GET') {
     return handleWorkspaceCapabilities(req, res);
