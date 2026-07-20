@@ -66,6 +66,7 @@ import { handleEdgeProvisioningRequest } from './edge/provisioning-http.js';
 import { EdgeProvisioningService } from './edge/provisioning.js';
 import { SupabaseEdgeProvisioningRepository } from './edge/supabase-provisioning-repository.js';
 import { createOidcRelyingParty } from './auth/oidc-rp.js';
+import { DEFAULT_SHRE_ID_PROJECT_ID, resolveBundle } from './auth/role-bundle.js';
 import { createMemoryOidcStore, createSupabaseOidcStore } from './auth/oidc-store.js';
 
 const PORT = Number(process.env.PORT || 5457);
@@ -1375,7 +1376,13 @@ type AuthContext = {
   userId: string;
   tenantId: string;
   role: string;
+  // Platform role bundle (contracts/platform/role-bundle.v1): derived from
+  // Zitadel bundle:* roles, or the owner-fallback for legacy memberships;
+  // null = most-restricted once enforcement consumes it (carried today).
+  bundle: string | null;
 };
+
+const SHRE_ID_PROJECT_ID = process.env.SHRE_ID_PROJECT_ID || DEFAULT_SHRE_ID_PROJECT_ID;
 
 function getRequestUrl(req: IncomingMessage): URL {
   return new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -1390,7 +1397,7 @@ function getRequestedTenantId(req: IncomingMessage): string | null {
 
 async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | null> {
   const oidcSession = await oidcRp.authenticate(req.headers.cookie);
-  if (oidcSession) { const requestedTenantId = getRequestedTenantId(req); if (requestedTenantId && requestedTenantId !== oidcSession.workspaceId) return null; return { userId: oidcSession.subject, tenantId: oidcSession.workspaceId, role: oidcSession.role }; }
+  if (oidcSession) { const requestedTenantId = getRequestedTenantId(req); if (requestedTenantId && requestedTenantId !== oidcSession.workspaceId) return null; return { userId: oidcSession.subject, tenantId: oidcSession.workspaceId, role: oidcSession.role, bundle: resolveBundle(oidcSession.claims as Record<string, unknown>, oidcSession.role, SHRE_ID_PROJECT_ID) }; }
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) return null;
 
@@ -1422,6 +1429,7 @@ async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | 
       userId: user.id,
       tenantId: membership.tenant_id,
       role: membership.role || 'member',
+      bundle: resolveBundle(null, membership.role, SHRE_ID_PROJECT_ID),
     };
   } catch {
     return null;
@@ -1455,6 +1463,7 @@ type AppLaunchGrant = {
   tenantId: string;
   userId: string;
   role: string;
+  bundle: string | null;
   storeIds: string[];
   expiresAt: number;
 };
@@ -1480,7 +1489,7 @@ async function handleAppLaunchCreate(req: IncomingMessage, res: ServerResponse, 
   if (appKey !== 'storepulse') return json(res, 409, { error: 'This app has not completed the workspace SSO contract' });
   const code = randomBytes(32).toString('base64url');
   const storeIds = Array.isArray(entitlement.service_config?.storeIds) ? entitlement.service_config.storeIds.map(String) : [];
-  appLaunchGrants.set(hashAppLaunchCode(code), { appKey, tenantId: auth.tenantId, userId: auth.userId, role: auth.role, storeIds, expiresAt: Date.now() + APP_LAUNCH_TTL_MS });
+  appLaunchGrants.set(hashAppLaunchCode(code), { appKey, tenantId: auth.tenantId, userId: auth.userId, role: auth.role, bundle: auth.bundle, storeIds, expiresAt: Date.now() + APP_LAUNCH_TTL_MS });
   for (const [key, grant] of appLaunchGrants) if (grant.expiresAt <= Date.now()) appLaunchGrants.delete(key);
   await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'app.launch_started', resource: `app:${appKey}`, detail: { appKey, storeCount: storeIds.length }, ip: getClientIp(req) });
   const launchUrl = new URL('/api/auth/aros-launch', app.launch_url);
@@ -1507,7 +1516,7 @@ async function handleAppLaunchConsume(req: IncomingMessage, res: ServerResponse)
   const user = userResult?.user;
   if (!user) return json(res, 401, { error: 'Workspace user is no longer available' });
   await auditLog({ tenantId: grant.tenantId, userId: grant.userId, action: 'app.launch_consumed', resource: `app:${appKey}`, detail: { appKey }, ip: getClientIp(req) });
-  json(res, 200, { appKey, tenantId: grant.tenantId, userId: grant.userId, email: user.email || '', name: user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'User', role: grant.role, stores: connectors || [] });
+  json(res, 200, { appKey, tenantId: grant.tenantId, userId: grant.userId, email: user.email || '', name: user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'User', role: grant.role, bundle: grant.bundle, stores: connectors || [] });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
