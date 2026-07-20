@@ -29,6 +29,7 @@ import { ConnectionHealth } from '../pages/settings/ConnectionHealth';
 import { DevicesPage } from '../redesign/pages/admin';
 import { centralIdentityOnly } from '../lib/supabase';
 import { AppShell } from '../redesign/AppShell';
+import { LegalPage } from '../pages/legal/LegalPage';
 import { resolveAuthenticatedLanding } from '../onboarding/journey';
 
 const MARKETPLACE_ADMIN_URL = (window as any).__MARKETPLACE_URL__
@@ -108,6 +109,15 @@ function AppContent() {
 
   if (path === '/verify-email') {
     return <VerifyEmail />;
+  }
+
+  // Legal pages — public, no auth required. Placeholder outlines pending
+  // attorney review (see pages/legal/LegalPage.tsx).
+  if (path === '/legal/terms') {
+    return <LegalPage kind="terms" />;
+  }
+  if (path === '/legal/privacy') {
+    return <LegalPage kind="privacy" />;
   }
 
   // Social media templates — public design tool

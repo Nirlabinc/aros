@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { branding } from './branding';
 import { ChatMessageRenderer, type ChatPalette } from '../aros-ai/ChatMessageRenderer';
 import { itemsFromMessages, type CanvasWidgetItem } from '../aros-ai/canvas';
+import { AiDisclosureModal, AiDisclosureNotice, useAiDisclosure } from '../components/AiDisclosure';
 
 /** Warm ChatPalette pulled from the live design tokens so the shared mib-widget
  *  renderer matches the current (light/dark) theme. */
@@ -46,6 +47,7 @@ function customerFacingReply(reply: string): string {
 export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, initial, onCanvasItems }: { onConnect?: () => void; onConnectApps?: () => void; seed?: string; focusOnMount?: boolean; initial?: ChatMsg[]; onCanvasItems?: (items: CanvasWidgetItem[]) => void }) {
   const demo = useDemo();
   const { session, tenant } = useAuth();
+  const aiDisclosure = useAiDisclosure();
   const mark = branding().concierge.charAt(0).toUpperCase();
   const palette = warmPalette();
   const [messages, setMessages] = useState<ChatMsg[]>(initial && initial.length ? initial : demo ? CONCIERGE_SEED : []);
@@ -138,6 +140,8 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
 
   return (
     <div className="aros-chat">
+      {/* First-chat AI disclosure — renders nothing unless TERMS_GATE_ENABLED */}
+      <AiDisclosureModal show={aiDisclosure.showModal} onAcknowledge={() => void aiDisclosure.acknowledge()} />
       <div className="aros-thread">
         {messages.length === 0 && !sending && <div className="rsx2-empty rsx2-empty--tall"><div className="rsx2-empty__title">Start a conversation</div><div className="rsx2-empty__text">Ask about your connected store data, or connect a store first.</div></div>}
         {messages.map((m, i) => (
@@ -181,6 +185,7 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
           />
           <button className="aros-send" type="submit" aria-label="Send" disabled={sending || !draft.trim()}>↑</button>
         </form>
+        <AiDisclosureNotice />
         {!messages.some(m => m.from === 'me') && (
           <div className="aros-suggest">
             {SUGGESTIONS.map(sg => (

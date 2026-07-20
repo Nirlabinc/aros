@@ -21,6 +21,7 @@ import { provisionLicense } from './billing/license.js';
 import { listTasks } from '../tasks/store.js';
 import { createSupabaseAdmin } from './supabase.js';
 import { handlePublicBusinessApi } from './public/customer-api.js';
+import { createTermsModule } from './terms/gate.js';
 import { createEventBus } from 'shre-sdk/events';
 import { createHeartbeatMonitor } from 'shre-sdk/heartbeat';
 import {
@@ -66,6 +67,7 @@ import { handleEdgeProvisioningRequest } from './edge/provisioning-http.js';
 import { EdgeProvisioningService } from './edge/provisioning.js';
 import { SupabaseEdgeProvisioningRepository } from './edge/supabase-provisioning-repository.js';
 import { createOidcRelyingParty } from './auth/oidc-rp.js';
+import { DEFAULT_SHRE_ID_PROJECT_ID, bundleConnectorMode, effectiveAppSkills, resolveBundle } from './auth/role-bundle.js';
 import { createMemoryOidcStore, createSupabaseOidcStore } from './auth/oidc-store.js';
 
 const PORT = Number(process.env.PORT || 5457);
@@ -1375,7 +1377,13 @@ type AuthContext = {
   userId: string;
   tenantId: string;
   role: string;
+  // Platform role bundle (contracts/platform/role-bundle.v1): derived from
+  // Zitadel bundle:* roles, or the owner-fallback for legacy memberships;
+  // null = most-restricted once enforcement consumes it (carried today).
+  bundle: string | null;
 };
+
+const SHRE_ID_PROJECT_ID = process.env.SHRE_ID_PROJECT_ID || DEFAULT_SHRE_ID_PROJECT_ID;
 
 function getRequestUrl(req: IncomingMessage): URL {
   return new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -1390,7 +1398,7 @@ function getRequestedTenantId(req: IncomingMessage): string | null {
 
 async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | null> {
   const oidcSession = await oidcRp.authenticate(req.headers.cookie);
-  if (oidcSession) { const requestedTenantId = getRequestedTenantId(req); if (requestedTenantId && requestedTenantId !== oidcSession.workspaceId) return null; return { userId: oidcSession.subject, tenantId: oidcSession.workspaceId, role: oidcSession.role }; }
+  if (oidcSession) { const requestedTenantId = getRequestedTenantId(req); if (requestedTenantId && requestedTenantId !== oidcSession.workspaceId) return null; return { userId: oidcSession.subject, tenantId: oidcSession.workspaceId, role: oidcSession.role, bundle: resolveBundle(oidcSession.claims as Record<string, unknown>, oidcSession.role, SHRE_ID_PROJECT_ID) }; }
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) return null;
 
@@ -1422,6 +1430,7 @@ async function authenticateRequest(req: IncomingMessage): Promise<AuthContext | 
       userId: user.id,
       tenantId: membership.tenant_id,
       role: membership.role || 'member',
+      bundle: resolveBundle(null, membership.role, SHRE_ID_PROJECT_ID),
     };
   } catch {
     return null;
@@ -1455,6 +1464,7 @@ type AppLaunchGrant = {
   tenantId: string;
   userId: string;
   role: string;
+  bundle: string | null;
   storeIds: string[];
   expiresAt: number;
 };
@@ -1480,7 +1490,7 @@ async function handleAppLaunchCreate(req: IncomingMessage, res: ServerResponse, 
   if (appKey !== 'storepulse') return json(res, 409, { error: 'This app has not completed the workspace SSO contract' });
   const code = randomBytes(32).toString('base64url');
   const storeIds = Array.isArray(entitlement.service_config?.storeIds) ? entitlement.service_config.storeIds.map(String) : [];
-  appLaunchGrants.set(hashAppLaunchCode(code), { appKey, tenantId: auth.tenantId, userId: auth.userId, role: auth.role, storeIds, expiresAt: Date.now() + APP_LAUNCH_TTL_MS });
+  appLaunchGrants.set(hashAppLaunchCode(code), { appKey, tenantId: auth.tenantId, userId: auth.userId, role: auth.role, bundle: auth.bundle, storeIds, expiresAt: Date.now() + APP_LAUNCH_TTL_MS });
   for (const [key, grant] of appLaunchGrants) if (grant.expiresAt <= Date.now()) appLaunchGrants.delete(key);
   await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'app.launch_started', resource: `app:${appKey}`, detail: { appKey, storeCount: storeIds.length }, ip: getClientIp(req) });
   const launchUrl = new URL('/api/auth/aros-launch', app.launch_url);
@@ -1507,7 +1517,12 @@ async function handleAppLaunchConsume(req: IncomingMessage, res: ServerResponse)
   const user = userResult?.user;
   if (!user) return json(res, 401, { error: 'Workspace user is no longer available' });
   await auditLog({ tenantId: grant.tenantId, userId: grant.userId, action: 'app.launch_consumed', resource: `app:${appKey}`, detail: { appKey }, ip: getClientIp(req) });
-  json(res, 200, { appKey, tenantId: grant.tenantId, userId: grant.userId, email: user.email || '', name: user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'User', role: grant.role, stores: connectors || [] });
+  // Per-bundle connector mode (contract §connectors): enabled-but-unmapped
+  // defaults read_only; a connector outside the bundle's enabled set — or an
+  // unknown/absent bundle — annotates null, and the consuming app treats
+  // null as its most-restricted surface (fail closed). Additive field.
+  const stores = (connectors || []).map(row => ({ ...row, bundle_mode: bundleConnectorMode(grant.bundle, String(row.type || '')) }));
+  json(res, 200, { appKey, tenantId: grant.tenantId, userId: grant.userId, email: user.email || '', name: user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'User', role: grant.role, bundle: grant.bundle, stores });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1700,10 +1715,13 @@ async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, app
   if (!auth) return json(res, 401, { error: 'Authentication required' });
   const supabase = createSupabaseAdmin();
   if (req.method === 'GET') {
-    const [{ data: apps, error }, { data: grants }] = await Promise.all([supabase.from('platform_apps').select('*').order('name'), supabase.from('marketplace_app_entitlements').select('app_key,status,service_config').eq('tenant_id', auth.tenantId)]);
+    const [{ data: apps, error }, { data: grants }] = await Promise.all([supabase.from('platform_apps').select('*').order('name'), supabase.from('marketplace_app_entitlements').select('app_key,status,service_config,role_mapping').eq('tenant_id', auth.tenantId)]);
     // Publish each app's capability bundle so the marketplace can show what
-    // activation unlocks (skills/agents/tools) before the user commits.
-    return error ? json(res, 500, { error: error.message }) : json(res, 200, { apps: (apps || []).map(app => ({ ...app, bundle: APP_CAPABILITY_BUNDLES[app.id] || null })), grants: grants || [] });
+    // activation unlocks (skills/agents/tools) before the user commits —
+    // plus effective_skills: what THIS caller's role bundle actually gets
+    // (tenant role_mapping override > preset rule > no bundle = none).
+    const roleMappingByApp = new Map((grants || []).map(g => [g.app_key, (g as { role_mapping?: Record<string, { skills?: string[] }> | null }).role_mapping ?? null]));
+    return error ? json(res, 500, { error: error.message }) : json(res, 200, { apps: (apps || []).map(app => { const capability = APP_CAPABILITY_BUNDLES[app.id] || null; return { ...app, bundle: capability, effective_skills: capability ? effectiveAppSkills(auth.bundle, capability.skills.map(s => s.name), roleMappingByApp.get(app.id)) : [] }; }), grants: (grants || []).map(({ role_mapping: _rm, ...rest }) => rest) });
   }
   if (!appId) return json(res, 400, { error: 'app id required' });
   if (!['owner', 'admin'].includes(auth.role)) return json(res, 403, { error: 'Workspace admin access required' });
@@ -3444,6 +3462,15 @@ async function handleDocuments(req: IncomingMessage, res: ServerResponse): Promi
   }
 }
 
+// ── Terms & AI-disclosure consent (flag-gated: TERMS_GATE_ENABLED) ──
+// Inert by default — enforceGate() is a no-op unless the env flag is truthy.
+const terms = createTermsModule({
+  createClient: createSupabaseAdmin,
+  authenticate: authenticateRequest,
+  getClientIp,
+  auditLog,
+});
+
 async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? '/';
   const requestUrl = getRequestUrl(req);
@@ -3541,9 +3568,32 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   // Unauthenticated, rate-limited, strict projection; serves the customer MCP
   // gateway. Terminal for the whole prefix — the handler always answers with a
   // customer-safe envelope (even near-misses), so nothing under this prefix
-  // falls through to the platform's generic 404/SPA output.
+  // falls through to the platform's generic 404/SPA output. This public,
+  // unauthenticated surface is intentionally ahead of the terms gate below
+  // (customers are not AROS operators and never see the clickwrap).
   // Journey: docs/journeys/customer-orders-through-their-assistant.md
   if (await handlePublicBusinessApi(req, res, requestUrl)) return;
+
+  // ── Terms acceptance + AI disclosure (flag-gated) ──────────
+  if (pathname === '/api/terms/status' && method === 'GET') {
+    return terms.handleStatus(req, res);
+  }
+  if (pathname === '/api/terms/accept' && method === 'POST') {
+    if (!rateLimit(req, 10, 60_000)) {
+      return json(res, 429, { error: 'Too many requests. Please wait.' });
+    }
+    return terms.handleAccept(req, res);
+  }
+  if (pathname === '/api/disclosures/ack' && method === 'POST') {
+    if (!rateLimit(req, 20, 60_000)) {
+      return json(res, 429, { error: 'Too many requests. Please wait.' });
+    }
+    return terms.handleDisclosureAck(req, res);
+  }
+  // When TERMS_GATE_ENABLED, authenticated API access without a
+  // current-version acceptance gets a distinct 428 the SPA turns into the
+  // clickwrap screen. With the flag off (default) this is a strict no-op.
+  if (await terms.enforceGate(req, res, pathname)) return;
 
   // ── Billing ─────────────────────────────────────────────────
   if (url === '/api/billing/checkout' && method === 'POST') {

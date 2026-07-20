@@ -28,6 +28,7 @@ Every spec defaults to **Ramesh** unless it says otherwise:
 | 3 | [ask-a-question-get-a-real-answer.md](ask-a-question-get-a-real-answer.md) | "What were my sales yesterday?" — a real, honest, sourced answer in chat. |
 | 4 | [check-on-my-store-today.md](check-on-my-store-today.md) | "How's my store doing?" — the daily look: briefing, numbers, anything needing attention. |
 | 5 | [get-unstuck.md](get-unstuck.md) | "Something's wrong" — every failure on journeys 1–4 recovers self-service. |
+| 6 | [accept-terms-and-ai-disclosure.md](accept-terms-and-ai-disclosure.md) | "Fine, I agree" — clickwrap terms gate + first-chat AI disclosure. **Flagged off** (`TERMS_GATE_ENABLED`) until attorney sign-off. |
 
 ## How they're enforced
 

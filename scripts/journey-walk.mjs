@@ -163,6 +163,27 @@ const JOURNEYS = [
     ],
   },
   {
+    slug: 'accept-terms-and-ai-disclosure',
+    title: 'J6 Accept terms + AI disclosure (flag-gated: TERMS_GATE_ENABLED)',
+    steps: [
+      ['/legal/terms page serves', page('/legal/terms')],
+      ['/legal/privacy page serves', page('/legal/privacy')],
+      ['terms status endpoint is wired (public by design)', async () => {
+        const r = await probe('GET', '/api/terms/status');
+        if (r.status === 200 && /json/.test(r.type)) {
+          let flag = '?';
+          try { flag = String(JSON.parse(r.text).gateEnabled); } catch { /* ignore */ }
+          return { level: 'PASS', evidence: `200 json — gateEnabled=${flag}` };
+        }
+        if (r.status === 404) return { level: 'FAIL', evidence: '404 — terms status endpoint unwired' };
+        return { level: 'WARN', evidence: ev(r) };
+      }],
+      ['accept endpoint wired + fail-closed', closedApi('POST', '/api/terms/accept', { accepted: true })],
+      ['disclosure ack endpoint wired + fail-closed', closedApi('POST', '/api/disclosures/ack', {})],
+      ['clickwrap checkbox → agree → app; first-chat popup → "Got it"', browser('needs a session with TERMS_GATE_ENABLED=1 — walk on beta before activation')],
+    ],
+  },
+  {
     slug: 'get-unstuck',
     title: 'J5 Get unstuck',
     steps: [

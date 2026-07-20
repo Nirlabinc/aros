@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { chatReplyText } from '../../lib/chatReply';
+import { AiDisclosureModal, AiDisclosureNotice, useAiDisclosure } from '../../components/AiDisclosure';
+import { useAuth } from '../../contexts/AuthContext';
 
 /**
  * StartChat — the day-one landing surface for a freshly signed-up tenant.
@@ -16,6 +18,8 @@ import { chatReplyText } from '../../lib/chatReply';
 
 // /api/v1/* remains proxied server-side for already-shipped bundles.
 const ROUTER_URL = (import.meta as any).env?.VITE_ROUTER_URL || '';
+const API_BASE = (window as any).__AROS_API_URL__
+  || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
 const DEMO_SESSION_KEY = 'aros-demo-session';
 const INTENT_KEY = 'aros-intent';
 
@@ -52,18 +56,41 @@ function getDemoSessionId(): string {
 }
 
 export function StartChat() {
+  const aiDisclosure = useAiDisclosure();
+  const { session, tenant } = useAuth();
   const sessionId = useRef<string>(getDemoSessionId());
   const intent = useRef<string>(getIntent());
   const [messages, setMessages] = useState<Message[]>([]);
   const [activation, setActivation] = useState<Activation | null>(null);
+  const [checkingStore, setCheckingStore] = useState(true);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
-  // Enable demo mode for this session + fetch the activation payload on mount.
+  // Honesty gate, then demo bootstrap. A tenant that already has a connected
+  // store must never land on the sample-store surface (journey contract:
+  // sample data is for tenants with NO connector) — they resume the setup
+  // journey instead, whose connect/readiness steps reflect their real state.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/store/summary`, {
+          headers: {
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+            ...(tenant?.id ? { 'x-aros-tenant-id': tenant.id } : {}),
+          },
+        });
+        if (res.ok) {
+          const d = await res.json();
+          if (!cancelled && (d?.connected || d?.hasConnector)) {
+            window.location.replace('/onboarding');
+            return;
+          }
+        }
+      } catch { /* check is best-effort — brand-new tenants proceed to demo */ }
+      if (cancelled) return;
+      setCheckingStore(false);
       try {
         await fetch(`${ROUTER_URL}/v1/demo/enable`, {
           method: 'POST',
@@ -77,7 +104,8 @@ export function StartChat() {
       } catch { /* activation is best-effort */ }
     })();
     return () => { cancelled = true; };
-  }, []);
+    // ProtectedRoute guarantees session/tenant are resolved before mount.
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, sending]);
 
@@ -116,8 +144,20 @@ export function StartChat() {
   const onSubmit = (e: FormEvent) => { e.preventDefault(); void sendMessage(input); };
   const fresh = messages.length === 0;
 
+  // Never flash the sample surface while deciding whether this tenant is
+  // already connected (one authed round-trip).
+  if (checkingStore) {
+    return (
+      <div style={{ ...s.wrapper, alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ fontSize: 22, fontWeight: 800 }}>AROS</div>
+      </div>
+    );
+  }
+
   return (
     <div style={s.wrapper}>
+      {/* First-chat AI disclosure — renders nothing unless TERMS_GATE_ENABLED */}
+      <AiDisclosureModal show={aiDisclosure.showModal} onAcknowledge={() => void aiDisclosure.acknowledge()} />
       {/* Top bar with in-context connect CTA */}
       <header style={s.topbar}>
         <div style={s.brand}>AROS</div>
@@ -181,6 +221,7 @@ export function StartChat() {
               Send
             </button>
           </form>
+          <AiDisclosureNotice />
         </div>
       </footer>
     </div>
