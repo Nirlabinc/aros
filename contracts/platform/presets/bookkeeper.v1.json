@@ -1,0 +1,26 @@
+{
+  "bundle": "bookkeeper",
+  "version": 1,
+  "persona": {
+    "label": "Bookkeeper",
+    "kpis": ["recon-variance", "ap-aging", "cash-position"],
+    "framing": "reconciliation- and statement-focused; exact figures, flagged discrepancies"
+  },
+  "data_scope": {
+    "entities": ["store", "transaction", "transaction_item", "offer", "customer", "analytics.read"],
+    "scope": "all"
+  },
+  "skills": {
+    "include": ["statement-recon", "ap-review", "sales-report", "export-ledger"],
+    "exclude": ["price-strategy", "inventory-count", "edi-receive"]
+  },
+  "risk_ceiling": "reversible",
+  "connectors": {
+    "enabled": ["rapidrms-api", "azure-db"],
+    "mode": {}
+  },
+  "cadence": {
+    "digest": "weekly",
+    "alerts": ["recon-variance"]
+  }
+}

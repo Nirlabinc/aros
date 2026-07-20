@@ -22,6 +22,9 @@
  * Pure module — no I/O, no env reads; callers pass the project id.
  */
 
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+
 export const BUNDLE_ROLE_PREFIX = 'bundle:';
 
 /** The aros application project in shre-id (integrations/aros/README). */
@@ -72,4 +75,83 @@ export function resolveBundle(
 ): string | null {
   const fromClaims = deriveBundleFromClaims(claims, projectId).bundle;
   return fromClaims ?? fallbackBundleForRole(membershipRole);
+}
+
+// ── Bundle semantics (vendored contract data) ───────────────────────────────
+// The preset bundle documents are VENDORED at contracts/platform/presets
+// (source of truth: shreai shre-rapidrms/contracts/platform; same vendoring
+// flow as MIB #92 and Sia #211). #100 carried the bundle ID; these helpers
+// give it MEANING: what a bundle may see and in which mode. Semantics mirror
+// Sia's role_bundle_service — one behavior on every consumer.
+
+export interface RoleBundleDoc {
+  bundle: string;
+  version: number;
+  skills: { include: string[]; exclude?: string[] };
+  connectors: { enabled: string[]; mode?: Record<string, string> };
+  data_scope: { entities: string[]; scope: string };
+  risk_ceiling: string;
+  [key: string]: unknown;
+}
+
+const PRESETS_DIR =
+  process.env.ROLE_BUNDLE_PRESETS_DIR ||
+  join(import.meta.dirname ?? __dirname, '../../contracts/platform/presets');
+
+let presetCache: Map<string, RoleBundleDoc> | null = null;
+
+export function loadPresetBundles(): Map<string, RoleBundleDoc> {
+  if (presetCache) return presetCache;
+  const out = new Map<string, RoleBundleDoc>();
+  try {
+    for (const file of readdirSync(PRESETS_DIR)) {
+      if (!/^[\w-]+\.v\d+\.json$/.test(file)) continue;
+      const doc = JSON.parse(readFileSync(join(PRESETS_DIR, file), 'utf8')) as RoleBundleDoc;
+      out.set(doc.bundle, doc);
+    }
+  } catch {
+    // Unreadable presets = no semantics = every helper fails closed below.
+  }
+  presetCache = out;
+  return out;
+}
+
+/** Test hook: drop the preset cache (after changing ROLE_BUNDLE_PRESETS_DIR). */
+export function resetPresetCache(): void {
+  presetCache = null;
+}
+
+/**
+ * Skills/tools from `catalog` this bundle may see. `null` when the bundle is
+ * unknown/absent — the caller picks the restricted default (fail closed,
+ * never the full catalog). `'*'` selects the whole catalog; exclude wins.
+ */
+export function bundleAllowedSkills(bundleId: string | null, catalog: Iterable<string>): Set<string> | null {
+  const doc = bundleId ? loadPresetBundles().get(bundleId) : undefined;
+  if (!doc) return null;
+  const include = doc.skills?.include ?? [];
+  const exclude = new Set(doc.skills?.exclude ?? []);
+  const names = new Set(catalog);
+  const allowed = include.includes('*') ? names : new Set([...names].filter(n => include.includes(n)));
+  for (const e of exclude) allowed.delete(e);
+  return allowed;
+}
+
+/**
+ * Is this connector surfaced to the bundle, and in which mode?
+ * Rules (contract §connectors): a bundle can only narrow the tenant's
+ * installed set; enabled-but-unmapped connectors default to read_only
+ * (fail closed); `'*'` wildcards in enabled/mode are owner-class.
+ * Unknown/absent bundle ⇒ null (caller restricts).
+ */
+export function bundleConnectorMode(
+  bundleId: string | null,
+  connectorId: string,
+): 'read_only' | 'read_write' | null {
+  const doc = bundleId ? loadPresetBundles().get(bundleId) : undefined;
+  if (!doc) return null;
+  const enabled = doc.connectors?.enabled ?? [];
+  if (!enabled.includes('*') && !enabled.includes(connectorId)) return null;
+  const mode = doc.connectors?.mode?.[connectorId] ?? doc.connectors?.mode?.['*'];
+  return mode === 'read_write' ? 'read_write' : 'read_only';
 }

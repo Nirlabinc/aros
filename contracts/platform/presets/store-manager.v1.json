@@ -1,0 +1,26 @@
+{
+  "bundle": "store-manager",
+  "version": 1,
+  "persona": {
+    "label": "Store Manager",
+    "kpis": ["sales-total", "shift-variance", "shrink"],
+    "framing": "operational, shift- and store-floor focused"
+  },
+  "data_scope": {
+    "entities": ["item", "transaction", "transaction_item", "offer", "pos.sales.read"],
+    "scope": "assigned_sites"
+  },
+  "skills": {
+    "include": ["shift-recap", "inventory-count", "price-check", "edi-receive", "promo-review"],
+    "exclude": ["payroll", "vendor-payments", "price-strategy"]
+  },
+  "risk_ceiling": "approval_gated",
+  "connectors": {
+    "enabled": ["rapidrms-api", "verifone-commander"],
+    "mode": { "rapidrms-api": "read_write" }
+  },
+  "cadence": {
+    "digest": "daily",
+    "alerts": ["stockout", "drawer-variance"]
+  }
+}

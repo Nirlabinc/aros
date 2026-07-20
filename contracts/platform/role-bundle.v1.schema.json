@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.shre.ai/platform/role-bundle/v1",
+  "title": "platform.role_bundle v1",
+  "description": "Declarative per-role capability contract — the single primitive that tailors data, skills, agents, and connectors to a person's role, from single-site operator to enterprise. One bundle per role; org size is a mapping problem (single-site: owner bundle auto-assigned; multi-site: preset bundles; enterprise: external IdP groups map to bundles in shre-id). Consumers compile it into deterministic chokepoints — shre-id claim derivation, data-layer scoping (RLS / agent_data_grants), skill-catalog preflight, PDP risk ceiling, connector enablement, digest/alert cadence. The bundle is never a prompt-time hint: if a layer cannot enforce its dimension deterministically, it must not claim to consume this contract.",
+  "type": "object",
+  "required": ["bundle", "version", "persona", "data_scope", "skills", "risk_ceiling", "connectors", "cadence"],
+  "additionalProperties": false,
+  "properties": {
+    "bundle": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Kebab-case bundle id, unique platform-wide (e.g. store-manager). This is the value carried in identity claims."
+    },
+    "version": {
+      "type": "integer",
+      "enum": [1],
+      "description": "Major version of the role-bundle contract this document conforms to."
+    },
+    "persona": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "Human-readable role name shown in UI and digests."
+        },
+        "kpis": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "KPI slugs that frame this role's dashboards and digests (e.g. gross-margin, shrink, shift-variance)."
+        },
+        "framing": {
+          "type": ["string", "null"],
+          "description": "One-line voice/vocabulary hint for generated surfaces. The ONLY prompt-level field in the contract — everything else enforces deterministically."
+        }
+      }
+    },
+    "data_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entities", "scope"],
+      "properties": {
+        "entities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Data the role may read: shre.* v1 entity names (store, item, transaction, transaction_item, offer, customer) and/or capability verbs from provisioning manifests (e.g. pos.sales.read, analytics.read)."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["assigned_sites", "region", "division", "all"],
+          "description": "Row-scope level. The concrete site/region ids come from the identity token (membership), never from the bundle — the bundle says HOW FAR the role sees, the token says WHICH rows that resolves to."
+        }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["include"],
+      "properties": {
+        "include": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Skill/tool ids surfaced to this role's sessions. Effective catalog = include ∩ tenant's provisioned set; out-of-bundle skills are never registered into the session (absent, not refused)."
+        },
+        "exclude": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Explicit denials. Exclude wins over include and over future additions to the tenant's provisioned set."
+        }
+      }
+    },
+    "risk_ceiling": {
+      "type": "string",
+      "enum": ["read", "reversible", "approval_gated", "sensitive"],
+      "description": "Highest risk tier this role may trigger without escalation. Vocabulary = the platform risk-tier ladder (shre-command-center packages/shared/src/risk-tier.ts; ranks read=0 < reversible=1 < approval_gated=2 < sensitive=3, fail closed: unclassified actions resolve to approval_gated). Actions above the ceiling route to the approval queue of a principal whose ceiling allows them — never silently execute, never silently drop."
+    },
+    "connectors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Connector ids surfaced to this role. A bundle can only narrow the tenant's installed set — it cannot grant a connector the tenant lacks. Credentials remain tenant-scoped in the vault; the bundle controls surfacing only."
+        },
+        "mode": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["read_only", "read_write"]
+          },
+          "description": "Per-connector mode override, keyed by connector id. A connector enabled but absent from this map defaults to read_only (fail closed)."
+        }
+      }
+    },
+    "cadence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "type": ["string", "null"],
+          "description": "Digest cadence slug consumed by the digest engine (e.g. weekly-owner, daily-shift-close). null = this role receives no digest."
+        },
+        "alerts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Alert rule slugs routed to this role (e.g. stockout, drawer-variance, red-line)."
+        }
+      }
+    }
+  }
+}

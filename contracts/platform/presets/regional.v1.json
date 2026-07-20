@@ -1,0 +1,26 @@
+{
+  "bundle": "regional",
+  "version": 1,
+  "persona": {
+    "label": "Regional Manager",
+    "kpis": ["sales-total", "gross-margin", "shrink", "stockout-rate"],
+    "framing": "region roll-up, store-vs-store comparison focused"
+  },
+  "data_scope": {
+    "entities": ["store", "item", "transaction", "transaction_item", "offer", "customer", "pos.sales.read", "analytics.read"],
+    "scope": "region"
+  },
+  "skills": {
+    "include": ["sales-report", "store-comparison", "inventory-review", "price-check", "promo-review", "shift-recap"],
+    "exclude": ["payroll", "vendor-payments"]
+  },
+  "risk_ceiling": "approval_gated",
+  "connectors": {
+    "enabled": ["rapidrms-api", "verifone-commander", "azure-db"],
+    "mode": {}
+  },
+  "cadence": {
+    "digest": "weekly",
+    "alerts": ["red-line", "stockout"]
+  }
+}
