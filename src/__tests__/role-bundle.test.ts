@@ -77,3 +77,32 @@ describe('legacy membership fallback + resolution order', () => {
     expect(resolveBundle(claims, 'member', PROJECT)).toBeNull();
   });
 });
+
+describe('bundle semantics from vendored presets', () => {
+  it('vendors exactly the 5 platform presets', async () => {
+    const { loadPresetBundles } = await import('../auth/role-bundle');
+    expect([...loadPresetBundles().keys()].sort()).toEqual([
+      'bookkeeper', 'owner', 'regional', 'shift-lead', 'store-manager',
+    ]);
+  });
+
+  it('bundleAllowedSkills: wildcard, intersection, exclude-wins, fail closed', async () => {
+    const { bundleAllowedSkills } = await import('../auth/role-bundle');
+    const catalog = ['shift-recap', 'inventory-count', 'payroll', 'custom-tool'];
+    expect(bundleAllowedSkills('owner', catalog)).toEqual(new Set(catalog));
+    expect(bundleAllowedSkills('store-manager', catalog)).toEqual(new Set(['shift-recap', 'inventory-count']));
+    expect(bundleAllowedSkills('regional', ['sales-report', 'payroll'])).toEqual(new Set(['sales-report']));
+    expect(bundleAllowedSkills(null, catalog)).toBeNull();
+    expect(bundleAllowedSkills('nope', catalog)).toBeNull();
+  });
+
+  it('bundleConnectorMode: enabled set narrows; unmapped defaults read_only; wildcard mode', async () => {
+    const { bundleConnectorMode } = await import('../auth/role-bundle');
+    expect(bundleConnectorMode('store-manager', 'rapidrms-api')).toBe('read_write');
+    expect(bundleConnectorMode('store-manager', 'verifone-commander')).toBe('read_only');
+    expect(bundleConnectorMode('store-manager', 'azure-db')).toBeNull(); // not in enabled set
+    expect(bundleConnectorMode('owner', 'anything-installed')).toBe('read_write'); // '*' enabled + '*' mode
+    expect(bundleConnectorMode('shift-lead', 'rapidrms-api')).toBe('read_only');
+    expect(bundleConnectorMode(null, 'rapidrms-api')).toBeNull(); // no bundle = restrict
+  });
+});

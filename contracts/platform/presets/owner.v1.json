@@ -1,0 +1,25 @@
+{
+  "bundle": "owner",
+  "version": 1,
+  "persona": {
+    "label": "Owner",
+    "kpis": ["sales-total", "gross-margin", "cash-position", "shrink", "red-line"],
+    "framing": "weekly margin- and cash-focused brief; plain business language, decisions over detail"
+  },
+  "data_scope": {
+    "entities": ["store", "item", "transaction", "transaction_item", "offer", "customer", "pos.sales.read", "analytics.read"],
+    "scope": "all"
+  },
+  "skills": {
+    "include": ["*"]
+  },
+  "risk_ceiling": "sensitive",
+  "connectors": {
+    "enabled": ["*"],
+    "mode": { "*": "read_write" }
+  },
+  "cadence": {
+    "digest": "weekly",
+    "alerts": ["red-line", "stockout", "drawer-variance", "recon-variance"]
+  }
+}

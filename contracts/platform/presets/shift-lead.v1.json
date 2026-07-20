@@ -1,0 +1,26 @@
+{
+  "bundle": "shift-lead",
+  "version": 1,
+  "persona": {
+    "label": "Shift Lead",
+    "kpis": ["shift-variance", "drawer-variance"],
+    "framing": "task-level, current-shift focus"
+  },
+  "data_scope": {
+    "entities": ["item", "transaction", "transaction_item"],
+    "scope": "assigned_sites"
+  },
+  "skills": {
+    "include": ["shift-recap", "inventory-count", "price-check"],
+    "exclude": ["payroll", "vendor-payments", "price-strategy", "edi-receive"]
+  },
+  "risk_ceiling": "reversible",
+  "connectors": {
+    "enabled": ["rapidrms-api"],
+    "mode": {}
+  },
+  "cadence": {
+    "digest": null,
+    "alerts": ["stockout", "drawer-variance"]
+  }
+}

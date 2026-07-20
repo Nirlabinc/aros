@@ -66,7 +66,7 @@ import { handleEdgeProvisioningRequest } from './edge/provisioning-http.js';
 import { EdgeProvisioningService } from './edge/provisioning.js';
 import { SupabaseEdgeProvisioningRepository } from './edge/supabase-provisioning-repository.js';
 import { createOidcRelyingParty } from './auth/oidc-rp.js';
-import { DEFAULT_SHRE_ID_PROJECT_ID, resolveBundle } from './auth/role-bundle.js';
+import { DEFAULT_SHRE_ID_PROJECT_ID, bundleConnectorMode, resolveBundle } from './auth/role-bundle.js';
 import { createMemoryOidcStore, createSupabaseOidcStore } from './auth/oidc-store.js';
 
 const PORT = Number(process.env.PORT || 5457);
@@ -1516,7 +1516,12 @@ async function handleAppLaunchConsume(req: IncomingMessage, res: ServerResponse)
   const user = userResult?.user;
   if (!user) return json(res, 401, { error: 'Workspace user is no longer available' });
   await auditLog({ tenantId: grant.tenantId, userId: grant.userId, action: 'app.launch_consumed', resource: `app:${appKey}`, detail: { appKey }, ip: getClientIp(req) });
-  json(res, 200, { appKey, tenantId: grant.tenantId, userId: grant.userId, email: user.email || '', name: user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'User', role: grant.role, bundle: grant.bundle, stores: connectors || [] });
+  // Per-bundle connector mode (contract §connectors): enabled-but-unmapped
+  // defaults read_only; a connector outside the bundle's enabled set — or an
+  // unknown/absent bundle — annotates null, and the consuming app treats
+  // null as its most-restricted surface (fail closed). Additive field.
+  const stores = (connectors || []).map(row => ({ ...row, bundle_mode: bundleConnectorMode(grant.bundle, String(row.type || '')) }));
+  json(res, 200, { appKey, tenantId: grant.tenantId, userId: grant.userId, email: user.email || '', name: user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'User', role: grant.role, bundle: grant.bundle, stores });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
