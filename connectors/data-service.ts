@@ -103,13 +103,39 @@ const QTY_FIELDS = ['iteM_InStock', 'OnHand', 'QtyOnHand', 'Quantity', 'Qty', 'S
 const REORDER_FIELDS = ['iteM_MinStockLevel', 'ReorderPoint', 'ReorderLevel', 'MinQty', 'MinimumQty', 'Threshold', 'ParLevel'];
 const NAME_FIELDS = ['description', 'iteM_ShortName', 'Name', 'ItemName', 'Description', 'ProductName', 'Product'];
 
-function todayRange(): { from: string; to: string } {
-  const now = new Date();
-  const y = now.getUTCFullYear();
-  const m = String(now.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(now.getUTCDate()).padStart(2, '0');
-  const day = `${y}-${m}-${d}`;
-  return { from: day, to: day };
+/** Fallback when a connector has no configured timezone: US retail default. */
+export const DEFAULT_STORE_TIMEZONE = 'America/New_York';
+
+/**
+ * The store's business "today" (YYYY-MM-DD) in the STORE's timezone, never
+ * UTC: a New York store is still selling at 9pm local while the UTC date has
+ * already rolled over — a UTC-derived window would query "tomorrow" and
+ * report an empty evening every single day.
+ */
+export function businessToday(timeZone: string, now: Date = new Date()): string {
+  // en-CA formats as YYYY-MM-DD directly.
+  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+}
+
+/**
+ * RapidRMS invoice endpoints match NOTHING on bare calendar dates — verified
+ * against the live API 2026-07-20: `FromDate=2026-07-20&ToDate=2026-07-20`
+ * returns `"No Data available"` while `...T00:00:00`/`...T23:59:59` returns
+ * the day's 90 invoices. Every dated invoice query must use full-day
+ * datetime bounds (this matches the proven shre-rapidrms warehouse sync).
+ */
+export function invoiceDayBounds(fromDay: string, toDay: string): { FromDate: string; ToDate: string } {
+  return { FromDate: `${fromDay}T00:00:00`, ToDate: `${toDay}T23:59:59` };
+}
+
+function storeTimezone(config: Record<string, unknown>): string {
+  const tz = typeof config.timezone === 'string' && config.timezone.trim() ? config.timezone.trim() : DEFAULT_STORE_TIMEZONE;
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: tz });
+    return tz;
+  } catch {
+    return DEFAULT_STORE_TIMEZONE;
+  }
 }
 
 function normalizeBusinessDate(value: string | null): string | null {
@@ -118,6 +144,24 @@ function normalizeBusinessDate(value: string | null): string | null {
   if (iso) return iso;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : null;
+}
+
+/**
+ * First date field on the row that normalizes to a PLAUSIBLE calendar date.
+ * Live RapidRMS rows carry sentinel dates — `createdDate:
+ * "0001-01-01T00:00:00"` alongside the real `datetime` — and a naive
+ * first-field pick bucketed every invoice into year 0001, dropping the whole
+ * range (observed 2026-07-20: multi-day sales range returned [] while the
+ * same rows summed fine for single-day totals).
+ */
+export function pickBusinessDate(row: Record<string, unknown>): string | null {
+  for (const field of SALES_DATE_FIELDS) {
+    const value = row[field];
+    if (typeof value !== 'string' || !value) continue;
+    const day = normalizeBusinessDate(value);
+    if (day && day >= '2000-01-01') return day;
+  }
+  return null;
 }
 
 const INVOICE_PAGE_SIZE = 5000;
@@ -170,7 +214,7 @@ async function fetchRapidRmsSummary(
       passwordRef,
     );
 
-    const { from, to } = todayRange();
+    const today = businessToday(storeTimezone(record.config));
     // `partial` means the SALES numbers are unreliable (fetch failed or rows
     // carried no recognizable revenue field). Inventory availability is
     // tracked separately — the live RapidRMS API has no /api/Inventory/Get
@@ -183,7 +227,7 @@ async function fetchRapidRmsSummary(
     let revenue = 0;
     let transactions = 0;
     try {
-      const rows = await fetchInvoiceRows(session, { FromDate: from, ToDate: to });
+      const rows = await fetchInvoiceRows(session, invoiceDayBounds(today, today));
       let sawRevenue = false;
       let counted = 0;
       for (const r of rows) {
@@ -279,16 +323,12 @@ export async function fetchStoreSalesRange(
     const passwordRef = await storeCredential(`${record.id}:sales-password`, record.secrets.password ?? '', vaultSecret);
     refs.push(emailRef, passwordRef);
     const session = await rapidRms.authenticate({ baseUrl: String(record.config.baseUrl || 'https://rapidrmsapi.azurewebsites.net'), clientId: String(record.config.clientId || ''), sessionTimeout: Number(record.config.sessionTimeout) || 420 }, emailRef, passwordRef);
-    // Match MIB's proven RapidRMS contract: InvoiceReport expects calendar
-    // dates here, not timestamps with appended time components.
-    const rows = await fetchInvoiceRows(session, { FromDate: from, ToDate: to });
+    const rows = await fetchInvoiceRows(session, invoiceDayBounds(from, to));
     const buckets = new Map<string, { revenue: number; invoices: Set<string>; rows: number }>();
     for (const row of rows) {
-      const dateValue = pickStr(row, SALES_DATE_FIELDS);
-      // RapidRMS's live payload uses `datetime` and may format it in the
-      // tenant locale rather than ISO. For a one-day API result, the endpoint
-      // itself provides the date boundary even if an older tenant omits it.
-      const businessDate = normalizeBusinessDate(dateValue) || (from === to ? from : null);
+      // For a one-day API result the endpoint itself provides the date
+      // boundary even if a tenant's rows omit a usable date field.
+      const businessDate = pickBusinessDate(row) || (from === to ? from : null);
       if (!businessDate || businessDate < from || businessDate > to) continue;
       const bucket = buckets.get(businessDate) || { revenue: 0, invoices: new Set<string>(), rows: 0 };
       bucket.revenue += pickNum(row, REVENUE_FIELDS) || 0;
