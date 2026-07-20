@@ -16,7 +16,7 @@ export function TeamPage() {
   async function addMember() {
     if (!auth || addBusy) return; const email = addEmail.trim(); if (!email) return;
     setAddBusy(true); setAddNote('');
-    try { await workspaceApi.addMember(auth, email, addRole); setAddNote(`Added ${email} as ${addRole}.`); setAddEmail(''); await load(); }
+    try { const added = await workspaceApi.addMember(auth, email, addRole); setAddNote(added.invited ? `Invite email sent to ${email} — they'll set a password and land in this workspace as ${addRole}.` : `Added ${email} as ${addRole}.`); setAddEmail(''); await load(); }
     catch (e) { setAddNote(e instanceof Error ? e.message : 'Could not add member'); }
     finally { setAddBusy(false); }
   }
@@ -29,7 +29,7 @@ export function TeamPage() {
           <option value="admin">Admin</option>
         </select>
         <Button disabled={addBusy || !addEmail.trim()} onClick={() => void addMember()}>{addBusy ? 'Adding…' : 'Add member'}</Button>
-        <span style={{ flexBasis: '100%', fontSize: 12, color: 'var(--ink-2, #6b7280)' }}>{addNote || 'They need an AROS account first (sign up at app.aros.live), then add them by the same email. Ownership is granted afterwards via the role menu.'}</span>
+        <span style={{ flexBasis: '100%', fontSize: 12, color: 'var(--ink-2, #6b7280)' }}>{addNote || 'Existing AROS users are added instantly; anyone else gets an email invite to set a password and join. Ownership is granted afterwards via the role menu.'}</span>
       </form>}
       {members.length === 0 ? <State title="No members" detail="No active or pending workspace memberships were returned." /> : <><Rows>{members.map(member => <Row key={member.id} mark={(member.user?.name || 'M').split(/\s+/).map(part => part[0]).slice(0, 2).join('').toUpperCase()} title={member.user?.name || 'Member'} detail={`${member.user?.email || member.principalId} · ${member.status}`} end={canManage ? <span style={{ display: 'flex', gap: 8 }}><select disabled={busy === member.id} value={member.membershipRole} aria-label={`Role for ${member.user?.name || 'member'}`} onChange={e => void changeRole(member, e.target.value)}><option value="owner">Owner</option><option value="admin">Admin</option><option value="member">Member</option></select>{member.principalId !== user?.id && <Button disabled={busy === member.id} onClick={() => void remove(member)}>Remove</Button>}</span> : <Pill>{member.membershipRole}</Pill>} />)}</Rows>{error && <State title="Team update failed" detail={error} />}</>}
     </>}
