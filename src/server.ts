@@ -2563,6 +2563,46 @@ async function handleOwnerDigest(req: IncomingMessage, res: ServerResponse): Pro
   json(res, 200, body);
 }
 
+// CTA types the digest recommendation can carry (shre-rapidrms
+// src/digest/actions.mjs CTA_TYPES — keep in sync).
+const DIGEST_CTA_TYPES = new Set(['fix_price', 'draft_po', 'draft_campaign', 'buy_review', 'review']);
+
+/**
+ * CTA tap → warehouse action ledger (shre.digest_action). The ledger only
+ * feeds outcome attribution ("you fixed 3 prices → margin recovered"), so the
+ * recording is strictly best-effort: the client always gets 200 {ok:true} —
+ * a Home interaction must never surface a warehouse error. Upstream failures
+ * (including 404 on older warehouse builds) are logged and swallowed.
+ */
+async function handleDigestAction(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  const body = await parseJsonBody(req);
+  const ctaType = String(body?.cta_type ?? '');
+  if (!DIGEST_CTA_TYPES.has(ctaType)) {
+    return json(res, 400, { error: `cta_type must be one of: ${[...DIGEST_CTA_TYPES].join(', ')}` });
+  }
+  const rawItems = body?.items;
+  const items = Array.isArray(rawItems) ? rawItems.map(String).slice(0, 100) : [];
+
+  try {
+    const scope = await resolveDigestScope(auth.tenantId);
+    if (scope) {
+      const upstream = await fetch(`${SHRE_RAPIDRMS_URL}/api/digest/action`, {
+        method: 'POST',
+        headers: digestHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ provider: scope.provider, store_id: scope.storeId, cta_type: ctaType, items, source: 'aros-home' }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!upstream.ok) console.error(`[owner-digest] action ledger upstream ${upstream.status} for tenant ${auth.tenantId} (${ctaType})`);
+    }
+  } catch (err) {
+    console.error('[owner-digest] action ledger failed:', err instanceof Error ? err.message : err);
+  }
+  json(res, 200, { ok: true });
+}
+
 /**
  * Day-0 first-run digest (OWNER-DIGEST-PLAN Phase 2): the moment a POS
  * connector activates, ask the warehouse to build this store's first brief so
@@ -4140,6 +4180,9 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   }
   if (pathname === '/api/digest' && method === 'GET') {
     return handleOwnerDigest(req, res);
+  }
+  if (pathname === '/api/digest/action' && method === 'POST') {
+    return handleDigestAction(req, res);
   }
 
   if (pathname === '/api/store/sales' && method === 'GET') {

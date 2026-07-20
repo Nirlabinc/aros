@@ -77,6 +77,9 @@
 .rsx2-brief__action { display: flex; align-items: flex-start; gap: 12px; margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--accent-soft); }
 .rsx2-brief__actiontag { flex-shrink: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent-2); margin-top: 2px; }
 .rsx2-brief__counts { margin-top: 12px; font-size: 12.5px; color: var(--ink-3); font-family: 'JetBrains Mono', monospace; }
+.rsx2-brief__details { margin-top: 10px; padding: 4px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.rsx2-brief__detail { padding: 9px 0; border-top: 1px solid var(--line); }
+.rsx2-brief__detail:first-child { border-top: none; }
 .rsx2-brief__pending { margin-top: 30px; font-size: 13px; color: var(--ink-3); }
 .rsx2-home__actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 20px; }
 .rsx2-quick { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 16px; cursor: pointer; font-family: inherit; transition: box-shadow 0.16s, transform 0.16s, border-color 0.13s; }
