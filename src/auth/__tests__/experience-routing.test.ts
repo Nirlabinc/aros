@@ -18,7 +18,7 @@ describe('experience routing', () => {
     expect(decision.experience).toBe('mib');
     const url = new URL(decision.targetUrl);
     expect(url.origin).toBe('https://mib.aros.live');
-    expect(url.pathname).toBe('/api/auth/aros/start');
+    expect(url.pathname).toBe('/api/auth/shre/start');
     expect(url.searchParams.get('workspaceId')).toBe(base.workspaceId);
   });
 
