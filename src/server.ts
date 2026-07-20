@@ -1914,7 +1914,21 @@ async function handleWorkspaceMemberAdd(
     }
     if (data.users.length < 200) break;
   }
-  if (!invitee) return json(res, 404, { error: INVITEE_NOT_REGISTERED });
+  // Not registered yet → send a real email invite (Supabase creates the user
+  // and mails a set-password link that lands on /auth/accept). If the invite
+  // API fails for any reason, fall back to the registration-first message
+  // rather than surfacing an opaque error — the two-step path always works.
+  let invitedByEmail = false;
+  if (!invitee) {
+    const redirectTo = `${(process.env.PUBLIC_APP_URL || 'https://app.aros.live').replace(/\/$/, '')}/auth/accept`;
+    const { data: invited, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(input.email, { redirectTo });
+    if (inviteError || !invited?.user) {
+      console.error('[workspace.member_add] invite email failed:', inviteError?.message || 'no user returned');
+      return json(res, 404, { error: INVITEE_NOT_REGISTERED });
+    }
+    invitee = { id: invited.user.id, email: invited.user.email || input.email };
+    invitedByEmail = true;
+  }
 
   const { data: existing } = await supabase
     .from('tenant_members')
@@ -1929,7 +1943,7 @@ async function handleWorkspaceMemberAdd(
   const now = new Date().toISOString();
   const { data: member, error: insertError } = await supabase
     .from('tenant_members')
-    .insert({ tenant_id: workspaceId, user_id: invitee.id, role: input.role, status: 'active', is_default: false, invited_at: now, accepted_at: now, joined_at: now })
+    .insert({ tenant_id: workspaceId, user_id: invitee.id, role: input.role, status: 'active', is_default: false, invited_at: now, accepted_at: invitedByEmail ? null : now, joined_at: now })
     .select('id,user_id,role,status,joined_at')
     .single();
   if (insertError || !member) return json(res, 500, { error: insertError?.message || 'Could not add member' });
@@ -1937,12 +1951,13 @@ async function handleWorkspaceMemberAdd(
   await auditLog({
     tenantId: workspaceId,
     userId: auth.userId,
-    action: 'workspace.member_added',
+    action: invitedByEmail ? 'workspace.member_invited' : 'workspace.member_added',
     resource: `member:${member.id}`,
     detail: { email: invitee.email, role: input.role },
     ip: getClientIp(req),
   });
   json(res, 201, {
+    invited: invitedByEmail,
     id: member.id,
     principalType: 'user',
     principalId: member.user_id,

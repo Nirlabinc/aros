@@ -20,6 +20,7 @@ import { StartChat } from '../pages/start/StartChat';
 import { ConnectStorePage } from '../pages/connect/ConnectStorePage';
 import { ConnectStoreBanner } from '../components/ConnectStoreBanner';
 import { ResetPassword } from '../pages/ResetPassword';
+import { AcceptInvite } from '../pages/AcceptInvite';
 import { VerifyEmail } from '../pages/VerifyEmail';
 import { ConnectionsHub } from '../pages/settings/ConnectionsHub';
 import { AdministrationPage } from '../pages/settings/AdministrationPage';
@@ -105,6 +106,12 @@ function AppContent() {
 
   if (path === '/reset-password') {
     return <ResetPassword />;
+  }
+
+  // Invite-email landing: must render for signed-out visitors — the page
+  // itself waits for supabase-js to consume the invite tokens from the hash.
+  if (path === '/auth/accept') {
+    return <AcceptInvite />;
   }
 
   if (path === '/verify-email') {
