@@ -14,14 +14,12 @@ ever showing them the sample store; brand-new tenants keep the labeled demo
 surface by design. Earlier same day: the `/v1/demo/activation` 404 was
 restored via shreai#1007/#1012.)*
 
-## Residual debt (from the closed demo-chat $0.00 finding)
-
-*(The $0.00 finding itself closed 2026-07-17: shreai#1020 merged and the
-public `/v1` cutover to the launch.sh-managed docker router landed (aros#85
-socat edge + passport, aros#86 reply-envelope fix); demo journey verified
-live end-to-end by persona walk.)* Remaining debt for real tenants:
-`tool-forge/output/*` tools still shell to psql — one hardcodes PGPASSWORD —
-needs the #991-style pg-client migration + a security-lane look.
+*(Demo-chat $0.00 finding CLOSED 2026-07-17 — shreai#1020 + the public `/v1`
+cutover (aros#85/#86), persona-walk verified. Its residual psql debt CLOSED
+2026-07-17 by shreai#1028: every forge-*-tools.ts runSql shell-out migrated
+to the async pg client (#968/#991 pattern), killing both the runtime failure
+and the PGPASSWORD/argv leak — verified 2026-07-21, no execSync-psql paths
+remain in shreai services.)*
 
 ## J2 steps 4–5 — readiness state machine pending activation-contract merge
 
