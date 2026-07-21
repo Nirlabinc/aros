@@ -12,6 +12,9 @@ export const PATH_TO_SECTION: Record<string, ShellSection> = {
   '/permissions': 'permissions', '/documents': 'documents',
   '/edi-invoices': 'edi-invoices',
   '/profile': 'settings', '/billing': 'billing', '/costs': 'usage', '/users': 'team',
+  // Natural-name aliases — typing /team or /usage previously fell through to
+  // Home, which read as "this feature is missing" (validation sweep finding).
+  '/team': 'team', '/usage': 'usage',
   '/workspace': 'settings', '/channels': 'apps',
 };
 

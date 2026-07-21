@@ -32,6 +32,11 @@ describe('shell route core', () => {
     expect(routeState('/costs').section).toBe('usage');
   });
 
+  it('supports natural-name aliases from the validation sweep', () => {
+    expect(routeState('/team').section).toBe('team');
+    expect(routeState('/usage').section).toBe('usage');
+  });
+
   it('falls back to home for unknown paths', () => {
     expect(routeState('/definitely-not-a-page')).toEqual({ mode: 'home', section: 'stores' });
   });

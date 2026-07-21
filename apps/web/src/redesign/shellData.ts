@@ -14,6 +14,10 @@ export interface NavItem { key: SectionKey; label: string; glyph: string; count?
 export const PRIMARY_NAV: NavItem[] = [
   { key: 'chat', label: 'Chat', glyph: 'C' },
   { key: 'stores', label: 'Stores', glyph: 'St' },
+  // Marketplace/Connectors/Plugins were removed by the 07-20 validation sweep
+  // because they had no real panes; they're back by founder direction now that
+  // each renders a real page (MarketplacePage / ConnectorsPage / PluginsPage).
+  // Marketplace = discover/install; Apps = active apps A→Z.
   { key: 'marketplace', label: 'Marketplace', glyph: 'Mk' },
   { key: 'apps', label: 'Apps', glyph: 'Ap' },
   { key: 'connectors', label: 'Connectors', glyph: 'Co' },
@@ -50,7 +54,9 @@ export const CONCIERGE_SEED: ChatMsg[] = [
   { from: 'shre', text: 'I’m Shre — your store concierge. Ask me anything, like “How were sales yesterday?” or “Which SKUs are running low?” You can connect a register whenever you’re ready. I’ll never block the chat on setup.', meta: 'Shre · Local' },
   { from: 'shre', text: 'RapidRMS is connected — I can see all 5 stores and live sales are flowing. Ask me “How were sales yesterday?” whenever you’re ready.', meta: 'Shre · Local' },
 ];
-export const SUGGESTIONS = ['How were sales yesterday?', 'Which SKUs are low?', 'Raise carton prices 3% at all stores'];
+// Read-only suggestions only: a mutating example ("raise prices…") beside
+// harmless questions blurred analysis vs action for new users (UX review).
+export const SUGGESTIONS = ['How were sales yesterday?', 'Which SKUs are low?', 'Compare this week to last week'];
 
 // Recallable conversation history (right-pane History tab). Preview uses canned
 // threads; wired build lists the tenant's conversations from the chat store.
