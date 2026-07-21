@@ -20,6 +20,7 @@
     "security:auth": "tsx scripts/auth-conformance.mts",
     "test:auth-conformance": "vitest run src/__tests__/auth-conformance.test.ts",
     "serve": "tsx src/server.ts",
+    "check:migrations": "node scripts/check-migration-safety.mjs",
     "e2e": "playwright test"
   },
   "devDependencies": {
