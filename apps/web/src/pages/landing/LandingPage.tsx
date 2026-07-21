@@ -320,8 +320,8 @@ export function LandingPage() {
   const navLinks = [
     { label: 'Features', href: '#features' },
     { label: 'Pricing', href: '#pricing' },
-    { label: 'Marketplace', href: '/marketplace' },
-    { label: 'Developers', href: '/developers' },
+    { label: 'Marketplace', href: '/login?returnTo=%2Fmarketplace' },
+    { label: 'Developers', href: '/login?returnTo=%2Fdevelopers' },
     { label: 'Support', href: 'https://support.nirtek.net', ext: true },
     { label: 'Sign In', href: '/login' },
   ];
@@ -847,7 +847,7 @@ export function LandingPage() {
                 links: [
                   { label: 'Features', href: '#features' },
                   { label: 'Pricing', href: '#pricing' },
-                  { label: 'Marketplace', href: '/marketplace' },
+                  { label: 'Marketplace', href: '/login?returnTo=%2Fmarketplace' },
                   { label: 'Status', href: 'https://status.nirtek.net', ext: true },
                 ],
               },
@@ -863,7 +863,7 @@ export function LandingPage() {
               {
                 heading: 'Developers',
                 links: [
-                  { label: 'Developer Portal', href: '/developers' },
+                  { label: 'Developer Portal', href: '/login?returnTo=%2Fdevelopers' },
                   { label: 'API', href: 'https://api.nirtek.net', ext: true },
                   { label: 'SDK Docs', href: 'https://developers.nirtek.net', ext: true },
                   { label: 'GitHub', href: 'https://github.com/nirlab/aros', ext: true },

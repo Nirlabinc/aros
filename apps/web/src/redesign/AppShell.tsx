@@ -32,6 +32,9 @@ const PATH_TO_SECTION: Record<string, Exclude<SectionKey, 'chat'>> = {
   '/permissions': 'permissions', '/documents': 'documents',
   '/edi-invoices': 'edi-invoices',
   '/profile': 'settings', '/billing': 'billing', '/costs': 'usage', '/users': 'team',
+  // Natural-name aliases — typing /team or /usage previously fell through to
+  // Home, which read as "this feature is missing" (validation sweep finding).
+  '/team': 'team', '/usage': 'usage',
   '/workspace': 'settings', '/marketplace': 'apps', '/channels': 'apps',
 };
 const SECTION_TO_PATH: Partial<Record<SectionKey, string>> = {

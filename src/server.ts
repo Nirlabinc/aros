@@ -1969,15 +1969,84 @@ async function handleWorkspaceCompat(req: IncomingMessage, res: ServerResponse, 
   json(res, 200, { id: data.id, name: data.name, plan: data.plan, timezone: data.timezone, currency: data.currency, status: data.status, createdAt: data.created_at, updatedAt: data.updated_at });
 }
 
+/**
+ * Workspace agents — the endpoint the Intelligence page tries FIRST. It
+ * 404'd since the redesign shipped, so the page silently fell back to the
+ * static catalog and masked workspace truth (validation sweep finding).
+ * Returns the tenant's provisioned agent resources.
+ */
+async function handleWorkspaceAgents(req: IncomingMessage, res: ServerResponse, workspaceId: string): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (auth.tenantId !== workspaceId) return json(res, 403, { error: 'Workspace access denied' });
+  try {
+    const { data, error } = await createSupabaseAdmin()
+      .from('tenant_resources')
+      .select('id,name,provider,status,config,capabilities')
+      .eq('tenant_id', workspaceId)
+      .eq('kind', 'agent')
+      .order('name');
+    if (error) throw error;
+    json(res, 200, (data || []).map((r) => ({
+      id: r.id, name: r.name,
+      description: String((r.config as Record<string, unknown> | null)?.description || ''),
+      status: r.status || 'unknown', provider: r.provider || undefined,
+      capabilities: Array.isArray(r.capabilities) ? r.capabilities : [],
+      model: (r.config as Record<string, unknown> | null)?.model,
+    })));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to list workspace agents';
+    console.error('[workspace.agents]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+/**
+ * Live model discovery for the Models page — proxies the shre model
+ * gateway's /v1/models when configured. Without config it 404s and the page
+ * keeps its catalog fallback (never a fake list).
+ */
+const SHRE_GATEWAY_URL = process.env.SHRE_GATEWAY_URL || '';
+const SHRE_GATEWAY_KEY = process.env.SHRE_GATEWAY_KEY || process.env.SHRE_MK_KEY || '';
+async function handleGatewayModelRouting(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!SHRE_GATEWAY_URL || !SHRE_GATEWAY_KEY) return json(res, 404, { error: 'Model gateway not configured' });
+  try {
+    const upstream = await fetch(`${SHRE_GATEWAY_URL.replace(/\/$/, '')}/v1/models`, {
+      headers: { authorization: `Bearer ${SHRE_GATEWAY_KEY}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!upstream.ok) return json(res, 404, { error: `Model gateway unavailable (HTTP ${upstream.status})` });
+    const payload = (await upstream.json()) as { data?: Array<{ id?: string; owned_by?: string }> };
+    json(res, 200, {
+      availableModels: (payload.data || [])
+        .filter((m) => typeof m.id === 'string' && m.id)
+        .map((m) => ({ id: m.id, name: m.id, provider: m.owned_by || 'shre-gateway' })),
+    });
+  } catch (err) {
+    console.error('[gateway.models]', err instanceof Error ? err.message : err);
+    json(res, 404, { error: 'Model gateway unreachable' });
+  }
+}
+
 async function workspaceMembers(workspaceId: string) {
   const supabase = createSupabaseAdmin();
-  const { data, error } = await supabase.from('tenant_members').select('id,user_id,role,status,joined_at').eq('tenant_id', workspaceId).order('joined_at');
+  const { data, error } = await supabase.from('tenant_members').select('id,user_id,role,status,joined_at,invited_at,accepted_at').eq('tenant_id', workspaceId).order('joined_at');
   if (error) throw error;
   return Promise.all((data || []).map(async member => {
     const { data: userResult } = await supabase.auth.admin.getUserById(member.user_id);
     const user = userResult?.user;
+    // An emailed invitee who has never signed in since the invite shows as
+    // "invited", not "active" — the list read as instant activation before.
+    // Self-healing without a write: once they land and sign in, the
+    // last_sign_in_at check flips them to their stored status. (accepted_at
+    // alone can't discriminate — legacy owner rows also carry null.)
+    const signedInSinceInvite = Boolean(user?.last_sign_in_at && (!member.invited_at || Date.parse(user.last_sign_in_at) >= Date.parse(member.invited_at)));
+    const displayStatus = member.status === 'active' && !member.accepted_at && !signedInSinceInvite ? 'invited' : member.status;
     return {
-      id: member.id, principalType: 'user', principalId: member.user_id, status: member.status,
+      id: member.id, principalType: 'user', principalId: member.user_id,
+      status: displayStatus,
       membershipRole: member.role, createdAt: member.joined_at, updatedAt: member.joined_at,
       user: user ? { id: user.id, name: user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'Member', email: user.email || '' } : null,
     };
@@ -2275,11 +2344,13 @@ async function handleDashboard(req: IncomingMessage, res: ServerResponse): Promi
       const agent = actionParts[0] ? actionParts[0].charAt(0).toUpperCase() + actionParts[0].slice(1) : 'System';
       const actionLabel = actionParts.slice(1).join(' ').replace(/_/g, ' ') || a.action;
       const detail = a.detail;
-      const description = detail?.email
-        ? `${actionLabel} — ${detail.email}`
-        : detail?.company
-          ? `${actionLabel} — ${detail.company}`
-          : actionLabel;
+      // Always name the OBJECT of the action — bare verbs ("removed",
+      // "saved") read as incomplete and slightly alarming (UX review).
+      const subject = (typeof detail?.email === 'string' && detail.email)
+        || (typeof detail?.company === 'string' && detail.company)
+        || (typeof detail?.name === 'string' && detail.name)
+        || (typeof a.resource === 'string' && a.resource) || '';
+      const description = subject ? `${actionLabel} — ${subject}` : actionLabel;
 
       return {
         id: a.id,
@@ -4443,6 +4514,9 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (resourceMatch && ['GET', 'POST', 'PUT'].includes(method)) return handleTenantResources(req, res, resourceMatch[1], resourceMatch[2]);
   const workspaceCompatMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)$/);
   if (workspaceCompatMatch && ['GET', 'PATCH'].includes(method)) return handleWorkspaceCompat(req, res, workspaceCompatMatch[1]);
+  const workspaceAgentsMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/agents$/);
+  if (workspaceAgentsMatch && method === 'GET') return handleWorkspaceAgents(req, res, workspaceAgentsMatch[1]);
+  if (pathname === '/api/gateway/model-routing' && method === 'GET') return handleGatewayModelRouting(req, res);
   const workspaceMembersMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/members(?:\/([0-9a-f-]+)(?:\/role)?)?$/);
   if (workspaceMembersMatch && ['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) return handleWorkspaceMembersCompat(req, res, workspaceMembersMatch[1], workspaceMembersMatch[2]);
   const platformMatch = pathname.match(/^\/api\/platform\/(overview|tenants|audit)(?:\/([0-9a-f-]+))?$/);

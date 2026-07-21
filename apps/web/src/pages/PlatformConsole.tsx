@@ -141,7 +141,7 @@ export function PlatformConsole() {
                     <td style={s.td}>{t.members}</td>
                     <td style={s.td}><ConnPill summary={t.connectors} /></td>
                     <td style={s.td}>{t.onboarding_completed ? <Pill tone="ok">yes</Pill> : <Pill>no</Pill>}</td>
-                    <td style={s.td}>{t.created_at.slice(0, 10)}</td>
+                    <td style={{ ...s.td, whiteSpace: 'nowrap' }}>{t.created_at.slice(0, 10)}</td>
                     <td style={{ ...s.td, textAlign: 'right' }}><button style={s.btn} onClick={() => void toggleTenant(t.id)}>{openTenant === t.id ? 'Hide' : 'Inspect'}</button></td>
                   </tr>
                   {openTenant === t.id && (

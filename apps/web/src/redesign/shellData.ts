@@ -14,10 +14,11 @@ export interface NavItem { key: SectionKey; label: string; glyph: string; count?
 export const PRIMARY_NAV: NavItem[] = [
   { key: 'chat', label: 'Chat', glyph: 'C' },
   { key: 'stores', label: 'Stores', glyph: 'St' },
-  { key: 'marketplace', label: 'Marketplace', glyph: 'Mk' },
+  // Marketplace/Connectors/Plugins items removed: they had no real panes —
+  // each rendered a placeholder empty state on fully-connected workspaces
+  // and split the Apps/Stores taxonomy (validation sweep + UX review). Apps
+  // is the marketplace surface; Stores is the connectors surface.
   { key: 'apps', label: 'Apps', glyph: 'Ap' },
-  { key: 'connectors', label: 'Connectors', glyph: 'Co' },
-  { key: 'plugins', label: 'Plugins', glyph: 'Pl' },
   { key: 'skills', label: 'Skills', glyph: 'Sk', count: 5 },
   { key: 'agents', label: 'Agents', glyph: 'Ag', count: 5 },
   { key: 'models', label: 'Models', glyph: 'M' },
@@ -44,7 +45,9 @@ export const CONCIERGE_SEED: ChatMsg[] = [
   { from: 'shre', text: 'I’m Shre — your store concierge. Ask me anything, like “How were sales yesterday?” or “Which SKUs are running low?” You can connect a register whenever you’re ready. I’ll never block the chat on setup.', meta: 'Shre · Local' },
   { from: 'shre', text: 'RapidRMS is connected — I can see all 5 stores and live sales are flowing. Ask me “How were sales yesterday?” whenever you’re ready.', meta: 'Shre · Local' },
 ];
-export const SUGGESTIONS = ['How were sales yesterday?', 'Which SKUs are low?', 'Raise carton prices 3% at all stores'];
+// Read-only suggestions only: a mutating example ("raise prices…") beside
+// harmless questions blurred analysis vs action for new users (UX review).
+export const SUGGESTIONS = ['How were sales yesterday?', 'Which SKUs are low?', 'Compare this week to last week'];
 
 // Recallable conversation history (right-pane History tab). Preview uses canned
 // threads; wired build lists the tenant's conversations from the chat store.

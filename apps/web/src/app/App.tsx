@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { WhitelabelProvider } from '../whitelabel/WhitelabelProvider';
 import { AuthProvider, useAuth as useSupabaseAuth, type Tenant } from '../contexts/AuthContext';
 import { CanvasProvider } from '../aros-ai/CanvasContext';
@@ -47,9 +48,41 @@ function isOnboardingComplete(tenant: Tenant | null): boolean {
     || sessionStorage.getItem('aros-onboarding-complete') === 'true';
 }
 
+// Every route the SPA actually serves — anything else is honestly a 404 for
+// signed-out visitors instead of a silent bounce to /login (sweep finding).
+const KNOWN_PREFIXES = ['/login', '/auth', '/signup', '/reset-password', '/verify-email', '/legal', '/social', '/contact', '/start', '/connect', '/onboarding', '/platform', '/dashboard', '/developers', '/submit-plugin', '/billing', '/costs', '/marketplace', '/human', '/admin', '/stores', '/apps', '/skills', '/agents', '/models', '/computers', '/connection-health', '/settings', '/permissions', '/documents', '/edi-invoices', '/profile', '/users', '/workspace', '/team', '/usage', '/channels', '/oauth', '/preview'];
+
+/** Tab titles per route — every page shared one static title before (sweep). */
+const ROUTE_TITLES: Array<[string, string]> = [
+  ['/login', 'Sign in — AROS'], ['/signup', 'Sign up — AROS'], ['/reset-password', 'Reset password — AROS'],
+  ['/verify-email', 'Verify email — AROS'], ['/legal/terms', 'Terms of Service — AROS'], ['/legal/privacy', 'Privacy Policy — AROS'],
+  ['/contact', 'Contact — AROS'], ['/start', 'Get started — AROS'], ['/connect', 'Connect your store — AROS'],
+  ['/onboarding', 'Setup — AROS'], ['/platform', 'Platform console — AROS'], ['/dashboard', 'Home — AROS'],
+  ['/stores', 'Stores — AROS'], ['/team', 'Team — AROS'], ['/users', 'Team — AROS'], ['/billing', 'Billing — AROS'],
+  ['/usage', 'Usage — AROS'], ['/costs', 'Usage — AROS'], ['/settings', 'Settings — AROS'], ['/marketplace', 'Apps — AROS'],
+  ['/developers', 'Developers — AROS'], ['/auth/accept', 'Accept invite — AROS'],
+];
+
+function NotFoundPage() {
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Inter, system-ui, sans-serif', color: '#6b7280', padding: 20 }}>
+      <div style={{ textAlign: 'center', maxWidth: 420 }}>
+        <div style={{ fontSize: 24, fontWeight: 800, color: '#1a1a2e', marginBottom: 8 }}>AROS</div>
+        <div style={{ fontSize: 18, fontWeight: 600, color: '#1a1a2e', marginBottom: 6 }}>Page not found</div>
+        <p style={{ fontSize: 14, lineHeight: 1.5 }}>The page you're looking for doesn't exist or has moved.</p>
+        <a href="/" style={{ color: '#2563eb', fontSize: 14 }}>Back to the home page</a>
+      </div>
+    </div>
+  );
+}
+
 function AppContent() {
   const { user, session, tenant, loading, membershipError, onboardingStep, onboardingLoading } = useSupabaseAuth();
   const path = window.location.pathname;
+  useEffect(() => {
+    const match = ROUTE_TITLES.find(([prefix]) => path === prefix || path.startsWith(`${prefix}/`));
+    if (match) document.title = match[1];
+  }, [path]);
   const isAdmin = user?.app_metadata?.role === 'admin' || user?.app_metadata?.role === 'superadmin';
   const onboarded = isOnboardingComplete(tenant);
   // Single source of truth for where an authenticated session lands (see
@@ -134,8 +167,10 @@ function AppContent() {
     return <LegalPage kind="privacy" />;
   }
 
-  // Social media templates — public design tool
+  // Social media templates — internal operator tooling (contains marketing
+  // production instructions), never for anonymous visitors (sweep finding).
   if (path === '/social') {
+    if (!loading && !session) { window.location.replace('/login?returnTo=%2Fsocial'); return null; }
     return <SocialTemplates />;
   }
 
@@ -147,6 +182,11 @@ function AppContent() {
   // Landing page at root — show immediately (no auth wait needed for public page)
   if (path === '/' && !session) {
     return <><LandingPage /><ChatWidget /></>;
+  }
+
+  // Honest 404 for signed-out visitors on unknown routes.
+  if (!session && !loading && path !== '/' && !KNOWN_PREFIXES.some(p => path === p || path.startsWith(`${p}/`))) {
+    return <NotFoundPage />;
   }
 
   // ── Loading state for auth-required pages ──────────────────
@@ -221,6 +261,12 @@ function AuthenticatedRoutes({ path, isAdmin, onboarded, landing }: { path: stri
   // `?redesign=0` temporarily restores the legacy UI on this browser.
   let legacyShell = false;
   try { legacyShell = localStorage.getItem('aros-shell-legacy') === '1'; } catch { /* ignore */ }
+  // Routes the new shell has no pane for must be matched BEFORE the shell
+  // catch-all — /developers previously fell through and silently rendered
+  // Home (validation sweep finding).
+  if (!legacyShell && (path.startsWith('/developers') || path.startsWith('/submit-plugin'))) {
+    return <Shell><DeveloperPortal /></Shell>;
+  }
   if (!legacyShell) return <AppShell />;
 
   // Admin panel -> marketplace admin

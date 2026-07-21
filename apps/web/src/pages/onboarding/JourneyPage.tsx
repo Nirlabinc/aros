@@ -26,7 +26,7 @@ const STORE_READY = new Set(['connected', 'healthy']);
  * API — no duplicate connection form lives here.
  */
 export function JourneyPage() {
-  const { session, tenant, onboardingStep, onboardingStepData, onboardingLoading, refreshOnboarding } = useAuth();
+  const { session, tenant, onboardingStep, onboardingStepData, onboardingLoading, refreshOnboarding, signOut } = useAuth();
   const auth = useMemo(
     () => ({ accessToken: session?.access_token, tenantId: tenant?.id }),
     [session?.access_token, tenant?.id],
@@ -121,6 +121,15 @@ export function JourneyPage() {
         <div style={s.header}>
           <div style={s.logo}>AROS</div>
           <p style={s.tagline}>Let's get your workspace ready</p>
+          {/* Pre-onboarding pages have no shell — without this a mid-setup
+              user has NO way to sign out anywhere (validation sweep). */}
+          <button
+            type="button"
+            onClick={() => { void signOut().then(() => { window.location.href = '/login'; }); }}
+            style={{ position: 'fixed', top: 16, right: 16, background: 'none', border: 'none', color: '#9ca3af', fontSize: 13, cursor: 'pointer', textDecoration: 'underline' }}
+          >
+            Sign out
+          </button>
         </div>
 
         <div style={s.progress}>
