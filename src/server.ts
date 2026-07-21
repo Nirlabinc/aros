@@ -22,7 +22,38 @@ import { listTasks } from '../tasks/store.js';
 import { createSupabaseAdmin, createSupabaseAuthClient } from './supabase.js';
 import { validateAddMemberInput, INVITEE_NOT_REGISTERED } from './workspace-members.js';
 import { parsePlatformAdmins, isPlatformAdmin } from './platform-admin.js';
-import { NOTIFICATION_CATALOG, NOTIFICATION_CHANNELS, mergePreferences, validatePreferenceUpdate, type PreferenceRow } from './notifications.js';
+import { NOTIFICATION_CATALOG, NOTIFICATION_CHANNELS, mergePreferences, validatePreferenceUpdate, isEnabled, type PreferenceRow } from './notifications.js';
+import { sendEmail, emailConfigured } from './email.js';
+
+/**
+ * Best-effort workspace notification: email every ACTIVE member whose
+ * preferences enable `event` on the email channel (destination override
+ * respected, account email otherwise). Fire-and-forget — never throws, never
+ * blocks the caller; a notification lane must not fail an operation.
+ */
+async function notifyWorkspace(tenantId: string, event: string, subject: string, text: string): Promise<void> {
+  if (!emailConfigured()) return;
+  try {
+    const supabase = createSupabaseAdmin();
+    const [{ data: members }, { data: prefRows }] = await Promise.all([
+      supabase.from('tenant_members').select('user_id').eq('tenant_id', tenantId).eq('status', 'active'),
+      supabase.from('notification_preferences').select('user_id,event_type,channel,enabled,destination').eq('tenant_id', tenantId),
+    ]);
+    for (const member of members || []) {
+      const prefs = (prefRows || []).filter((p) => p.user_id === member.user_id) as Array<PreferenceRow & { user_id: string }>;
+      if (!isEnabled(prefs, event, 'email')) continue;
+      const override = prefs.find((p) => p.channel === 'email' && p.destination)?.destination;
+      let to = override || '';
+      if (!to) {
+        const { data } = await supabase.auth.admin.getUserById(member.user_id);
+        to = data?.user?.email || '';
+      }
+      if (to) void sendEmail(to, subject, `${text}\n\n— AROS · app.aros.live\nManage notifications: https://app.aros.live/notifications`);
+    }
+  } catch (err) {
+    console.error('[notify]', err instanceof Error ? err.message : err);
+  }
+}
 import { createTermsModule } from './terms/gate.js';
 import { createEventBus } from 'shre-sdk/events';
 import { createHeartbeatMonitor } from 'shre-sdk/heartbeat';
@@ -2251,6 +2282,8 @@ async function handleWorkspaceMemberAdd(
     detail: { email: invitee.email, role: input.role },
     ip: getClientIp(req),
   });
+  void notifyWorkspace(workspaceId, 'team-changes', 'Team change in your AROS workspace',
+    `${invitee.email} was ${invitedByEmail ? 'invited to' : 'added to'} the workspace as ${input.role}.`);
   json(res, 201, {
     invited: invitedByEmail,
     id: member.id,
@@ -2286,6 +2319,7 @@ async function handleWorkspaceMembersCompat(req: IncomingMessage, res: ServerRes
       const { data, error } = await supabase.from('tenant_members').update({ role }).eq('tenant_id', workspaceId).eq('id', memberId).select('id,role').single();
       if (error || !data) return json(res, 500, { error: error?.message || 'Role update failed' });
       await auditLog({ tenantId: workspaceId, userId: auth.userId, action: 'workspace.member_role_updated', resource: `member:${memberId}`, detail: { role }, ip: getClientIp(req) });
+      void notifyWorkspace(workspaceId, 'team-changes', 'Team change in your AROS workspace', `A member's role was changed to ${role}.`);
       return json(res, 200, { id: data.id, membershipRole: data.role });
     }
     if (req.method === 'DELETE') {
@@ -2293,6 +2327,7 @@ async function handleWorkspaceMembersCompat(req: IncomingMessage, res: ServerRes
       const { error } = await supabase.from('tenant_members').delete().eq('tenant_id', workspaceId).eq('id', memberId);
       if (error) return json(res, 500, { error: error.message });
       await auditLog({ tenantId: workspaceId, userId: auth.userId, action: 'workspace.member_removed', resource: `member:${memberId}`, detail: {}, ip: getClientIp(req) });
+      void notifyWorkspace(workspaceId, 'team-changes', 'Team change in your AROS workspace', 'A member was removed from the workspace.');
       return json(res, 200, { id: memberId });
     }
     json(res, 405, { error: 'Method not allowed' });

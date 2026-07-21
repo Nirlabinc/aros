@@ -51,6 +51,12 @@ export function StoresPage({ onConnect }: { onConnect?: () => void }) {
   }
 
   async function action(kind: 'test' | 'remove', id: string) {
+    if (kind === 'remove') {
+      const store = stores.find(s => s.id === id);
+      // Removal disconnects live data — a prominent one-click Remove beside
+      // Test invited misclicks (UX review). Name the store and the effect.
+      if (!window.confirm(`Remove ${store?.name || 'this store'}? AROS stops syncing its data immediately. You can reconnect it later with the same credentials.`)) return;
+    }
     setBusy(`${kind}:${id}`); setError('');
     try { if (kind === 'test') await testStore(auth, id); else await removeStore(auth, id); await load(); }
     catch (e) { setError(e instanceof Error ? e.message : `${kind} failed`); }

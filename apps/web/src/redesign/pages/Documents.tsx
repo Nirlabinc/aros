@@ -349,6 +349,28 @@ export function DocumentsPage() {
   const files = listing?.files ?? [];
   const empty = !loading && folders.length === 0 && files.length === 0;
 
+  // The backend 409s with an activation message when the Documents app isn't
+  // enabled for this workspace. Rendering that as a generic error BESIDE a
+  // usable-looking Upload/New-folder surface was a mixed state (validation
+  // sweep) — show one honest panel instead.
+  if (error && /activate the documents app/i.test(error)) {
+    return (
+      <div className="rsx-panel docs">
+        <div className="rsx-panel__head">
+          <div>
+            <div className="rsx-panel__eyebrow">Documents</div>
+          </div>
+        </div>
+        <div className="rsx-note">
+          <div className="rsx-note__title">Documents isn't active for this workspace</div>
+          <div className="rsx-note__body">
+            Install the Documents app from <a href="/apps">Apps</a> to store and share files here. Nothing is lost — this page lights up the moment it's activated.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="rsx-panel docs">
       <div className="rsx-panel__head">
