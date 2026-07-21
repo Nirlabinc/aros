@@ -104,6 +104,61 @@ const SHRE_ROUTER_URL = process.env.SHRE_ROUTER_URL || 'http://127.0.0.1:5497';
 const SHRE_PASSPORT_URL = process.env.SHRE_PASSPORT_URL || '';
 const PASSPORT_ADMIN_TOKEN = process.env.PASSPORT_ADMIN_TOKEN || '';
 let routerPassportToken = '';
+
+// Per-tenant passports: the router derives the acting tenant from the
+// PASSPORT entityId (x-tenant-id is ignored since the posture-parity change),
+// so authed users need a passport minted for THEIR router tenant — the shared
+// 'aros-platform' service passport scopes every answer to an empty store.
+const tenantPassportCache = new Map<string, { token: string; expiresAt: number }>();
+async function passportForTenant(entityId: string): Promise<string> {
+  const cached = tenantPassportCache.get(entityId);
+  if (cached && cached.expiresAt > Date.now()) return cached.token;
+  if (!SHRE_PASSPORT_URL || !PASSPORT_ADMIN_TOKEN) return routerPassportToken;
+  try {
+    const res = await fetch(`${SHRE_PASSPORT_URL}/v1/passport/issue`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${PASSPORT_ADMIN_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'SERVICE', entityId, scopes: ['chat'], ttlSeconds: 7200 }),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { token?: string };
+      if (data.token) {
+        tenantPassportCache.set(entityId, { token: data.token, expiresAt: Date.now() + 6_600_000 });
+        return data.token;
+      }
+    } else {
+      console.error(`[router-passport] tenant issue failed for ${entityId}: HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.error('[router-passport] tenant issue error:', (err as Error).message);
+  }
+  return routerPassportToken;
+}
+
+// Workspace UUID → router/warehouse tenant id (client-<N>), resolved from the
+// canonical connected RapidRMS connector. Cached briefly — chat sends a
+// request per message and the mapping changes only when a store (dis)connects.
+const routerTenantCache = new Map<string, { value: string; expiresAt: number }>();
+async function routerTenantFor(tenantId: string): Promise<string> {
+  const cached = routerTenantCache.get(tenantId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  let value = tenantId;
+  try {
+    const { data } = await createSupabaseAdmin()
+      .from('tenant_connectors')
+      .select('config')
+      .eq('tenant_id', tenantId)
+      .eq('type', 'rapidrms-api')
+      .eq('status', 'connected')
+      .limit(1)
+      .maybeSingle();
+    const clientId = (data?.config as Record<string, unknown> | null)?.clientId;
+    if (typeof clientId === 'string' && clientId.trim()) value = `client-${clientId.trim()}`;
+  } catch { /* fall through to the workspace UUID — router fails closed */ }
+  routerTenantCache.set(tenantId, { value, expiresAt: Date.now() + 60_000 });
+  return value;
+}
+
 async function refreshRouterPassport(): Promise<void> {
   if (!SHRE_PASSPORT_URL || !PASSPORT_ADMIN_TOKEN) return;
   try {
@@ -249,10 +304,31 @@ async function proxyRequest(req: IncomingMessage, res: ServerResponse, baseUrl: 
     if (token) headers.set('Authorization', `Bearer ${token}`);
   }
 
-  // Authenticate proxied router traffic that arrived anonymous (browser
-  // chat/demo). Never clobbers a caller-provided Authorization header.
-  if (upstreamPath.startsWith('/v1/') && !headers.has('authorization') && routerPassportToken) {
-    headers.set('Authorization', `Bearer ${routerPassportToken}`);
+  // Authenticate proxied router traffic. The router speaks PASSPORT JWTs
+  // only — but signed-in browsers send their Supabase access token, and
+  // forwarding that verbatim made every authed user's chat 401 while
+  // anonymous demo chat (which got the service passport) worked. Terminate
+  // user auth HERE: verify the Supabase token, swap in the service passport,
+  // and carry the resolved tenant on x-tenant-id for cost attribution. An
+  // Authorization header that is NOT a valid platform session is forwarded
+  // untouched (a caller holding a real passport keeps it; garbage fails
+  // closed at the router).
+  if (upstreamPath.startsWith('/v1/') && routerPassportToken) {
+    if (!headers.has('authorization')) {
+      headers.set('Authorization', `Bearer ${routerPassportToken}`);
+    } else {
+      const auth = await authenticateRequest(req);
+      if (auth) {
+        // The router's tenant registry speaks warehouse ids (client-<N>),
+        // not AROS workspace UUIDs — an unmapped identity silently scopes
+        // chat to an empty store and every answer reads $0. Resolve through
+        // the workspace's canonical RapidRMS connector, then mint a passport
+        // FOR that tenant (the router reads tenant from passport entityId).
+        const routerTenant = await routerTenantFor(auth.tenantId);
+        headers.set('Authorization', `Bearer ${await passportForTenant(routerTenant)}`);
+        if (!headers.has('x-tenant-id')) headers.set('x-tenant-id', routerTenant);
+      }
+    }
   }
 
   const body = ['GET', 'HEAD'].includes(req.method || 'GET') ? undefined : req;
