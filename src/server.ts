@@ -20,6 +20,7 @@ import { handleStripeWebhook } from './billing/webhook.js';
 import { provisionLicense } from './billing/license.js';
 import { listTasks } from '../tasks/store.js';
 import { createSupabaseAdmin, createSupabaseAuthClient } from './supabase.js';
+import { handlePublicBusinessApi } from './public/customer-api.js';
 import { validateAddMemberInput, INVITEE_NOT_REGISTERED } from './workspace-members.js';
 import { parsePlatformAdmins, isPlatformAdmin } from './platform-admin.js';
 import { NOTIFICATION_CATALOG, NOTIFICATION_CHANNELS, mergePreferences, validatePreferenceUpdate, isEnabled, type PreferenceRow } from './notifications.js';
@@ -4623,6 +4624,16 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (pathname.startsWith('/v1/') && !pathname.startsWith('/v1/traces/')) {
     return proxyRequest(req, res, SHRE_ROUTER_URL);
   }
+
+  // ── Public customer commerce (Regulars Phase 1) ─────────────────────────
+  // Unauthenticated, rate-limited, strict projection; serves the customer MCP
+  // gateway. Terminal for the whole prefix — the handler always answers with a
+  // customer-safe envelope (even near-misses), so nothing under this prefix
+  // falls through to the platform's generic 404/SPA output. This public,
+  // unauthenticated surface is intentionally ahead of the terms gate below
+  // (customers are not AROS operators and never see the clickwrap).
+  // Journey: docs/journeys/customer-orders-through-their-assistant.md
+  if (await handlePublicBusinessApi(req, res, requestUrl)) return;
 
   // ── Terms acceptance + AI disclosure (flag-gated) ──────────
   if (pathname === '/api/terms/status' && method === 'GET') {
