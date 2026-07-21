@@ -44,18 +44,36 @@ Reports land in `scripts/chat-eval/reports/<timestamp>/`:
 `results.jsonl` (one row per question per workspace), `report-<workspace>.md`,
 `summary.json` (fleet scoreboard).
 
+## Triage — reports become tasks
+
+`triage.mjs` closes the loop on the latest run (or `--run <dir>`):
+
+- **Engineering defects** (`empty-reply`, `tool-error`, `misroute-*`,
+  `no-comparison`, `tenant-name-missing`, `transport`) → GitHub issues on
+  `CHAT_EVAL_REPO`, labeled `chat-eval` + `chat-eval:<family>`, one issue per
+  (question, family) with affected workspaces and reply excerpts. Dedup by a
+  fingerprint embedded in the issue body — recurring failures get a comment,
+  not a duplicate. Needs `GITHUB_TOKEN` (repo scope).
+- **Operational signals** (per-tenant `ground-truth-mismatch` etc.) + the
+  fleet scoreboard → `POST CHAT_EVAL_DIGEST_URL` (owner-digest / shre-health
+  webhook, optional `CHAT_EVAL_DIGEST_TOKEN`). Tenant-data problems are not
+  code bugs, so they go to the health lane, not the issue tracker.
+
+`--dry-run` prints what would be filed without writing anything.
+
 ## Automation
 
 1. **Nightly fleet sweep (VPS):**
    ```
    17 9 * * * cd /opt/aros-platform && set -a && . ./.env && set +a && \
-     node scripts/chat-eval/run.mjs --all >> /var/log/chat-eval.log 2>&1
+     node scripts/chat-eval/run.mjs --all >> /var/log/chat-eval.log 2>&1; \
+     node scripts/chat-eval/triage.mjs >> /var/log/chat-eval.log 2>&1
    ```
 2. **Post-deploy gate:** run single-workspace mode against the demo tenant in
    the launch pipeline right after the beta smoke test; a failing exit code
    blocks promotion.
-3. **Reporting:** feed `summary.json` into owner-digest / shre-health; alert
-   when fleet pass rate drops or a `byReason` family spikes.
+3. **Reporting:** triage posts `summary.json` + operational signals to the
+   digest webhook; alert when fleet pass rate drops or a family spikes.
 
 ## Caveats
 
