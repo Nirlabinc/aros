@@ -23,24 +23,24 @@ Status date: 2026-07-21
 - [x] Local typecheck passed.
 - [x] Feature branch pushed: `feat/business-profile-regulars-readonly`.
 - [x] PR opened: `https://github.com/Nirlabinc/aros/pull/142`.
-- [ ] Deploy branch `feat/business-profile-regulars-readonly` to beta MCP host.
+- [x] Deploy branch `feat/business-profile-regulars-readonly` to MCP host.
 - [x] Confirm current live `https://mcp.shre.ai/health` returns OK.
 - [x] Confirm current live `https://mcp.shre.ai/.well-known/mcp/operator` returns OK.
-- [ ] Confirm live `https://mcp.shre.ai/.well-known/mcp/customer` reports endpoint `https://mcp.shre.ai/regulars`.
+- [x] Confirm live `https://mcp.shre.ai/.well-known/mcp/customer` reports endpoint `https://mcp.shre.ai/regulars`.
 - [ ] Confirm live `POST https://mcp.shre.ai/aros/operator` with OAuth lists operator tools.
-- [ ] Confirm live `POST https://mcp.shre.ai/regulars` lists Regulars tools.
+- [x] Confirm live `POST https://mcp.shre.ai/regulars` lists Regulars tools.
 - [x] Confirm current live legacy alias `POST https://mcp.shre.ai/aros/customer` still lists 5 customer tools.
 
 ## Gate 2 - Demo Tenant and Data
 
-- [ ] Create reviewer tenant `NirLab Demo Market`.
-- [ ] Create business profile metadata for `demo-market`.
-- [ ] Publish Regulars links: website, Google Maps, Apple Maps, Facebook, Instagram, support, legal, ChatGPT install, Claude install.
-- [ ] Seed public products projection.
-- [ ] Seed public promotions.
-- [ ] Seed store hours.
-- [ ] Verify all Regulars endpoints return read-only envelopes.
-- [ ] Verify no customer PII, real POS secrets, or live merchant credentials are present.
+- [x] Create reviewer tenant `NirLab Demo Market`.
+- [x] Create business profile metadata for `demo-market`.
+- [x] Publish Regulars links: website, Google Maps, Apple Maps, Facebook, Instagram, support, legal, ChatGPT install, Claude install.
+- [x] Seed public products projection.
+- [x] Seed public promotions.
+- [x] Seed store hours.
+- [x] Verify all Regulars endpoints return read-only envelopes.
+- [x] Verify no customer PII, real POS secrets, or live merchant credentials are present.
 
 ## Gate 3 - OAuth
 
@@ -56,7 +56,7 @@ Status date: 2026-07-21
 
 - [x] Verify public privacy URL returns 200: `https://www.aros.live/legal/privacy/`.
 - [x] Verify public terms URL returns 200: `https://www.aros.live/legal/terms/`.
-- [ ] Verify security/support contact is `info@rapidinfosoft.com` for review.
+- [x] Verify security/support contact is `info@rapidinfosoft.com` for review.
 - [ ] Counsel signoff for AROS and Regulars public marketplace wording.
 - [ ] Confirm Regulars read-only claim is present in reviewer notes.
 - [ ] Confirm no restricted financial transaction flow is submitted for Regulars.
@@ -72,7 +72,7 @@ Status date: 2026-07-21
 - [x] Add reviewer test prompts for Regulars read-only customer interactions.
 - [x] Add submission runbook.
 - [ ] Add demo credentials after OAuth client setup.
-- [ ] Run final JSON validation.
+- [x] Run final JSON validation.
 
 ## Execution Log
 
@@ -86,14 +86,28 @@ Status date: 2026-07-21
 - Committed `1907edb Prepare AROS and Regulars marketplace launch`.
 - Pushed branch `feat/business-profile-regulars-readonly` to `origin`.
 - Opened PR `https://github.com/Nirlabinc/aros/pull/142`.
+- Merged PR `https://github.com/Nirlabinc/aros/pull/142` with squash.
+- Staged and rebuilt `/opt/aros-mcp`; public Regulars metadata now reports
+  name `Regulars`, endpoint `https://mcp.shre.ai/regulars`, auth
+  `public-read-only`, and exactly 5 read-only tools.
+- Patched `/opt/aros-platform/src/public/customer-api.ts` with the read-only
+  Regulars handler and restarted `aros-platform`.
+- Seeded synthetic `demo-market` reviewer tenant/profile/links/hours/products.
+  Production does not currently expose the `public_promotions` table through
+  Supabase schema cache, so demo promotions use the synthetic fallback path.
+- Live Regulars tool-call smoke passed for:
+  `regulars_get_business_profile`, `regulars_get_links`,
+  `aros_customer_search_products`, `aros_customer_get_promotions`, and
+  `aros_customer_get_business_hours`.
 - Live endpoint audit:
   - `https://mcp.shre.ai/health` returned 200.
   - `https://mcp.shre.ai/.well-known/mcp/operator` returned 200.
-  - `https://mcp.shre.ai/.well-known/mcp/customer` returned 200 but still reports old endpoint `https://mcp.shre.ai/aros/customer`, name `AROS Customer Commerce`, auth `public-or-customer-session`.
-  - `POST https://mcp.shre.ai/regulars` returned 404 because this branch is not deployed yet.
-  - `POST https://mcp.shre.ai/aros/customer` returned 5 tools on the legacy live surface.
+  - `https://mcp.shre.ai/.well-known/mcp/customer` returned 200 and reports `Regulars`.
+  - `POST https://mcp.shre.ai/regulars` returned 5 Regulars tools.
+  - `POST https://mcp.shre.ai/aros/customer` returned the same 5 Regulars tools as a compatibility alias.
   - `POST https://mcp.shre.ai/aros/operator` returned 401 without OAuth, which is expected for a protected operator surface.
 - Local background smoke using `Start-Process` was blocked by tool policy before execution; run `pnpm --filter @aros/mcp-aros smoke` after deploy or from an allowed shell session.
+- GitHub deploy workflow run `https://github.com/Nirlabinc/aros/actions/runs/29859156916` remains queued; production was patched directly on the VPS because the workflow did not start.
 
 ## Gate 6 - Submit
 

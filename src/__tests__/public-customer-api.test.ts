@@ -127,9 +127,9 @@ describe('public customer API - grounded read-only data', () => {
   });
 
   it('products: DB error surfaces as 502, not a false empty answer', async () => {
-    seed({ ...business(), public_products_v: { data: null, error: { message: 'boom' } } });
+    seed({ ...business('real-market'), public_products_v: { data: null, error: { message: 'boom' } } });
     const res = mkRes();
-    await handlePublicBusinessApi(mkReq('GET'), res, url('/api/public/businesses/demo-market/products'));
+    await handlePublicBusinessApi(mkReq('GET'), res, url('/api/public/businesses/real-market/products'));
     expect(res.statusCode).toBe(502);
     expect(JSON.parse(res.body).refusal.code).toBe('projection_unavailable');
   });

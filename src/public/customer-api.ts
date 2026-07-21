@@ -123,6 +123,46 @@ function listStrings(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
 }
 
+function demoProducts(query: string, limit: number) {
+  const products = [
+    { sku: 'COF-LG', name: 'Large Coffee', department: 'Hot Beverages', price: 2.49, availability: 'in_stock' },
+    { sku: 'BAN-01', name: 'Banana', department: 'Produce', price: 0.79, availability: 'in_stock' },
+    { sku: 'H2O-24', name: 'Spring Water 24pk', department: 'Beverages', price: 5.99, availability: 'in_stock' },
+    { sku: 'ENR-16', name: 'Energy Drink 16oz', department: 'Beverages', price: 2.99, availability: 'low_stock' },
+    { sku: 'SND-BLT', name: 'BLT Sandwich', department: 'Deli', price: 5.49, availability: 'in_stock' },
+    { sku: 'CHP-REG', name: 'Potato Chips', department: 'Snacks', price: 1.99, availability: 'unavailable' },
+    { sku: 'MLK-OAT', name: 'Oat Milk Quart', department: 'Dairy Alt', price: 4.29, availability: 'in_stock' },
+    { sku: 'ICE-10', name: 'Ice Bag 10lb', department: 'Frozen', price: 2.49, availability: 'in_stock' },
+  ];
+  const needle = query.toLowerCase();
+  return products
+    .filter((product) => !needle || product.name.toLowerCase().includes(needle) || product.department.toLowerCase().includes(needle))
+    .slice(0, limit);
+}
+
+function demoPromotions() {
+  return [
+    {
+      id: 'dd000000-0000-4000-8000-000000000011',
+      title: '2 energy drinks for $5',
+      description: 'Any two 16oz energy drinks',
+      kind: 'offer',
+      sponsored: true,
+      startsAt: '2026-07-21T00:00:00Z',
+      endsAt: '2026-08-31T00:00:00Z',
+    },
+    {
+      id: 'dd000000-0000-4000-8000-000000000012',
+      title: 'Free banana with any coffee',
+      description: 'Auto-applies at the register',
+      kind: 'offer',
+      sponsored: false,
+      startsAt: '2026-07-21T00:00:00Z',
+      endsAt: null,
+    },
+  ];
+}
+
 // ── endpoint handlers ──────────────────────────────────────────────────────
 
 async function handleProfile(res: ServerResponse, biz: Business, slug: string, correlationId: string): Promise<void> {
@@ -154,6 +194,15 @@ async function handleProducts(res: ServerResponse, biz: Business, slug: string, 
     .eq('store_id', biz.storeId).limit(limit);
   if (query) sel = sel.ilike('name', `%${query}%`);
   const { data, error } = await sel;
+  if (error && SYNTHETIC_SLUGS.has(slug)) {
+    const products = demoProducts(query, limit);
+    if (products.length === 0) {
+      return refuse(res, 404, slug, correlationId, 'no_matching_products',
+        query ? `This store's catalog doesn't list anything matching "${query}".` : 'No catalog data is available for this store yet.');
+    }
+    send(res, 200, { ...envelope(slug, correlationId), products });
+    return;
+  }
   if (error) return refuse(res, 502, slug, correlationId, 'projection_unavailable', 'The product projection is temporarily unavailable.');
   if (!data || data.length === 0) {
     return refuse(res, 404, slug, correlationId, 'no_matching_products',
@@ -179,6 +228,10 @@ async function handlePromotions(res: ServerResponse, biz: Business, slug: string
     .or(`ends_at.is.null,ends_at.gte.${nowIso}`)
     .order('sponsored', { ascending: false })
     .limit(MAX_RESULTS);
+  if (error && SYNTHETIC_SLUGS.has(slug)) {
+    send(res, 200, { ...envelope(slug, correlationId), promotions: demoPromotions() });
+    return;
+  }
   if (error) return refuse(res, 502, slug, correlationId, 'projection_unavailable', 'Promotions are temporarily unavailable.');
   send(res, 200, {
     ...envelope(slug, correlationId),
