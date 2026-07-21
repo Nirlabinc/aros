@@ -1,0 +1,599 @@
+﻿{
+    "capturedAt":  "2026-07-21T19:33:49.4568459Z",
+    "endpoints":  {
+                      "https://mcp.shre.ai/health":  {
+                                                         "status":  200,
+                                                         "contentType":  "application/json",
+                                                         "body":  {
+                                                                      "ok":  true,
+                                                                      "service":  "@aros/mcp-aros",
+                                                                      "arosApiConfigured":  true,
+                                                                      "demoMode":  false,
+                                                                      "resource":  "https://mcp.shre.ai/aros"
+                                                                  }
+                                                     },
+                      "https://mcp.shre.ai/.well-known/mcp/operator":  {
+                                                                           "status":  200,
+                                                                           "contentType":  "application/json",
+                                                                           "body":  {
+                                                                                        "name":  "AROS Retail Operations",
+                                                                                        "publisher":  "Nirlab Inc.",
+                                                                                        "description":  "Remote MCP server for AROS retail operations intelligence.",
+                                                                                        "endpoint":  "https://mcp.shre.ai/aros/operator",
+                                                                                        "transport":  "streamable-http",
+                                                                                        "auth":  {
+                                                                                                     "type":  "oauth2",
+                                                                                                     "issuer":  "https://id.shre.ai",
+                                                                                                     "resource":  "https://mcp.shre.ai/aros",
+                                                                                                     "scopes":  [
+                                                                                                                    "aros.store.read",
+                                                                                                                    "aros.connector.read",
+                                                                                                                    "aros.inventory.read",
+                                                                                                                    "aros.exceptions.read",
+                                                                                                                    "aros.action.draft"
+                                                                                                                ]
+                                                                                                 },
+                                                                                        "tools":  [
+                                                                                                      {
+                                                                                                          "name":  "aros_get_store_summary",
+                                                                                                          "description":  "Read sales, transaction, department, top-mover, and alert summary for scoped AROS stores.",
+                                                                                                          "annotations":  {
+                                                                                                                              "readOnlyHint":  true,
+                                                                                                                              "destructiveHint":  false
+                                                                                                                          }
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "name":  "aros_get_connector_health",
+                                                                                                          "description":  "Read connector status, last test, last sync, and operator-visible failure details.",
+                                                                                                          "annotations":  {
+                                                                                                                              "readOnlyHint":  true,
+                                                                                                                              "destructiveHint":  false
+                                                                                                                          }
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "name":  "aros_get_inventory_risks",
+                                                                                                          "description":  "Read low-stock and stockout inventory signals versus configured reorder points for scoped AROS stores. Stores connected through data sources without inventory support are reported as such.",
+                                                                                                          "annotations":  {
+                                                                                                                              "readOnlyHint":  true,
+                                                                                                                              "destructiveHint":  false
+                                                                                                                          }
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "name":  "aros_get_exception_summary",
+                                                                                                          "description":  "Read void-exception counts and amounts derived from POS invoice data for scoped AROS stores. Refund, no-sale, and per-cashier exception types are not available from currently connected data sources and are reported as unsupported.",
+                                                                                                          "annotations":  {
+                                                                                                                              "readOnlyHint":  true,
+                                                                                                                              "destructiveHint":  false
+                                                                                                                          }
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "name":  "aros_draft_action",
+                                                                                                          "description":  "Create an approval-ready draft action inside AROS. This never mutates POS systems directly.",
+                                                                                                          "annotations":  {
+                                                                                                                              "readOnlyHint":  false,
+                                                                                                                              "destructiveHint":  false
+                                                                                                                          }
+                                                                                                      }
+                                                                                                  ]
+                                                                                    }
+                                                                       },
+                      "https://mcp.shre.ai/.well-known/mcp/customer":  {
+                                                                           "status":  200,
+                                                                           "contentType":  "application/json",
+                                                                           "body":  {
+                                                                                        "name":  "Regulars",
+                                                                                        "publisher":  "Nirlab Inc.",
+                                                                                        "description":  "Remote MCP server for read-only Regulars business profiles, catalog search, promotions, hours, and approved links.",
+                                                                                        "endpoint":  "https://mcp.shre.ai/regulars",
+                                                                                        "transport":  "streamable-http",
+                                                                                        "auth":  {
+                                                                                                     "type":  "public-read-only",
+                                                                                                     "issuer":  "https://id.shre.ai",
+                                                                                                     "resource":  "https://mcp.shre.ai/aros",
+                                                                                                     "scopes":  [
+                                                                                                                    "regulars.profile.read",
+                                                                                                                    "regulars.catalog.read",
+                                                                                                                    "regulars.promotions.read",
+                                                                                                                    "regulars.hours.read",
+                                                                                                                    "regulars.links.read"
+                                                                                                                ]
+                                                                                                 },
+                                                                                        "tools":  [
+                                                                                                      {
+                                                                                                          "name":  "regulars_get_business_profile",
+                                                                                                          "description":  "Read the business-approved public Regulars profile for a business. This tool is read-only and cannot change business data.",
+                                                                                                          "annotations":  {
+                                                                                                                              "readOnlyHint":  true,
+                                                                                                                              "destructiveHint":  false
+                                                                                                                          }
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "name":  "aros_customer_search_products",
+                                                                                                          "description":  "Search the public customer catalog for products available at a business location.",
+                                                                                                          "annotations":  {
+                                                                                                                              "readOnlyHint":  true,
+                                                                                                                              "destructiveHint":  false
+                                                                                                                          }
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "name":  "aros_customer_get_promotions",
+                                                                                                          "description":  "Read public promotions available to customers for a business or store.",
+                                                                                                          "annotations":  {
+                                                                                                                              "readOnlyHint":  true,
+                                                                                                                              "destructiveHint":  false
+                                                                                                                          }
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "name":  "aros_customer_get_business_hours",
+                                                                                                          "description":  "Read public business hours, pickup windows, delivery options, and store contact details.",
+                                                                                                          "annotations":  {
+                                                                                                                              "readOnlyHint":  true,
+                                                                                                                              "destructiveHint":  false
+                                                                                                                          }
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "name":  "regulars_get_links",
+                                                                                                          "description":  "Read approved public website, map, social, support, legal, QR/deep link, and assistant install links for a business. This tool is read-only.",
+                                                                                                          "annotations":  {
+                                                                                                                              "readOnlyHint":  true,
+                                                                                                                              "destructiveHint":  false
+                                                                                                                          }
+                                                                                                      }
+                                                                                                  ]
+                                                                                    }
+                                                                       },
+                      "https://mcp.shre.ai/.well-known/oauth-protected-resource":  {
+                                                                                       "status":  200,
+                                                                                       "contentType":  "application/json",
+                                                                                       "body":  {
+                                                                                                    "resource":  "https://mcp.shre.ai/aros",
+                                                                                                    "authorization_servers":  [
+                                                                                                                                  "https://id.shre.ai"
+                                                                                                                              ],
+                                                                                                    "scopes_supported":  [
+                                                                                                                             "aros.store.read",
+                                                                                                                             "aros.connector.read",
+                                                                                                                             "aros.inventory.read",
+                                                                                                                             "aros.exceptions.read",
+                                                                                                                             "aros.action.draft"
+                                                                                                                         ],
+                                                                                                    "bearer_methods_supported":  [
+                                                                                                                                     "header"
+                                                                                                                                 ],
+                                                                                                    "resource_documentation":  "https://aros.live/docs/marketplace"
+                                                                                                }
+                                                                                   },
+                      "https://mcp.shre.ai/.well-known/oauth-authorization-server":  {
+                                                                                         "status":  200,
+                                                                                         "contentType":  "application/json",
+                                                                                         "body":  {
+                                                                                                      "issuer":  "https://id.shre.ai",
+                                                                                                      "authorization_endpoint":  "https://id.shre.ai/oauth/v2/authorize",
+                                                                                                      "token_endpoint":  "https://id.shre.ai/oauth/v2/token",
+                                                                                                      "introspection_endpoint":  "https://id.shre.ai/oauth/v2/introspect",
+                                                                                                      "userinfo_endpoint":  "https://id.shre.ai/oidc/v1/userinfo",
+                                                                                                      "revocation_endpoint":  "https://id.shre.ai/oauth/v2/revoke",
+                                                                                                      "end_session_endpoint":  "https://id.shre.ai/oidc/v1/end_session",
+                                                                                                      "device_authorization_endpoint":  "https://id.shre.ai/oauth/v2/device_authorization",
+                                                                                                      "jwks_uri":  "https://id.shre.ai/oauth/v2/keys",
+                                                                                                      "scopes_supported":  [
+                                                                                                                               "openid",
+                                                                                                                               "profile",
+                                                                                                                               "email",
+                                                                                                                               "phone",
+                                                                                                                               "address",
+                                                                                                                               "offline_access",
+                                                                                                                               "aros.store.read",
+                                                                                                                               "aros.connector.read",
+                                                                                                                               "aros.inventory.read",
+                                                                                                                               "aros.exceptions.read",
+                                                                                                                               "aros.action.draft"
+                                                                                                                           ],
+                                                                                                      "response_types_supported":  [
+                                                                                                                                       "code",
+                                                                                                                                       "id_token",
+                                                                                                                                       "id_token token"
+                                                                                                                                   ],
+                                                                                                      "response_modes_supported":  [
+                                                                                                                                       "query",
+                                                                                                                                       "fragment",
+                                                                                                                                       "form_post"
+                                                                                                                                   ],
+                                                                                                      "grant_types_supported":  [
+                                                                                                                                    "authorization_code",
+                                                                                                                                    "implicit",
+                                                                                                                                    "refresh_token",
+                                                                                                                                    "client_credentials",
+                                                                                                                                    "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                                                                                                                                    "urn:ietf:params:oauth:grant-type:device_code"
+                                                                                                                                ],
+                                                                                                      "subject_types_supported":  [
+                                                                                                                                      "public"
+                                                                                                                                  ],
+                                                                                                      "id_token_signing_alg_values_supported":  [
+                                                                                                                                                    "EdDSA",
+                                                                                                                                                    "RS256",
+                                                                                                                                                    "RS384",
+                                                                                                                                                    "RS512",
+                                                                                                                                                    "ES256",
+                                                                                                                                                    "ES384",
+                                                                                                                                                    "ES512"
+                                                                                                                                                ],
+                                                                                                      "request_object_signing_alg_values_supported":  [
+                                                                                                                                                          "RS256"
+                                                                                                                                                      ],
+                                                                                                      "token_endpoint_auth_methods_supported":  [
+                                                                                                                                                    "none",
+                                                                                                                                                    "client_secret_basic",
+                                                                                                                                                    "client_secret_post",
+                                                                                                                                                    "private_key_jwt"
+                                                                                                                                                ],
+                                                                                                      "token_endpoint_auth_signing_alg_values_supported":  [
+                                                                                                                                                               "RS256"
+                                                                                                                                                           ],
+                                                                                                      "revocation_endpoint_auth_methods_supported":  [
+                                                                                                                                                         "none",
+                                                                                                                                                         "client_secret_basic",
+                                                                                                                                                         "client_secret_post",
+                                                                                                                                                         "private_key_jwt"
+                                                                                                                                                     ],
+                                                                                                      "revocation_endpoint_auth_signing_alg_values_supported":  [
+                                                                                                                                                                    "RS256"
+                                                                                                                                                                ],
+                                                                                                      "introspection_endpoint_auth_methods_supported":  [
+                                                                                                                                                            "client_secret_basic",
+                                                                                                                                                            "private_key_jwt"
+                                                                                                                                                        ],
+                                                                                                      "introspection_endpoint_auth_signing_alg_values_supported":  [
+                                                                                                                                                                       "RS256"
+                                                                                                                                                                   ],
+                                                                                                      "claims_supported":  [
+                                                                                                                               "sub",
+                                                                                                                               "aud",
+                                                                                                                               "exp",
+                                                                                                                               "iat",
+                                                                                                                               "iss",
+                                                                                                                               "auth_time",
+                                                                                                                               "nonce",
+                                                                                                                               "acr",
+                                                                                                                               "amr",
+                                                                                                                               "c_hash",
+                                                                                                                               "at_hash",
+                                                                                                                               "act",
+                                                                                                                               "scopes",
+                                                                                                                               "client_id",
+                                                                                                                               "azp",
+                                                                                                                               "preferred_username",
+                                                                                                                               "name",
+                                                                                                                               "family_name",
+                                                                                                                               "given_name",
+                                                                                                                               "locale",
+                                                                                                                               "email",
+                                                                                                                               "email_verified",
+                                                                                                                               "phone_number",
+                                                                                                                               "phone_number_verified"
+                                                                                                                           ],
+                                                                                                      "code_challenge_methods_supported":  [
+                                                                                                                                               "S256"
+                                                                                                                                           ],
+                                                                                                      "ui_locales_supported":  [
+                                                                                                                                   "ar",
+                                                                                                                                   "bg",
+                                                                                                                                   "cs",
+                                                                                                                                   "de",
+                                                                                                                                   "en",
+                                                                                                                                   "es",
+                                                                                                                                   "fr",
+                                                                                                                                   "hu",
+                                                                                                                                   "id",
+                                                                                                                                   "it",
+                                                                                                                                   "ja",
+                                                                                                                                   "ko",
+                                                                                                                                   "mk",
+                                                                                                                                   "nl",
+                                                                                                                                   "pl",
+                                                                                                                                   "pt",
+                                                                                                                                   "ro",
+                                                                                                                                   "ru",
+                                                                                                                                   "sv",
+                                                                                                                                   "tr",
+                                                                                                                                   "uk",
+                                                                                                                                   "zh"
+                                                                                                                               ],
+                                                                                                      "request_parameter_supported":  true,
+                                                                                                      "request_uri_parameter_supported":  false,
+                                                                                                      "backchannel_logout_supported":  true,
+                                                                                                      "backchannel_logout_session_supported":  true
+                                                                                                  }
+                                                                                     },
+                      "https://www.aros.live/legal/privacy/":  {
+                                                                   "status":  200,
+                                                                   "contentType":  "text/html"
+                                                               },
+                      "https://www.aros.live/legal/terms/":  {
+                                                                 "status":  200,
+                                                                 "contentType":  "text/html"
+                                                             }
+                  },
+    "regularsCalls":  {
+                          "regulars_get_business_profile":  {
+                                                                "ok":  true,
+                                                                "status":  200,
+                                                                "correlationId":  "b51b2ad6-c1fa-4632-b12a-3134f9f4db41",
+                                                                "payload":  {
+                                                                                "businessSlug":  "demo-market",
+                                                                                "channel":  "customer",
+                                                                                "source":  "synthetic_demo",
+                                                                                "asOf":  "2026-07-21T19:33:51.294Z",
+                                                                                "correlationId":  "b51b2ad6-c1fa-4632-b12a-3134f9f4db41",
+                                                                                "profile":  {
+                                                                                                "businessSlug":  "demo-market",
+                                                                                                "name":  "Demo Market",
+                                                                                                "store":  {
+                                                                                                              "id":  "dd000000-0000-4000-8000-000000000002",
+                                                                                                              "name":  "Demo Market - Main St",
+                                                                                                              "timezone":  "America/New_York"
+                                                                                                          },
+                                                                                                "category":  "Convenience store",
+                                                                                                "phone":  "+1-555-0100",
+                                                                                                "website":  "https://regulars.aros.live/demo-market",
+                                                                                                "address":  {
+                                                                                                                "region":  "GA",
+                                                                                                                "street":  "100 Main St",
+                                                                                                                "country":  "US",
+                                                                                                                "locality":  "Calhoun",
+                                                                                                                "postalCode":  "30701"
+                                                                                                            },
+                                                                                                "serviceArea":  {
+
+                                                                                                                },
+                                                                                                "readonly":  true
+                                                                                            }
+                                                                            }
+                                                            },
+                          "regulars_get_links":  {
+                                                     "ok":  true,
+                                                     "status":  200,
+                                                     "correlationId":  "69bac46b-496e-423d-a4fe-c8addc0ed7df",
+                                                     "payload":  {
+                                                                     "businessSlug":  "demo-market",
+                                                                     "channel":  "customer",
+                                                                     "source":  "synthetic_demo",
+                                                                     "asOf":  "2026-07-21T19:33:51.782Z",
+                                                                     "correlationId":  "69bac46b-496e-423d-a4fe-c8addc0ed7df",
+                                                                     "links":  {
+                                                                                   "website":  "https://regulars.aros.live/demo-market",
+                                                                                   "maps":  {
+                                                                                                "apple":  "https://maps.apple.com/?q=Demo%20Market%20Calhoun%20GA",
+                                                                                                "google":  "https://www.google.com/maps/search/?api=1\u0026query=Demo%20Market%20Calhoun%20GA"
+                                                                                            },
+                                                                                   "social":  {
+
+                                                                                              },
+                                                                                   "assistantInstall":  {
+                                                                                                            "chatgpt":  "https://regulars.aros.live/demo-market/connect/chatgpt",
+                                                                                                            "claude":  "https://regulars.aros.live/demo-market/connect/claude"
+                                                                                                        },
+                                                                                   "support":  "mailto:info@rapidinfosoft.com",
+                                                                                   "legal":  [
+                                                                                                 "https://www.aros.live/legal/privacy/",
+                                                                                                 "https://www.aros.live/legal/terms/"
+                                                                                             ]
+                                                                               },
+                                                                     "readonly":  true
+                                                                 }
+                                                 },
+                          "aros_customer_search_products":  {
+                                                                "ok":  true,
+                                                                "status":  200,
+                                                                "correlationId":  "8fdf7b6c-efcb-4bdf-80f6-bc9433365fd8",
+                                                                "payload":  {
+                                                                                "businessSlug":  "demo-market",
+                                                                                "channel":  "customer",
+                                                                                "source":  "synthetic_demo",
+                                                                                "asOf":  "2026-07-21T19:33:52.460Z",
+                                                                                "correlationId":  "8fdf7b6c-efcb-4bdf-80f6-bc9433365fd8",
+                                                                                "products":  [
+                                                                                                 {
+                                                                                                     "sku":  "H2O-24",
+                                                                                                     "name":  "Spring Water 24pk",
+                                                                                                     "department":  "Beverages",
+                                                                                                     "price":  5.99,
+                                                                                                     "availability":  "in_stock"
+                                                                                                 }
+                                                                                             ]
+                                                                            }
+                                                            },
+                          "aros_customer_get_promotions":  {
+                                                               "ok":  true,
+                                                               "status":  200,
+                                                               "correlationId":  "d0f2515f-b518-4272-b267-04bf1ef90ddf",
+                                                               "payload":  {
+                                                                               "businessSlug":  "demo-market",
+                                                                               "channel":  "customer",
+                                                                               "source":  "synthetic_demo",
+                                                                               "asOf":  "2026-07-21T19:33:52.953Z",
+                                                                               "correlationId":  "d0f2515f-b518-4272-b267-04bf1ef90ddf",
+                                                                               "promotions":  [
+                                                                                                  {
+                                                                                                      "id":  "dd000000-0000-4000-8000-000000000011",
+                                                                                                      "title":  "2 energy drinks for $5",
+                                                                                                      "description":  "Any two 16oz energy drinks",
+                                                                                                      "kind":  "offer",
+                                                                                                      "sponsored":  true,
+                                                                                                      "startsAt":  "2026-07-21T00:00:00Z",
+                                                                                                      "endsAt":  "2026-08-31T00:00:00Z"
+                                                                                                  },
+                                                                                                  {
+                                                                                                      "id":  "dd000000-0000-4000-8000-000000000012",
+                                                                                                      "title":  "Free banana with any coffee",
+                                                                                                      "description":  "Auto-applies at the register",
+                                                                                                      "kind":  "offer",
+                                                                                                      "sponsored":  false,
+                                                                                                      "startsAt":  "2026-07-21T00:00:00Z",
+                                                                                                      "endsAt":  null
+                                                                                                  }
+                                                                                              ]
+                                                                           }
+                                                           },
+                          "aros_customer_get_business_hours":  {
+                                                                   "ok":  true,
+                                                                   "status":  200,
+                                                                   "correlationId":  "45843690-7bc5-4080-8f20-4a17db44975f",
+                                                                   "payload":  {
+                                                                                   "businessSlug":  "demo-market",
+                                                                                   "channel":  "customer",
+                                                                                   "source":  "synthetic_demo",
+                                                                                   "asOf":  "2026-07-21T19:33:53.279Z",
+                                                                                   "correlationId":  "45843690-7bc5-4080-8f20-4a17db44975f",
+                                                                                   "store":  "Demo Market - Main St",
+                                                                                   "timezone":  "America/New_York",
+                                                                                   "hours":  {
+                                                                                                 "fri":  "06:00-23:00",
+                                                                                                 "mon":  "06:00-22:00",
+                                                                                                 "sat":  "07:00-23:00",
+                                                                                                 "sun":  "07:00-21:00",
+                                                                                                 "thu":  "06:00-22:00",
+                                                                                                 "tue":  "06:00-22:00",
+                                                                                                 "wed":  "06:00-22:00"
+                                                                                             }
+                                                                               }
+                                                               }
+                      },
+    "regularsTools":  [
+                          {
+                              "name":  "regulars_get_business_profile",
+                              "description":  "Read the business-approved public Regulars profile for a business. This tool is read-only and cannot change business data.",
+                              "inputSchema":  {
+                                                  "type":  "object",
+                                                  "properties":  {
+                                                                     "businessSlug":  {
+                                                                                          "type":  "string",
+                                                                                          "description":  "Public business slug."
+                                                                                      },
+                                                                     "storeId":  {
+                                                                                     "type":  "string",
+                                                                                     "description":  "Optional public store ID."
+                                                                                 }
+                                                                 },
+                                                  "required":  [
+                                                                   "businessSlug"
+                                                               ],
+                                                  "additionalProperties":  false
+                                              },
+                              "annotations":  {
+                                                  "readOnlyHint":  true,
+                                                  "destructiveHint":  false
+                                              }
+                          },
+                          {
+                              "name":  "aros_customer_search_products",
+                              "description":  "Search the public customer catalog for products available at a business location.",
+                              "inputSchema":  {
+                                                  "type":  "object",
+                                                  "properties":  {
+                                                                     "businessSlug":  {
+                                                                                          "type":  "string",
+                                                                                          "description":  "Public business slug."
+                                                                                      },
+                                                                     "query":  {
+                                                                                   "type":  "string",
+                                                                                   "description":  "Product search query."
+                                                                               },
+                                                                     "storeId":  {
+                                                                                     "type":  "string",
+                                                                                     "description":  "Optional public store ID."
+                                                                                 },
+                                                                     "limit":  {
+                                                                                   "type":  "number",
+                                                                                   "description":  "Maximum products to return."
+                                                                               }
+                                                                 },
+                                                  "required":  [
+                                                                   "businessSlug",
+                                                                   "query"
+                                                               ],
+                                                  "additionalProperties":  false
+                                              },
+                              "annotations":  {
+                                                  "readOnlyHint":  true,
+                                                  "destructiveHint":  false
+                                              }
+                          },
+                          {
+                              "name":  "aros_customer_get_promotions",
+                              "description":  "Read public promotions available to customers for a business or store.",
+                              "inputSchema":  {
+                                                  "type":  "object",
+                                                  "properties":  {
+                                                                     "businessSlug":  {
+                                                                                          "type":  "string",
+                                                                                          "description":  "Public business slug."
+                                                                                      },
+                                                                     "storeId":  {
+                                                                                     "type":  "string",
+                                                                                     "description":  "Optional public store ID."
+                                                                                 }
+                                                                 },
+                                                  "required":  [
+                                                                   "businessSlug"
+                                                               ],
+                                                  "additionalProperties":  false
+                                              },
+                              "annotations":  {
+                                                  "readOnlyHint":  true,
+                                                  "destructiveHint":  false
+                                              }
+                          },
+                          {
+                              "name":  "aros_customer_get_business_hours",
+                              "description":  "Read public business hours, pickup windows, delivery options, and store contact details.",
+                              "inputSchema":  {
+                                                  "type":  "object",
+                                                  "properties":  {
+                                                                     "businessSlug":  {
+                                                                                          "type":  "string",
+                                                                                          "description":  "Public business slug."
+                                                                                      },
+                                                                     "storeId":  {
+                                                                                     "type":  "string",
+                                                                                     "description":  "Optional public store ID."
+                                                                                 }
+                                                                 },
+                                                  "required":  [
+                                                                   "businessSlug"
+                                                               ],
+                                                  "additionalProperties":  false
+                                              },
+                              "annotations":  {
+                                                  "readOnlyHint":  true,
+                                                  "destructiveHint":  false
+                                              }
+                          },
+                          {
+                              "name":  "regulars_get_links",
+                              "description":  "Read approved public website, map, social, support, legal, QR/deep link, and assistant install links for a business. This tool is read-only.",
+                              "inputSchema":  {
+                                                  "type":  "object",
+                                                  "properties":  {
+                                                                     "businessSlug":  {
+                                                                                          "type":  "string",
+                                                                                          "description":  "Public business slug."
+                                                                                      },
+                                                                     "storeId":  {
+                                                                                     "type":  "string",
+                                                                                     "description":  "Optional public store ID."
+                                                                                 }
+                                                                 },
+                                                  "required":  [
+                                                                   "businessSlug"
+                                                               ],
+                                                  "additionalProperties":  false
+                                              },
+                              "annotations":  {
+                                                  "readOnlyHint":  true,
+                                                  "destructiveHint":  false
+                                              }
+                          }
+                      ]
+}
