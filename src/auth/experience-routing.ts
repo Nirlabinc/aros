@@ -130,12 +130,12 @@ export async function loadExperiencePolicy(supabase: { from(table: string): any 
     supabase.from('workspace_experience_settings').select('default_experience').eq('tenant_id', input.workspaceId).maybeSingle(),
     supabase.from('user_experience_preferences').select('preferred_experience').eq('tenant_id', input.workspaceId).eq('user_id', input.userId).maybeSingle(),
     supabase.from('tenant_members').select('experience_grants').eq('tenant_id', input.workspaceId).eq('user_id', input.userId).eq('status', 'active').maybeSingle(),
-    supabase.from('marketplace_app_entitlements').select('enabled,status').eq('tenant_id', input.workspaceId).eq('app_id', 'mib').maybeSingle(),
+    supabase.from('marketplace_app_entitlements').select('app_key,status').eq('tenant_id', input.workspaceId).eq('app_key', 'mib').maybeSingle(),
   ]);
   return {
     defaultExperience: setting?.default_experience ?? null,
     preferredExperience: preference?.preferred_experience ?? null,
     experienceGrants: membership?.experience_grants ?? ['aros'],
-    mibEnabled: Boolean(entitlement?.enabled || membership?.experience_grants?.includes?.('mib')),
+    mibEnabled: Boolean(entitlement?.status === 'active' || membership?.experience_grants?.includes?.('mib')),
   };
 }

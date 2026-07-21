@@ -27,7 +27,7 @@ async function main() {
     checks: {
       arosOnlyFallsBackToAros: arosOnly.experience === 'aros',
       mibGrantRoutesToMib: mibEnabled.experience === 'mib',
-      mibTargetUsesOidcStart: new URL(mibEnabled.targetUrl).pathname === '/api/auth/aros/start',
+      mibTargetUsesOidcStart: new URL(mibEnabled.targetUrl).pathname === '/api/auth/shre/start',
       handoffPresent: Boolean(handoff),
       handoffWorkspaceMatches: decoded?.workspaceId === workspaceId,
       handoffEmailMatches: decoded?.email === email,
