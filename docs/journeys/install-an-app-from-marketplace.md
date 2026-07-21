@@ -42,8 +42,14 @@ opening it lands on the app's real page — no "not installed" screen.
 - `/api/apps`, `/api/marketplace/entitlements`, `/api/marketplace/install`,
   `/api/apps/:id/grant` live (all pre-existing).
 - Documents needs `MIB_DOCS_BASE_URL` + `MIB_DOCS_ADMIN_TOKEN` server-side for
-  the per-tenant token registration; until wired, the Documents page shows its
-  own honest error state (never fabricated content).
+  the per-tenant token registration (wired in prod 2026-07-21); until wired,
+  the Documents page shows its own honest error state (never fabricated
+  content).
+- The tenant's MIB workspace: by convention its id == the AROS tenant id
+  (created automatically the first time someone from the tenant crosses to MIB
+  via Open MIB / experience routing). Until it exists, token registration
+  404s and retries on the next activation; `tenants.mib_workspace_id`
+  overrides the convention per tenant.
 
 ## Out of scope
 - Using the Documents / EDI Invoices apps themselves (their own journeys).

@@ -4155,18 +4155,24 @@ function timeAgo(isoDate: string): string {
 const DOCUMENTS_APP_KEY = 'documents';
 
 async function resolveMibWorkspaceId(tenantId: string): Promise<string | null> {
-  // Prefer a per-tenant mapping stored on the tenant row; fall back to a single
-  // workspace env for single-tenant dev. A not-yet-migrated `mib_workspace_id`
-  // column simply yields the env fallback rather than erroring.
+  // Precedence: explicit per-tenant mapping (tenants.mib_workspace_id) →
+  // single-workspace env (dev) → the AROS↔MIB convention. A not-yet-migrated
+  // `mib_workspace_id` column simply falls through rather than erroring.
   try {
     const supabase = createSupabaseAdmin();
     const { data } = await supabase.from('tenants').select('mib_workspace_id').eq('id', tenantId).maybeSingle();
     const mapped = (data as { mib_workspace_id?: string | null } | null)?.mib_workspace_id;
     if (mapped) return mapped;
   } catch {
-    // Column/table access failed — fall through to the env fallback.
+    // Column/table access failed — fall through.
   }
-  return process.env.MIB_DOCS_WORKSPACE_ID || null;
+  if (process.env.MIB_DOCS_WORKSPACE_ID) return process.env.MIB_DOCS_WORKSPACE_ID;
+  // Convention: MIB's OIDC experience-routing bridge creates the tenant's MIB
+  // workspace with id == the AROS tenant id (mib007 server/src/auth/aros-oidc.ts),
+  // so the tenant id IS the workspace id unless explicitly overridden. If that
+  // workspace doesn't exist in MIB yet, token registration 404s and is retried
+  // on the next activation — provisioning stays idempotent either way.
+  return UUID_RE.test(tenantId) ? tenantId : null;
 }
 
 /**
