@@ -344,6 +344,12 @@ export function Signup() {
               <button type="submit" disabled={loading} className="aros-auth__btn">
                 {loading ? 'Creating account…' : 'Create account'}
               </button>
+
+              <p style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.5, marginTop: 10, textAlign: 'center' }}>
+                By creating an account you agree to the{' '}
+                <a className="aros-auth__link" href="/legal/terms" target="_blank" rel="noreferrer">Terms of Service</a> and{' '}
+                <a className="aros-auth__link" href="/legal/privacy" target="_blank" rel="noreferrer">Privacy Policy</a>.
+              </p>
             </form>
           </div>
 

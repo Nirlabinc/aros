@@ -7,6 +7,7 @@
 export type SectionKey =
   | 'chat' | 'stores' | 'marketplace' | 'apps' | 'connectors' | 'plugins' | 'skills' | 'agents'
   | 'models' | 'devices' | 'permissions' | 'health' | 'documents' | 'team' | 'billing' | 'usage' | 'settings'
+  | 'notifications' | 'profile'
   | 'edi-invoices';
 
 export interface NavItem { key: SectionKey; label: string; glyph: string; count?: number; }
@@ -14,6 +15,10 @@ export interface NavItem { key: SectionKey; label: string; glyph: string; count?
 export const PRIMARY_NAV: NavItem[] = [
   { key: 'chat', label: 'Chat', glyph: 'C' },
   { key: 'stores', label: 'Stores', glyph: 'St' },
+  // Marketplace/Connectors/Plugins were removed by the 07-20 validation sweep
+  // because they had no real panes; they're back by founder direction now that
+  // each renders a real page (MarketplacePage / ConnectorsPage / PluginsPage).
+  // Marketplace = discover/install; Apps = active apps A→Z.
   { key: 'marketplace', label: 'Marketplace', glyph: 'Mk' },
   { key: 'apps', label: 'Apps', glyph: 'Ap' },
   { key: 'connectors', label: 'Connectors', glyph: 'Co' },
@@ -26,13 +31,20 @@ export const PRIMARY_NAV: NavItem[] = [
   { key: 'health', label: 'Connection Health', glyph: 'H' },
 ];
 
+// In-shell marketplace apps: rendered inside the shell when the workspace has
+// an active entitlement (installed from Marketplace), surfaced as dynamic nav
+// entries — not part of the fixed workspace nav.
+export const EMBEDDED_APP_NAV: Record<'documents' | 'edi-invoices', NavItem> = {
+  documents: { key: 'documents', label: 'Documents', glyph: 'Dc' },
+  'edi-invoices': { key: 'edi-invoices', label: 'EDI Invoices', glyph: 'ED' },
+};
+
 export const WORKSPACE_NAV: NavItem[] = [
-  { key: 'documents', label: 'Documents', glyph: 'Dc' },
-  { key: 'edi-invoices', label: 'EDI Invoices', glyph: 'ED' },
   { key: 'team', label: 'Team', glyph: 'Tm' },
   { key: 'billing', label: 'Billing', glyph: 'Bi' },
   { key: 'usage', label: 'Usage', glyph: 'Us' },
   { key: 'settings', label: 'Settings', glyph: 'Se' },
+  { key: 'notifications', label: 'Notifications', glyph: 'No' },
 ];
 
 export const HEALTH = { healthy: 2, degraded: 1, down: 1 };
@@ -44,7 +56,9 @@ export const CONCIERGE_SEED: ChatMsg[] = [
   { from: 'shre', text: 'I’m Shre — your store concierge. Ask me anything, like “How were sales yesterday?” or “Which SKUs are running low?” You can connect a register whenever you’re ready. I’ll never block the chat on setup.', meta: 'Shre · Local' },
   { from: 'shre', text: 'RapidRMS is connected — I can see all 5 stores and live sales are flowing. Ask me “How were sales yesterday?” whenever you’re ready.', meta: 'Shre · Local' },
 ];
-export const SUGGESTIONS = ['How were sales yesterday?', 'Which SKUs are low?', 'Raise carton prices 3% at all stores'];
+// Read-only suggestions only: a mutating example ("raise prices…") beside
+// harmless questions blurred analysis vs action for new users (UX review).
+export const SUGGESTIONS = ['How were sales yesterday?', 'Which SKUs are low?', 'Compare this week to last week'];
 
 // Recallable conversation history (right-pane History tab). Preview uses canned
 // threads; wired build lists the tenant's conversations from the chat store.
@@ -225,6 +239,16 @@ export const SECTIONS: Record<Exclude<SectionKey, 'chat'>, SectionSpec> = {
       { mark: 'CO', title: 'Store concierge', sub: '2,350 calls · $42.10 (frontier)', ...rowStatus(s('on', 'Running')), action: 'View' },
     ],
   },
+  notifications: {
+    eyebrow: 'Administration', primaryCta: 'Save preferences',
+    lead: 'Choose which notifications reach you and on which channel (email, text).',
+    stats: [{ value: 5, label: 'Notification types' }, { value: 2, label: 'Channels' }],
+  },
+  profile: {
+    eyebrow: 'Account', primaryCta: 'Save changes',
+    lead: 'Your personal account — display name, sign-in password, and email. Workspace-wide settings live under Settings.',
+    form: [{ label: 'Display name', value: 'Dana Reyes' }, { label: 'Email', value: 'dana@fivepointsmarket.com' }],
+  },
   settings: {
     eyebrow: 'Administration', primaryCta: 'Save changes',
     lead: 'Workspace name, branding, and account preferences.',
@@ -248,7 +272,7 @@ export const STORES_SCOPE = ['Main St', 'Oak Ave', '3rd St Express', 'Harbor', '
 export const SECTION_TITLES: Record<SectionKey, string> = {
   chat: 'Concierge', stores: 'Stores', marketplace: 'Marketplace', apps: 'Apps', connectors: 'Connectors', plugins: 'Plugins', skills: 'Skills', agents: 'Agents',
   models: 'Models', devices: 'Computers', permissions: 'Permissions', health: 'Connection Health',
-  documents: 'Documents', team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings', 'edi-invoices': 'EDI Invoices',
+  documents: 'Documents', team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings', notifications: 'Notifications', profile: 'Profile', 'edi-invoices': 'EDI Invoices',
 };
 
 function rowStatus([status, statusLabel]: [Status, string]) { return { status, statusLabel }; }

@@ -20,6 +20,41 @@ import { handleStripeWebhook } from './billing/webhook.js';
 import { provisionLicense } from './billing/license.js';
 import { listTasks } from '../tasks/store.js';
 import { createSupabaseAdmin, createSupabaseAuthClient } from './supabase.js';
+import { handlePublicBusinessApi } from './public/customer-api.js';
+import { validateAddMemberInput, INVITEE_NOT_REGISTERED } from './workspace-members.js';
+import { parsePlatformAdmins, isPlatformAdmin } from './platform-admin.js';
+import { NOTIFICATION_CATALOG, NOTIFICATION_CHANNELS, mergePreferences, validatePreferenceUpdate, isEnabled, type PreferenceRow } from './notifications.js';
+import { sendEmail, emailConfigured } from './email.js';
+
+/**
+ * Best-effort workspace notification: email every ACTIVE member whose
+ * preferences enable `event` on the email channel (destination override
+ * respected, account email otherwise). Fire-and-forget — never throws, never
+ * blocks the caller; a notification lane must not fail an operation.
+ */
+async function notifyWorkspace(tenantId: string, event: string, subject: string, text: string): Promise<void> {
+  if (!emailConfigured()) return;
+  try {
+    const supabase = createSupabaseAdmin();
+    const [{ data: members }, { data: prefRows }] = await Promise.all([
+      supabase.from('tenant_members').select('user_id').eq('tenant_id', tenantId).eq('status', 'active'),
+      supabase.from('notification_preferences').select('user_id,event_type,channel,enabled,destination').eq('tenant_id', tenantId),
+    ]);
+    for (const member of members || []) {
+      const prefs = (prefRows || []).filter((p) => p.user_id === member.user_id) as Array<PreferenceRow & { user_id: string }>;
+      if (!isEnabled(prefs, event, 'email')) continue;
+      const override = prefs.find((p) => p.channel === 'email' && p.destination)?.destination;
+      let to = override || '';
+      if (!to) {
+        const { data } = await supabase.auth.admin.getUserById(member.user_id);
+        to = data?.user?.email || '';
+      }
+      if (to) void sendEmail(to, subject, `${text}\n\n— AROS · app.aros.live\nManage notifications: https://app.aros.live/notifications`);
+    }
+  } catch (err) {
+    console.error('[notify]', err instanceof Error ? err.message : err);
+  }
+}
 import { createTermsModule } from './terms/gate.js';
 import { createEventBus } from 'shre-sdk/events';
 import { createHeartbeatMonitor } from 'shre-sdk/heartbeat';
@@ -57,7 +92,18 @@ import {
   getEdiItems,
   revertEdi,
 } from '../connectors/rapidrms-edi.js';
-import { fetchStoreSalesRange, fetchStoreSummary, hasSummaryMapper, type StoreSummary } from '../connectors/data-service.js';
+import {
+  EXCEPTION_SUPPORTED_TYPES,
+  EXCEPTION_UNSUPPORTED_TYPES,
+  fetchExceptionSummary,
+  fetchInventoryRisks,
+  fetchStoreSalesRange,
+  fetchStoreSummary,
+  hasSummaryMapper,
+  type InventoryRiskItem,
+  type StoreSummary,
+  type VoidExceptionBucket,
+} from '../connectors/data-service.js';
 import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
 import { proxyToMib } from '../connectors/mib-documents.js';
 import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
@@ -91,6 +137,61 @@ const SHRE_ROUTER_URL = process.env.SHRE_ROUTER_URL || 'http://127.0.0.1:5497';
 const SHRE_PASSPORT_URL = process.env.SHRE_PASSPORT_URL || '';
 const PASSPORT_ADMIN_TOKEN = process.env.PASSPORT_ADMIN_TOKEN || '';
 let routerPassportToken = '';
+
+// Per-tenant passports: the router derives the acting tenant from the
+// PASSPORT entityId (x-tenant-id is ignored since the posture-parity change),
+// so authed users need a passport minted for THEIR router tenant — the shared
+// 'aros-platform' service passport scopes every answer to an empty store.
+const tenantPassportCache = new Map<string, { token: string; expiresAt: number }>();
+async function passportForTenant(entityId: string): Promise<string> {
+  const cached = tenantPassportCache.get(entityId);
+  if (cached && cached.expiresAt > Date.now()) return cached.token;
+  if (!SHRE_PASSPORT_URL || !PASSPORT_ADMIN_TOKEN) return routerPassportToken;
+  try {
+    const res = await fetch(`${SHRE_PASSPORT_URL}/v1/passport/issue`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${PASSPORT_ADMIN_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'SERVICE', entityId, scopes: ['chat'], ttlSeconds: 7200 }),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { token?: string };
+      if (data.token) {
+        tenantPassportCache.set(entityId, { token: data.token, expiresAt: Date.now() + 6_600_000 });
+        return data.token;
+      }
+    } else {
+      console.error(`[router-passport] tenant issue failed for ${entityId}: HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.error('[router-passport] tenant issue error:', (err as Error).message);
+  }
+  return routerPassportToken;
+}
+
+// Workspace UUID → router/warehouse tenant id (client-<N>), resolved from the
+// canonical connected RapidRMS connector. Cached briefly — chat sends a
+// request per message and the mapping changes only when a store (dis)connects.
+const routerTenantCache = new Map<string, { value: string; expiresAt: number }>();
+async function routerTenantFor(tenantId: string): Promise<string> {
+  const cached = routerTenantCache.get(tenantId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  let value = tenantId;
+  try {
+    const { data } = await createSupabaseAdmin()
+      .from('tenant_connectors')
+      .select('config')
+      .eq('tenant_id', tenantId)
+      .eq('type', 'rapidrms-api')
+      .eq('status', 'connected')
+      .limit(1)
+      .maybeSingle();
+    const clientId = (data?.config as Record<string, unknown> | null)?.clientId;
+    if (typeof clientId === 'string' && clientId.trim()) value = `client-${clientId.trim()}`;
+  } catch { /* fall through to the workspace UUID — router fails closed */ }
+  routerTenantCache.set(tenantId, { value, expiresAt: Date.now() + 60_000 });
+  return value;
+}
+
 async function refreshRouterPassport(): Promise<void> {
   if (!SHRE_PASSPORT_URL || !PASSPORT_ADMIN_TOKEN) return;
   try {
@@ -216,7 +317,7 @@ function readTaskToken(): string {
   return '';
 }
 
-async function proxyRequest(req: IncomingMessage, res: ServerResponse, baseUrl: string): Promise<void> {
+async function proxyRequest(req: IncomingMessage, res: ServerResponse, baseUrl: string, jsonBody?: Record<string, unknown> | null): Promise<void> {
   const current = requestUrl(req);
   const upstreamPath = current.pathname.replace(/^\/sx-tasks(?=\/|$)/, '') || '/';
   const upstreamUrl = new URL(upstreamPath, baseUrl);
@@ -236,13 +337,39 @@ async function proxyRequest(req: IncomingMessage, res: ServerResponse, baseUrl: 
     if (token) headers.set('Authorization', `Bearer ${token}`);
   }
 
-  // Authenticate proxied router traffic that arrived anonymous (browser
-  // chat/demo). Never clobbers a caller-provided Authorization header.
-  if (upstreamPath.startsWith('/v1/') && !headers.has('authorization') && routerPassportToken) {
-    headers.set('Authorization', `Bearer ${routerPassportToken}`);
+  // Authenticate proxied router traffic. The router speaks PASSPORT JWTs
+  // only — but signed-in browsers send their Supabase access token, and
+  // forwarding that verbatim made every authed user's chat 401 while
+  // anonymous demo chat (which got the service passport) worked. Terminate
+  // user auth HERE: verify the Supabase token, swap in the service passport,
+  // and carry the resolved tenant on x-tenant-id for cost attribution. An
+  // Authorization header that is NOT a valid platform session is forwarded
+  // untouched (a caller holding a real passport keeps it; garbage fails
+  // closed at the router).
+  if (upstreamPath.startsWith('/v1/') && routerPassportToken) {
+    if (!headers.has('authorization')) {
+      headers.set('Authorization', `Bearer ${routerPassportToken}`);
+    } else {
+      const auth = await authenticateRequest(req);
+      if (auth) {
+        // The router's tenant registry speaks warehouse ids (client-<N>),
+        // not AROS workspace UUIDs — an unmapped identity silently scopes
+        // chat to an empty store and every answer reads $0. Resolve through
+        // the workspace's canonical RapidRMS connector, then mint a passport
+        // FOR that tenant (the router reads tenant from passport entityId).
+        const routerTenant = await routerTenantFor(auth.tenantId);
+        headers.set('Authorization', `Bearer ${await passportForTenant(routerTenant)}`);
+        if (!headers.has('x-tenant-id')) headers.set('x-tenant-id', routerTenant);
+      }
+    }
   }
 
-  const body = ['GET', 'HEAD'].includes(req.method || 'GET') ? undefined : req;
+  const body = ['GET', 'HEAD'].includes(req.method || 'GET')
+    ? undefined
+    : jsonBody !== undefined
+      ? JSON.stringify(jsonBody)
+      : req;
+  if (jsonBody !== undefined) headers.set('content-type', 'application/json');
   const upstream = await fetch(upstreamUrl, {
     method: req.method,
     headers,
@@ -564,6 +691,29 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
 
   try {
     const supabase = createSupabaseAdmin();
+
+    // Billing status is tenant-private (plan/tier/Stripe presence). Require an
+    // authenticated member of THIS tenant — previously this was unauthenticated,
+    // so any tenantId could be read (IDOR).
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) {
+      return json(res, 401, { error: 'Authentication required' });
+    }
+    const { data: { user }, error: authError } = await supabase.auth.getUser(authHeader.slice(7));
+    if (authError || !user) {
+      return json(res, 401, { error: 'Invalid session' });
+    }
+    const { data: membership } = await supabase
+      .from('tenant_members')
+      .select('role')
+      .eq('tenant_id', tenantId)
+      .eq('user_id', user.id)
+      .limit(1)
+      .maybeSingle();
+    if (!membership) {
+      return json(res, 403, { error: 'You do not have access to this tenant' });
+    }
+
     const { data, error } = await supabase
       .from('tenants')
       .select(
@@ -602,16 +752,45 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
       periodTo?: string;
     };
     let currentPeriodUsage: CurrentPeriodUsage | null = null;
+    // Per-model breakdown — billing is tied to the MODELS that served the
+    // workspace, not just a total (founder directive). Same meter, same
+    // period, tenant-scoped (meter's by-model filter shipped in shreai#1047).
+    let byModel: Array<{ model: string; count: number; totalCents: number; totalTokens: number }> = [];
 
     try {
       const meterUrl = new URL('/v1/costs/summary', SHRE_METER_URL);
       meterUrl.searchParams.set('from', periodStart);
       meterUrl.searchParams.set('to', periodEnd);
-      meterUrl.searchParams.set('tenantId', tenantId);
+      // The meter records the ROUTER tenant (client-<N>, from the chat
+      // passport) — querying by workspace UUID matches nothing and Usage
+      // reads $0 forever. Same mapping the /v1 proxy uses.
+      const meterTenant = await routerTenantFor(tenantId);
+      meterUrl.searchParams.set('tenantId', meterTenant);
 
-      const meterRes = await fetch(meterUrl);
+      // The meter's gate-auth accepts a service identity header.
+      const meterHeaders = { 'x-gate-user': 'aros-platform', 'x-gate-role': 'service' };
+      const meterRes = await fetch(meterUrl, { headers: meterHeaders });
       if (meterRes.ok) {
         currentPeriodUsage = (await meterRes.json()) as CurrentPeriodUsage;
+      }
+
+      const byModelUrl = new URL('/v1/costs/by-model', SHRE_METER_URL);
+      byModelUrl.searchParams.set('from', periodStart);
+      byModelUrl.searchParams.set('to', periodEnd);
+      byModelUrl.searchParams.set('tenantId', meterTenant);
+      const byModelRes = await fetch(byModelUrl, { headers: meterHeaders });
+      if (byModelRes.ok) {
+        const rows = (await byModelRes.json()) as Array<{ model?: string; requests?: number; costUsd?: number; totalTokens?: number }>;
+        if (Array.isArray(rows)) {
+          byModel = rows
+            .filter((r) => typeof r.model === 'string' && r.model)
+            .map((r) => ({
+              model: r.model as string,
+              count: r.requests || 0,
+              totalCents: Math.round((r.costUsd || 0) * 100),
+              totalTokens: r.totalTokens || 0,
+            }));
+        }
       }
     } catch {
       // Best-effort only. Billing status still returns cached subscription state.
@@ -620,10 +799,17 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
     json(res, 200, {
       tenantId: data.id,
       plan: subscription?.plan || data.plan,
-      billingStatus: subscription?.status || data.billing_status,
+      // A free-plan workspace is honestly "active" (it works), not "none" —
+      // Billing said "none" while Settings said "active" (sweep finding).
+      // tenants.billing_status is the literal string "none" for free-plan
+      // rows — a working free workspace is honestly "active".
+      billingStatus: subscription?.status || (data.billing_status && data.billing_status !== 'none' ? data.billing_status : 'active'),
       stripeCustomerId: data.stripe_customer_id,
       subscription,
       licenseTier: data.license_tier,
+      // No invoicing exists until usage-based Stripe items land; 0 is the
+      // honest count (the UI showed a permanent "—" placeholder).
+      invoiceCount: 0,
       currentPeriodSpendCents:
         currentPeriodUsage?.totalCostUsd != null
           ? Math.round(currentPeriodUsage.totalCostUsd * 100)
@@ -633,6 +819,7 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
         ? {
             totalCents: Math.round((currentPeriodUsage.totalCostUsd || 0) * 100),
             eventCount: currentPeriodUsage.totalRequests,
+            byModel: byModel.length > 0 ? byModel.map((m) => ({ model: m.model, label: m.model, count: m.count, totalCents: m.totalCents })) : undefined,
             periodStart,
             periodEnd,
           }
@@ -768,6 +955,12 @@ async function setOnboardingComponent(
 }
 
 async function handleOnboardingStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // Fail closed: unauthenticated callers get 401 before any parameter
+  // validation can leak endpoint shape (journey-walk J1/J2 seam).
+  if (!req.headers.authorization) {
+    return json(res, 401, { error: 'Authentication required' });
+  }
+
   const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
   const tenantId = url.searchParams.get('tenantId');
 
@@ -818,6 +1011,10 @@ async function handleOnboardingStatus(req: IncomingMessage, res: ServerResponse)
 }
 
 async function handleOnboardingComplete(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!req.headers.authorization?.startsWith('Bearer ')) {
+    return json(res, 401, { error: 'Authentication required' });
+  }
+
   const body = await parseJsonBody(req);
   if (!body) return json(res, 400, { error: 'Invalid JSON' });
 
@@ -901,6 +1098,10 @@ async function handleOnboardingComplete(req: IncomingMessage, res: ServerRespons
 }
 
 async function handleOnboardingProgress(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!req.headers.authorization) {
+    return json(res, 401, { error: 'Authentication required' });
+  }
+
   const body = await parseJsonBody(req);
   if (!body) return json(res, 400, { error: 'Invalid JSON' });
 
@@ -955,6 +1156,10 @@ async function handleOnboardingProgress(req: IncomingMessage, res: ServerRespons
 }
 
 async function handleOnboardingComponent(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!req.headers.authorization) {
+    return json(res, 401, { error: 'Authentication required' });
+  }
+
   const body = await parseJsonBody(req);
   if (!body) return json(res, 400, { error: 'Invalid JSON' });
   const tenantId = typeof body.tenantId === 'string' ? body.tenantId : '';
@@ -1857,19 +2062,240 @@ async function handleWorkspaceCompat(req: IncomingMessage, res: ServerResponse, 
   json(res, 200, { id: data.id, name: data.name, plan: data.plan, timezone: data.timezone, currency: data.currency, status: data.status, createdAt: data.created_at, updatedAt: data.updated_at });
 }
 
+/**
+ * Workspace agents — the endpoint the Intelligence page tries FIRST. It
+ * 404'd since the redesign shipped, so the page silently fell back to the
+ * static catalog and masked workspace truth (validation sweep finding).
+ * Returns the tenant's provisioned agent resources.
+ */
+async function handleWorkspaceAgents(req: IncomingMessage, res: ServerResponse, workspaceId: string): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (auth.tenantId !== workspaceId) return json(res, 403, { error: 'Workspace access denied' });
+  try {
+    const { data, error } = await createSupabaseAdmin()
+      .from('tenant_resources')
+      .select('id,name,provider,status,config,capabilities')
+      .eq('tenant_id', workspaceId)
+      .eq('kind', 'agent')
+      .order('name');
+    if (error) throw error;
+    json(res, 200, (data || []).map((r) => ({
+      id: r.id, name: r.name,
+      description: String((r.config as Record<string, unknown> | null)?.description || ''),
+      status: r.status || 'unknown', provider: r.provider || undefined,
+      capabilities: Array.isArray(r.capabilities) ? r.capabilities : [],
+      model: (r.config as Record<string, unknown> | null)?.model,
+    })));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to list workspace agents';
+    console.error('[workspace.agents]', message);
+    json(res, 500, { error: message });
+  }
+}
+
+/**
+ * Live model discovery for the Models page — proxies the shre model
+ * gateway's /v1/models when configured. Without config it 404s and the page
+ * keeps its catalog fallback (never a fake list).
+ */
+const SHRE_GATEWAY_URL = process.env.SHRE_GATEWAY_URL || '';
+const SHRE_GATEWAY_KEY = process.env.SHRE_GATEWAY_KEY || process.env.SHRE_MK_KEY || '';
+async function handleGatewayModelRouting(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!SHRE_GATEWAY_URL || !SHRE_GATEWAY_KEY) return json(res, 404, { error: 'Model gateway not configured' });
+  try {
+    const upstream = await fetch(`${SHRE_GATEWAY_URL.replace(/\/$/, '')}/v1/models`, {
+      headers: { authorization: `Bearer ${SHRE_GATEWAY_KEY}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!upstream.ok) return json(res, 404, { error: `Model gateway unavailable (HTTP ${upstream.status})` });
+    const payload = (await upstream.json()) as { data?: Array<{ id?: string; owned_by?: string }> };
+    json(res, 200, {
+      availableModels: (payload.data || [])
+        .filter((m) => typeof m.id === 'string' && m.id)
+        .map((m) => ({ id: m.id, name: m.id, provider: m.owned_by || 'shre-gateway' })),
+    });
+  } catch (err) {
+    console.error('[gateway.models]', err instanceof Error ? err.message : err);
+    json(res, 404, { error: 'Model gateway unreachable' });
+  }
+}
+
+/**
+ * Per-user notification preferences for the current workspace.
+ * GET  → catalog + channels + merged event×channel matrix (unset pairs show
+ *        code defaults so the UI never renders a blank state).
+ * PUT  → upsert ONE {event, channel, enabled, destination} choice.
+ * Preferences are per user per workspace; delivery lanes (owner-digest
+ * recipients, future SMS) read this table via the same defaults
+ * (src/notifications.ts isEnabled).
+ */
+async function handleNotificationPreferences(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const supabase = createSupabaseAdmin();
+
+  try {
+    if (req.method === 'GET') {
+      const { data, error } = await supabase
+        .from('notification_preferences')
+        .select('event_type,channel,enabled,destination')
+        .eq('tenant_id', auth.tenantId)
+        .eq('user_id', auth.userId);
+      if (error) throw error;
+      return json(res, 200, {
+        catalog: NOTIFICATION_CATALOG,
+        channels: NOTIFICATION_CHANNELS,
+        preferences: mergePreferences((data || []) as PreferenceRow[]),
+      });
+    }
+
+    const body = await parseJsonBody(req);
+    const input = validatePreferenceUpdate(body);
+    if ('error' in input) return json(res, 400, { error: input.error });
+
+    const { error: upsertError } = await supabase
+      .from('notification_preferences')
+      .upsert(
+        {
+          tenant_id: auth.tenantId,
+          user_id: auth.userId,
+          event_type: input.event,
+          channel: input.channel,
+          enabled: input.enabled,
+          destination: input.destination,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'tenant_id,user_id,event_type,channel' },
+      );
+    if (upsertError) throw upsertError;
+
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'notifications.preference_updated',
+      resource: `${input.event}:${input.channel}`,
+      detail: { enabled: input.enabled, hasDestination: Boolean(input.destination) },
+      ip: getClientIp(req),
+    });
+    json(res, 200, { ok: true, event: input.event, channel: input.channel, enabled: input.enabled, destination: input.destination });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : (err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : 'Notification preferences request failed');
+    console.error('[notifications.preferences]', message);
+    json(res, 500, { error: message });
+  }
+}
+
 async function workspaceMembers(workspaceId: string) {
   const supabase = createSupabaseAdmin();
-  const { data, error } = await supabase.from('tenant_members').select('id,user_id,role,status,joined_at').eq('tenant_id', workspaceId).order('joined_at');
+  const { data, error } = await supabase.from('tenant_members').select('id,user_id,role,status,joined_at,invited_at,accepted_at').eq('tenant_id', workspaceId).order('joined_at');
   if (error) throw error;
   return Promise.all((data || []).map(async member => {
     const { data: userResult } = await supabase.auth.admin.getUserById(member.user_id);
     const user = userResult?.user;
+    // An emailed invitee who has never signed in since the invite shows as
+    // "invited", not "active" — the list read as instant activation before.
+    // Self-healing without a write: once they land and sign in, the
+    // last_sign_in_at check flips them to their stored status. (accepted_at
+    // alone can't discriminate — legacy owner rows also carry null.)
+    const signedInSinceInvite = Boolean(user?.last_sign_in_at && (!member.invited_at || Date.parse(user.last_sign_in_at) >= Date.parse(member.invited_at)));
+    const displayStatus = member.status === 'active' && !member.accepted_at && !signedInSinceInvite ? 'invited' : member.status;
     return {
-      id: member.id, principalType: 'user', principalId: member.user_id, status: member.status,
+      id: member.id, principalType: 'user', principalId: member.user_id,
+      status: displayStatus,
       membershipRole: member.role, createdAt: member.joined_at, updatedAt: member.joined_at,
       user: user ? { id: user.id, name: user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'Member', email: user.email || '' } : null,
     };
   }));
+}
+
+/**
+ * Add a registered user to the workspace by email (v1 of invites:
+ * registration-first — no email delivery dependency; the invitee signs up at
+ * app.aros.live themselves, then an owner/admin adds them here). Role is
+ * capped at admin/member; ownership is a deliberate follow-up role change.
+ */
+async function handleWorkspaceMemberAdd(
+  req: IncomingMessage,
+  res: ServerResponse,
+  workspaceId: string,
+  auth: { userId: string; role: string },
+): Promise<void> {
+  const body = await parseJsonBody(req);
+  const input = validateAddMemberInput(body);
+  if ('error' in input) return json(res, 400, { error: input.error });
+
+  const supabase = createSupabaseAdmin();
+
+  // GoTrue's admin API has no email-lookup endpoint in this SDK version —
+  // page through users (newest projects are small; hard cap keeps this
+  // bounded). Case-insensitive match on the normalized address.
+  let invitee: { id: string; email: string } | null = null;
+  for (let page = 1; page <= 25 && !invitee; page += 1) {
+    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 200 });
+    if (error) return json(res, 500, { error: `User lookup failed: ${error.message}` });
+    for (const user of data.users) {
+      if ((user.email || '').toLowerCase() === input.email) { invitee = { id: user.id, email: user.email || input.email }; break; }
+    }
+    if (data.users.length < 200) break;
+  }
+  // Not registered yet → send a real email invite (Supabase creates the user
+  // and mails a set-password link that lands on /auth/accept). If the invite
+  // API fails for any reason, fall back to the registration-first message
+  // rather than surfacing an opaque error — the two-step path always works.
+  let invitedByEmail = false;
+  if (!invitee) {
+    const redirectTo = `${(process.env.PUBLIC_APP_URL || 'https://app.aros.live').replace(/\/$/, '')}/auth/accept`;
+    const { data: invited, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(input.email, { redirectTo });
+    if (inviteError || !invited?.user) {
+      console.error('[workspace.member_add] invite email failed:', inviteError?.message || 'no user returned');
+      return json(res, 404, { error: INVITEE_NOT_REGISTERED });
+    }
+    invitee = { id: invited.user.id, email: invited.user.email || input.email };
+    invitedByEmail = true;
+  }
+
+  const { data: existing } = await supabase
+    .from('tenant_members')
+    .select('id,status')
+    .eq('tenant_id', workspaceId)
+    .eq('user_id', invitee.id)
+    .maybeSingle();
+  if (existing) {
+    return json(res, 409, { error: existing.status === 'active' ? 'That person is already a member of this workspace' : `That person already has a ${existing.status} membership — manage it from the list below` });
+  }
+
+  const now = new Date().toISOString();
+  const { data: member, error: insertError } = await supabase
+    .from('tenant_members')
+    .insert({ tenant_id: workspaceId, user_id: invitee.id, role: input.role, status: 'active', is_default: false, invited_at: now, accepted_at: invitedByEmail ? null : now, joined_at: now })
+    .select('id,user_id,role,status,joined_at')
+    .single();
+  if (insertError || !member) return json(res, 500, { error: insertError?.message || 'Could not add member' });
+
+  await auditLog({
+    tenantId: workspaceId,
+    userId: auth.userId,
+    action: invitedByEmail ? 'workspace.member_invited' : 'workspace.member_added',
+    resource: `member:${member.id}`,
+    detail: { email: invitee.email, role: input.role },
+    ip: getClientIp(req),
+  });
+  void notifyWorkspace(workspaceId, 'team-changes', 'Team change in your AROS workspace',
+    `${invitee.email} was ${invitedByEmail ? 'invited to' : 'added to'} the workspace as ${input.role}.`);
+  json(res, 201, {
+    invited: invitedByEmail,
+    id: member.id,
+    principalType: 'user',
+    principalId: member.user_id,
+    status: member.status,
+    membershipRole: member.role,
+    createdAt: member.joined_at,
+    updatedAt: member.joined_at,
+    user: { id: invitee.id, name: invitee.email.split('@')[0], email: invitee.email },
+  });
 }
 
 async function handleWorkspaceMembersCompat(req: IncomingMessage, res: ServerResponse, workspaceId: string, memberId?: string): Promise<void> {
@@ -1879,6 +2305,7 @@ async function handleWorkspaceMembersCompat(req: IncomingMessage, res: ServerRes
   try {
     if (req.method === 'GET' && !memberId) return json(res, 200, await workspaceMembers(workspaceId));
     if (!['owner', 'admin'].includes(auth.role)) return json(res, 403, { error: 'Workspace admin access required' });
+    if (req.method === 'POST' && !memberId) return handleWorkspaceMemberAdd(req, res, workspaceId, auth);
     if (!memberId) return json(res, 400, { error: 'Member id required' });
     const supabase = createSupabaseAdmin();
     const { data: target } = await supabase.from('tenant_members').select('id,user_id,role').eq('tenant_id', workspaceId).eq('id', memberId).single();
@@ -1893,6 +2320,7 @@ async function handleWorkspaceMembersCompat(req: IncomingMessage, res: ServerRes
       const { data, error } = await supabase.from('tenant_members').update({ role }).eq('tenant_id', workspaceId).eq('id', memberId).select('id,role').single();
       if (error || !data) return json(res, 500, { error: error?.message || 'Role update failed' });
       await auditLog({ tenantId: workspaceId, userId: auth.userId, action: 'workspace.member_role_updated', resource: `member:${memberId}`, detail: { role }, ip: getClientIp(req) });
+      void notifyWorkspace(workspaceId, 'team-changes', 'Team change in your AROS workspace', `A member's role was changed to ${role}.`);
       return json(res, 200, { id: data.id, membershipRole: data.role });
     }
     if (req.method === 'DELETE') {
@@ -1900,10 +2328,115 @@ async function handleWorkspaceMembersCompat(req: IncomingMessage, res: ServerRes
       const { error } = await supabase.from('tenant_members').delete().eq('tenant_id', workspaceId).eq('id', memberId);
       if (error) return json(res, 500, { error: error.message });
       await auditLog({ tenantId: workspaceId, userId: auth.userId, action: 'workspace.member_removed', resource: `member:${memberId}`, detail: {}, ip: getClientIp(req) });
+      void notifyWorkspace(workspaceId, 'team-changes', 'Team change in your AROS workspace', 'A member was removed from the workspace.');
       return json(res, 200, { id: memberId });
     }
     json(res, 405, { error: 'Method not allowed' });
   } catch (error) { json(res, 500, { error: error instanceof Error ? error.message : 'Workspace member request failed' }); }
+}
+
+// ── Platform console (founder-only, read-only) ──────────────────
+// Cross-tenant visibility for the platform operator. Gated by the
+// PLATFORM_ADMIN_EMAILS allow-list (see src/platform-admin.ts) — empty env
+// means these routes 404 like the feature doesn't exist. v1 is strictly
+// read-only; any future mutating action gets its own explicit route + audit.
+
+const platformAdmins = parsePlatformAdmins(process.env.PLATFORM_ADMIN_EMAILS);
+
+async function requirePlatformAdmin(req: IncomingMessage, res: ServerResponse): Promise<{ userId: string; email: string } | null> {
+  if (platformAdmins.size === 0) { json(res, 404, { error: 'not found' }); return null; }
+  const auth = await authenticateRequest(req);
+  if (!auth) { json(res, 401, { error: 'Authentication required' }); return null; }
+  const supabase = createSupabaseAdmin();
+  const { data } = await supabase.auth.admin.getUserById(auth.userId);
+  const email = data?.user?.email || null;
+  if (!isPlatformAdmin(email, platformAdmins)) { json(res, 404, { error: 'not found' }); return null; }
+  return { userId: auth.userId, email: email as string };
+}
+
+async function handlePlatformConsole(req: IncomingMessage, res: ServerResponse, section: string, tenantId?: string): Promise<void> {
+  const admin = await requirePlatformAdmin(req, res);
+  if (!admin) return;
+  const supabase = createSupabaseAdmin();
+  await auditLog({ userId: admin.userId, action: 'platform.console_access', resource: tenantId ? `${section}:${tenantId}` : section, detail: {}, ip: getClientIp(req) });
+
+  try {
+    if (section === 'overview') {
+      const [tenants, members, connectors, snapshots] = await Promise.all([
+        supabase.from('tenants').select('id', { count: 'exact', head: true }),
+        supabase.from('tenant_members').select('id', { count: 'exact', head: true }).eq('status', 'active'),
+        supabase.from('tenant_connectors').select('status'),
+        supabase.from('store_snapshots').select('captured_at').order('captured_at', { ascending: false }).limit(1),
+      ]);
+      const byStatus: Record<string, number> = {};
+      for (const row of connectors.data || []) byStatus[row.status] = (byStatus[row.status] || 0) + 1;
+      return json(res, 200, {
+        tenants: tenants.count || 0,
+        activeMemberships: members.count || 0,
+        connectors: byStatus,
+        newestSnapshotAt: snapshots.data?.[0]?.captured_at || null,
+      });
+    }
+
+    if (section === 'tenants' && !tenantId) {
+      const [tenants, members, connectors] = await Promise.all([
+        supabase.from('tenants').select('id,name,plan,status,pos_system,store_count,onboarding_completed,created_at').order('created_at', { ascending: false }).limit(200),
+        supabase.from('tenant_members').select('tenant_id,status'),
+        supabase.from('tenant_connectors').select('tenant_id,status'),
+      ]);
+      if (tenants.error) throw tenants.error;
+      const memberCount = new Map<string, number>();
+      for (const m of members.data || []) if (m.status === 'active') memberCount.set(m.tenant_id, (memberCount.get(m.tenant_id) || 0) + 1);
+      const connSummary = new Map<string, { total: number; connected: number }>();
+      for (const c of connectors.data || []) {
+        const entry = connSummary.get(c.tenant_id) || { total: 0, connected: 0 };
+        entry.total += 1; if (c.status === 'connected') entry.connected += 1;
+        connSummary.set(c.tenant_id, entry);
+      }
+      return json(res, 200, {
+        tenants: (tenants.data || []).map((t) => ({
+          ...t,
+          members: memberCount.get(t.id) || 0,
+          connectors: connSummary.get(t.id) || { total: 0, connected: 0 },
+        })),
+      });
+    }
+
+    if (section === 'tenants' && tenantId) {
+      const [tenant, members, connectors, onboarding, audit] = await Promise.all([
+        supabase.from('tenants').select('id,name,plan,status,pos_system,store_count,onboarding_completed,created_at,timezone,currency').eq('id', tenantId).maybeSingle(),
+        supabase.from('tenant_members').select('id,user_id,role,status,joined_at').eq('tenant_id', tenantId).order('joined_at', { ascending: true }),
+        supabase.from('tenant_connectors').select('id,name,type,status,last_tested,last_error,created_at').eq('tenant_id', tenantId),
+        supabase.from('workspace_onboarding_state').select('phase,model,store,sync,capabilities,completed_at').eq('tenant_id', tenantId).maybeSingle(),
+        supabase.from('audit_log').select('action,resource,user_id,ip,created_at').eq('tenant_id', tenantId).order('created_at', { ascending: false }).limit(20),
+      ]);
+      if (!tenant.data) return json(res, 404, { error: 'Tenant not found' });
+      const enrichedMembers = await Promise.all((members.data || []).map(async (m) => {
+        const { data } = await supabase.auth.admin.getUserById(m.user_id);
+        return { ...m, email: data?.user?.email || null, name: data?.user?.user_metadata?.full_name || data?.user?.user_metadata?.name || null };
+      }));
+      return json(res, 200, {
+        tenant: tenant.data,
+        members: enrichedMembers,
+        connectors: connectors.data || [],
+        onboarding: onboarding.data || null,
+        recentAudit: audit.data || [],
+      });
+    }
+
+    if (section === 'audit') {
+      const limit = Math.max(1, Math.min(200, Number(getRequestUrl(req).searchParams.get('limit')) || 100));
+      const { data, error } = await supabase.from('audit_log').select('tenant_id,user_id,action,resource,ip,created_at').order('created_at', { ascending: false }).limit(limit);
+      if (error) throw error;
+      return json(res, 200, { entries: data || [] });
+    }
+
+    json(res, 404, { error: 'not found' });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : (err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : 'Platform console request failed');
+    console.error('[platform.console]', message);
+    json(res, 500, { error: message });
+  }
 }
 
 // ── Dashboard ───────────────────────────────────────────────────
@@ -1973,11 +2506,13 @@ async function handleDashboard(req: IncomingMessage, res: ServerResponse): Promi
       const agent = actionParts[0] ? actionParts[0].charAt(0).toUpperCase() + actionParts[0].slice(1) : 'System';
       const actionLabel = actionParts.slice(1).join(' ').replace(/_/g, ' ') || a.action;
       const detail = a.detail;
-      const description = detail?.email
-        ? `${actionLabel} — ${detail.email}`
-        : detail?.company
-          ? `${actionLabel} — ${detail.company}`
-          : actionLabel;
+      // Always name the OBJECT of the action — bare verbs ("removed",
+      // "saved") read as incomplete and slightly alarming (UX review).
+      const subject = (typeof detail?.email === 'string' && detail.email)
+        || (typeof detail?.company === 'string' && detail.company)
+        || (typeof detail?.name === 'string' && detail.name)
+        || (typeof a.resource === 'string' && a.resource) || '';
+      const description = subject ? `${actionLabel} — ${subject}` : actionLabel;
 
       return {
         id: a.id,
@@ -2465,6 +3000,46 @@ async function handleOwnerDigest(req: IncomingMessage, res: ServerResponse): Pro
   json(res, 200, body);
 }
 
+// CTA types the digest recommendation can carry (shre-rapidrms
+// src/digest/actions.mjs CTA_TYPES — keep in sync).
+const DIGEST_CTA_TYPES = new Set(['fix_price', 'draft_po', 'draft_campaign', 'buy_review', 'review']);
+
+/**
+ * CTA tap → warehouse action ledger (shre.digest_action). The ledger only
+ * feeds outcome attribution ("you fixed 3 prices → margin recovered"), so the
+ * recording is strictly best-effort: the client always gets 200 {ok:true} —
+ * a Home interaction must never surface a warehouse error. Upstream failures
+ * (including 404 on older warehouse builds) are logged and swallowed.
+ */
+async function handleDigestAction(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+
+  const body = await parseJsonBody(req);
+  const ctaType = String(body?.cta_type ?? '');
+  if (!DIGEST_CTA_TYPES.has(ctaType)) {
+    return json(res, 400, { error: `cta_type must be one of: ${[...DIGEST_CTA_TYPES].join(', ')}` });
+  }
+  const rawItems = body?.items;
+  const items = Array.isArray(rawItems) ? rawItems.map(String).slice(0, 100) : [];
+
+  try {
+    const scope = await resolveDigestScope(auth.tenantId);
+    if (scope) {
+      const upstream = await fetch(`${SHRE_RAPIDRMS_URL}/api/digest/action`, {
+        method: 'POST',
+        headers: digestHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ provider: scope.provider, store_id: scope.storeId, cta_type: ctaType, items, source: 'aros-home' }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!upstream.ok) console.error(`[owner-digest] action ledger upstream ${upstream.status} for tenant ${auth.tenantId} (${ctaType})`);
+    }
+  } catch (err) {
+    console.error('[owner-digest] action ledger failed:', err instanceof Error ? err.message : err);
+  }
+  json(res, 200, { ok: true });
+}
+
 /**
  * Day-0 first-run digest (OWNER-DIGEST-PLAN Phase 2): the moment a POS
  * connector activates, ask the warehouse to build this store's first brief so
@@ -2523,6 +3098,320 @@ async function handleStoreSales(req: IncomingMessage, res: ServerResponse): Prom
   } catch (err) {
     console.error('[store-sales]', err instanceof Error ? err.message : err);
     json(res, 502, { error: 'RapidRMS sales data could not be retrieved' });
+  }
+}
+
+function nyBusinessDate(daysAgo = 0): string {
+  const now = new Date();
+  const nyDate = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  nyDate.setDate(nyDate.getDate() - daysAgo);
+  return [
+    nyDate.getFullYear(),
+    String(nyDate.getMonth() + 1).padStart(2, '0'),
+    String(nyDate.getDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+function chatLatestText(body: Record<string, unknown> | null): string {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as Record<string, unknown>;
+    if (message?.role && message.role !== 'user') continue;
+    const content = message?.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      const text = content
+        .map((part) => typeof part === 'string' ? part : String((part as Record<string, unknown>)?.text ?? ''))
+        .join(' ')
+        .trim();
+      if (text) return text;
+    }
+  }
+  return String(body?.message ?? body?.input ?? body?.prompt ?? '');
+}
+
+function arosChatTenant(req: IncomingMessage, body: Record<string, unknown> | null): string {
+  const header = (name: string) => {
+    const value = req.headers[name];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  return String(
+    body?.tenantId ||
+    body?.workspaceId ||
+    body?.tenant_id ||
+    body?.workspace_id ||
+    header('x-aros-tenant-id') ||
+    header('x-workspace-id') ||
+    header('x-tenant-id') ||
+    '',
+  ).trim();
+}
+
+function isArosChatContext(req: IncomingMessage, body: Record<string, unknown> | null): boolean {
+  const agentId = String(body?.agentId ?? body?.agent_id ?? '').toLowerCase();
+  const channel = String(req.headers['x-channel'] ?? '').toLowerCase();
+  return agentId === 'aros-agent' || channel === 'aros';
+}
+
+function isArosHealthPing(req: IncomingMessage, body: Record<string, unknown> | null): boolean {
+  if (!isArosChatContext(req, body)) return false;
+  const text = chatLatestText(body).toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  return (
+    /^say online\b/.test(text) ||
+    /\bonline\b.*\bone word\b/.test(text) ||
+    (/\b(connection|connected|health|model)\b/.test(text) && /\b(status|check|working|available|online|up)\b/.test(text))
+  );
+}
+
+async function handleArosHealthPing(req: IncomingMessage, res: ServerResponse, body: Record<string, unknown> | null): Promise<boolean> {
+  if (!isArosHealthPing(req, body)) return false;
+  const tenantId = arosChatTenant(req, body);
+  json(res, 200, {
+    content: 'online',
+    _shre: {
+      model: 'aros-health',
+      toolsUsed: [],
+      mode: 'aros-health-direct',
+      connected: true,
+      ...(UUID_RE.test(tenantId) ? { tenantId } : {}),
+    },
+  });
+  return true;
+}
+
+function isArosSalesChat(req: IncomingMessage, body: Record<string, unknown> | null): boolean {
+  const text = chatLatestText(body).toLowerCase();
+  return isArosChatContext(req, body) &&
+    /\b(sales?|revenue|transactions?|average ticket|total)\b/.test(text) &&
+    !/\b(inventory|stock|item|items|invoice|invoices|edi|exception|void|refund)\b/.test(text);
+}
+
+async function handleArosSalesChat(req: IncomingMessage, res: ServerResponse, body: Record<string, unknown> | null): Promise<boolean> {
+  if (!isArosSalesChat(req, body)) return false;
+  const tenantId = arosChatTenant(req, body);
+  if (!UUID_RE.test(tenantId)) return false;
+
+  const text = chatLatestText(body).toLowerCase();
+  const to = /\byesterday\b/.test(text) ? nyBusinessDate(1) : nyBusinessDate();
+  const from = to;
+
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data: rows } = await supabase
+      .from('tenant_connectors')
+      .select(`${CONNECTOR_COLUMNS}, credentials_encrypted`)
+      .eq('tenant_id', tenantId)
+      .eq('type', 'rapidrms-api')
+      .eq('status', 'connected')
+      .limit(1);
+    const row = rows?.[0];
+    if (!row) {
+      json(res, 200, {
+        content: 'No connected RapidRMS store is mapped to this workspace yet.',
+        _shre: { model: 'aros-store-data', toolsUsed: ['mib_sales_today'], mode: 'aros-sales-direct', connected: false },
+      });
+      return true;
+    }
+
+    ensureConnectorCrypto();
+    const secrets = JSON.parse(decryptValue(row.credentials_encrypted)) as Record<string, string>;
+    const daily = await fetchStoreSalesRange({ id: row.id, type: row.type, name: row.name, config: row.config || {}, secrets }, vaultSecretFor(tenantId), from, to);
+    const totals = daily.reduce((sum, day) => ({ revenue: sum.revenue + day.revenue, transactions: sum.transactions + day.transactions }), { revenue: 0, transactions: 0 });
+    const revenue = Math.round(totals.revenue * 100) / 100;
+    const averageTicket = totals.transactions ? Math.round((revenue / totals.transactions) * 100) / 100 : 0;
+    const label = /\byesterday\b/.test(text) ? `on ${to}` : 'today';
+
+    for (const day of daily) {
+      await supabase.from('store_snapshots').upsert({ tenant_id: tenantId, connector_id: row.id, business_date: day.businessDate, captured_at: new Date().toISOString(), revenue: day.revenue, transactions: day.transactions, low_stock_count: 0, low_stock_items: [], source: { type: row.type, name: row.name }, partial: false }, { onConflict: 'tenant_id,business_date' });
+      void replicateSnapshotToCortex({ tenantId, connectorId: row.id, businessDate: day.businessDate, revenue: day.revenue, transactions: day.transactions, lowStockCount: 0, source: { type: row.type, name: row.name }, partial: false });
+    }
+
+    json(res, 200, {
+      content: `**${row.name}** ${label}:\n- Total Sales: **$${revenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}**\n- Transactions: **${totals.transactions.toLocaleString('en-US')}**\n- Average Ticket: **$${averageTicket.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}**`,
+      _shre: { model: 'aros-store-data', toolsUsed: [/\byesterday\b/.test(text) ? 'mib_sales_summary' : 'mib_sales_today'], mode: 'aros-sales-direct', tenantId, from, to, source: 'RapidRMS API' },
+    });
+    return true;
+  } catch (err) {
+    console.error('[aros-sales-chat]', err instanceof Error ? err.message : err);
+    json(res, 200, {
+      content: 'RapidRMS sales data could not be retrieved right now.',
+      _shre: { model: 'aros-store-data', toolsUsed: ['mib_sales_today'], mode: 'aros-sales-direct', error: 'sales_unavailable' },
+    });
+    return true;
+  }
+}
+
+// ── Store risk / exception reads (backing the mcp-aros operator tools) ──
+// Read-only, tenant-scoped like /api/store/summary. Both iterate EVERY
+// connected connector and degrade per store: connector types without a data
+// mapper (verifone / azure / aws today) are reported in `sources` as
+// unsupported instead of erroring or yielding fabricated zeros.
+
+type ConnectorSourceStatus = {
+  connectorId: string;
+  name: string;
+  type: string;
+  /** False = this connector type has no risk/exception mapper yet. */
+  supported: boolean;
+  /** Only meaningful when supported: did the live read succeed? */
+  available?: boolean;
+  error?: string;
+};
+
+type ConnectorRowWithSecrets = {
+  id: string; type: string; name: string;
+  config: Record<string, unknown> | null;
+  credentials_encrypted: string;
+};
+
+async function connectedConnectorRows(tenantId: string): Promise<ConnectorRowWithSecrets[]> {
+  const supabase = createSupabaseAdmin();
+  const { data: rows, error } = await supabase
+    .from('tenant_connectors')
+    .select(`${CONNECTOR_COLUMNS}, credentials_encrypted`)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'connected')
+    .limit(10);
+  if (error) throw new Error(error.message);
+  return (rows ?? []) as ConnectorRowWithSecrets[];
+}
+
+function decryptedConnectorRecord(row: ConnectorRowWithSecrets) {
+  ensureConnectorCrypto();
+  const secrets = JSON.parse(decryptValue(row.credentials_encrypted)) as Record<string, string>;
+  return { id: row.id, type: row.type, name: row.name, config: (row.config ?? {}) as Record<string, unknown>, secrets };
+}
+
+async function handleStoreInventoryRisks(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const request = getRequestUrl(req);
+  const limitRaw = Number(request.searchParams.get('limit'));
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 100) : 25;
+  try {
+    const rows = await connectedConnectorRows(auth.tenantId);
+    if (rows.length === 0) {
+      return json(res, 200, {
+        connected: false,
+        risks: [],
+        sources: [],
+        message: 'No store data source is connected to this workspace.',
+        fetchedAt: new Date().toISOString(),
+      });
+    }
+    const sources: ConnectorSourceStatus[] = [];
+    const risks: Array<InventoryRiskItem & { store: string }> = [];
+    let anyLive = false;
+    for (const row of rows) {
+      if (!hasSummaryMapper(row.type)) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false });
+        continue;
+      }
+      try {
+        const report = await fetchInventoryRisks(decryptedConnectorRecord(row), vaultSecretFor(auth.tenantId));
+        if (!report) { sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false }); continue; }
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: report.available });
+        if (report.available) anyLive = true;
+        risks.push(...report.risks.map((risk) => ({ ...risk, store: row.name })));
+      } catch (err) {
+        sources.push({
+          connectorId: row.id, name: row.name, type: row.type, supported: true, available: false,
+          error: err instanceof Error ? err.message : 'unreachable',
+        });
+      }
+    }
+    risks.sort((a, b) => a.current - b.current);
+    await auditLog({
+      tenantId: auth.tenantId, userId: auth.userId, action: 'store.inventory_risks.read',
+      resource: `tenant:${auth.tenantId}`, detail: { sources: sources.length, risks: risks.length }, ip: getClientIp(req),
+    });
+    json(res, 200, { connected: anyLive, risks: risks.slice(0, limit), sources, fetchedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error('[inventory-risks]', err instanceof Error ? err.message : err);
+    json(res, 502, { error: 'Inventory risk data could not be retrieved' });
+  }
+}
+
+async function handleStoreExceptions(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const request = getRequestUrl(req);
+  const to = request.searchParams.get('to') || request.searchParams.get('endDate') || businessDate();
+  const from = request.searchParams.get('from') || request.searchParams.get('startDate') || to;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) {
+    return json(res, 400, { error: 'from and to must be a valid date range' });
+  }
+  const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000) + 1;
+  if (days > 31) return json(res, 413, { error: 'Exception queries are limited to 31 days.' });
+  try {
+    const rows = await connectedConnectorRows(auth.tenantId);
+    if (rows.length === 0) {
+      return json(res, 200, {
+        connected: false,
+        totals: null,
+        daily: [],
+        supportedTypes: [...EXCEPTION_SUPPORTED_TYPES],
+        unsupportedTypes: [...EXCEPTION_UNSUPPORTED_TYPES],
+        sources: [],
+        message: 'No store data source is connected to this workspace.',
+        from, to,
+        fetchedAt: new Date().toISOString(),
+      });
+    }
+    const sources: ConnectorSourceStatus[] = [];
+    const dailyBuckets = new Map<string, { count: number; amount: number }>();
+    let count = 0;
+    let amount = 0;
+    let partial = false;
+    let anyLive = false;
+    for (const row of rows) {
+      if (!hasSummaryMapper(row.type)) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false });
+        continue;
+      }
+      try {
+        const report = await fetchExceptionSummary(decryptedConnectorRecord(row), vaultSecretFor(auth.tenantId), from, to);
+        if (!report) { sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false }); continue; }
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: true });
+        anyLive = true;
+        count += report.totals.void.count;
+        amount += report.totals.void.amount;
+        partial = partial || report.partial;
+        for (const day of report.daily) {
+          const bucket = dailyBuckets.get(day.businessDate) || { count: 0, amount: 0 };
+          bucket.count += day.count;
+          bucket.amount += day.amount;
+          dailyBuckets.set(day.businessDate, bucket);
+        }
+      } catch (err) {
+        sources.push({
+          connectorId: row.id, name: row.name, type: row.type, supported: true, available: false,
+          error: err instanceof Error ? err.message : 'unreachable',
+        });
+      }
+    }
+    const daily: VoidExceptionBucket[] = [...dailyBuckets.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([businessDate, bucket]) => ({ businessDate, count: bucket.count, amount: Math.round(bucket.amount * 100) / 100 }));
+    await auditLog({
+      tenantId: auth.tenantId, userId: auth.userId, action: 'store.exceptions.read',
+      resource: `tenant:${auth.tenantId}`, detail: { from, to, sources: sources.length, voids: count }, ip: getClientIp(req),
+    });
+    json(res, 200, {
+      connected: anyLive,
+      totals: anyLive ? { void: { count, amount: Math.round(amount * 100) / 100 } } : null,
+      daily,
+      supportedTypes: [...EXCEPTION_SUPPORTED_TYPES],
+      unsupportedTypes: [...EXCEPTION_UNSUPPORTED_TYPES],
+      partial,
+      sources,
+      from, to,
+      fetchedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[store-exceptions]', err instanceof Error ? err.message : err);
+    json(res, 502, { error: 'Exception data could not be retrieved' });
   }
 }
 
@@ -3332,18 +4221,24 @@ function timeAgo(isoDate: string): string {
 const DOCUMENTS_APP_KEY = 'documents';
 
 async function resolveMibWorkspaceId(tenantId: string): Promise<string | null> {
-  // Prefer a per-tenant mapping stored on the tenant row; fall back to a single
-  // workspace env for single-tenant dev. A not-yet-migrated `mib_workspace_id`
-  // column simply yields the env fallback rather than erroring.
+  // Precedence: explicit per-tenant mapping (tenants.mib_workspace_id) →
+  // single-workspace env (dev) → the AROS↔MIB convention. A not-yet-migrated
+  // `mib_workspace_id` column simply falls through rather than erroring.
   try {
     const supabase = createSupabaseAdmin();
     const { data } = await supabase.from('tenants').select('mib_workspace_id').eq('id', tenantId).maybeSingle();
     const mapped = (data as { mib_workspace_id?: string | null } | null)?.mib_workspace_id;
     if (mapped) return mapped;
   } catch {
-    // Column/table access failed — fall through to the env fallback.
+    // Column/table access failed — fall through.
   }
-  return process.env.MIB_DOCS_WORKSPACE_ID || null;
+  if (process.env.MIB_DOCS_WORKSPACE_ID) return process.env.MIB_DOCS_WORKSPACE_ID;
+  // Convention: MIB's OIDC experience-routing bridge creates the tenant's MIB
+  // workspace with id == the AROS tenant id (mib007 server/src/auth/aros-oidc.ts),
+  // so the tenant id IS the workspace id unless explicitly overridden. If that
+  // workspace doesn't exist in MIB yet, token registration 404s and is retried
+  // on the next activation — provisioning stays idempotent either way.
+  return UUID_RE.test(tenantId) ? tenantId : null;
 }
 
 /**
@@ -3454,12 +4349,27 @@ async function resolveMibDocsAccess(tenantId: string): Promise<{ workspaceId: st
   // Preferred: the per-tenant token minted at Documents activation.
   try {
     const supabase = createSupabaseAdmin();
-    const { data } = await supabase
+    let { data } = await supabase
       .from('marketplace_app_entitlements')
       .select('status, service_config')
       .eq('tenant_id', tenantId)
       .eq('app_key', DOCUMENTS_APP_KEY)
       .maybeSingle();
+    // An active entitlement can lack a minted token (activation ran before the
+    // MIB env was configured, or the mint failed) — provision on first use so
+    // it never needs a manual re-activation.
+    if (data && data.status === 'active') {
+      const cfg0 = isRecord(data.service_config) ? data.service_config as Record<string, unknown> : {};
+      if (typeof cfg0.mibServiceTokenEnc !== 'string' || !cfg0.mibServiceTokenEnc) {
+        await provisionDocumentsAccess(supabase, tenantId);
+        ({ data } = await supabase
+          .from('marketplace_app_entitlements')
+          .select('status, service_config')
+          .eq('tenant_id', tenantId)
+          .eq('app_key', DOCUMENTS_APP_KEY)
+          .maybeSingle());
+      }
+    }
     if (data && data.status === 'active' && isRecord(data.service_config)) {
       const cfg = data.service_config as Record<string, unknown>;
       const enc = typeof cfg.mibServiceTokenEnc === 'string' ? cfg.mibServiceTokenEnc : '';
@@ -3634,6 +4544,12 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   try { traceMiddleware(req, res, () => {}); } catch { /* non-fatal */ }
 
   // ── Trace Endpoints ─────────────────────────────────────────
+  // Trace payloads expose internal error stack traces and server file paths,
+  // so they must not be public. Require an authenticated caller.
+  if (pathname.startsWith('/v1/traces/') && method === 'GET') {
+    const scope = await authenticateRequest(req);
+    if (!scope) return json(res, 401, { error: 'Authentication required' });
+  }
   if (url === '/v1/traces/recent' && method === 'GET') {
     return json(res, 200, getRecentTraces());
   }
@@ -3698,9 +4614,26 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     return proxyRequest(req, res, SHRE_ROUTER_URL);
   }
 
+  if (pathname === '/v1/chat' && method === 'POST') {
+    const body = await parseJsonBody(req);
+    if (await handleArosHealthPing(req, res, body)) return;
+    if (await handleArosSalesChat(req, res, body)) return;
+    return proxyRequest(req, res, SHRE_ROUTER_URL, body);
+  }
+
   if (pathname.startsWith('/v1/') && !pathname.startsWith('/v1/traces/')) {
     return proxyRequest(req, res, SHRE_ROUTER_URL);
   }
+
+  // ── Public customer commerce (Regulars Phase 1) ─────────────────────────
+  // Unauthenticated, rate-limited, strict projection; serves the customer MCP
+  // gateway. Terminal for the whole prefix — the handler always answers with a
+  // customer-safe envelope (even near-misses), so nothing under this prefix
+  // falls through to the platform's generic 404/SPA output. This public,
+  // unauthenticated surface is intentionally ahead of the terms gate below
+  // (customers are not AROS operators and never see the clickwrap).
+  // Journey: docs/journeys/customer-orders-through-their-assistant.md
+  if (await handlePublicBusinessApi(req, res, requestUrl)) return;
 
   // ── Terms acceptance + AI disclosure (flag-gated) ──────────
   if (pathname === '/api/terms/status' && method === 'GET') {
@@ -3870,9 +4803,20 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (pathname === '/api/digest' && method === 'GET') {
     return handleOwnerDigest(req, res);
   }
+  if (pathname === '/api/digest/action' && method === 'POST') {
+    return handleDigestAction(req, res);
+  }
 
   if (pathname === '/api/store/sales' && method === 'GET') {
     return handleStoreSales(req, res);
+  }
+
+  if (pathname === '/api/store/inventory-risks' && method === 'GET') {
+    return handleStoreInventoryRisks(req, res);
+  }
+
+  if (pathname === '/api/store/exceptions' && method === 'GET') {
+    return handleStoreExceptions(req, res);
   }
   if (pathname === '/api/workspace/capabilities' && method === 'GET') {
     return handleWorkspaceCapabilities(req, res);
@@ -3911,8 +4855,16 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (resourceMatch && ['GET', 'POST', 'PUT'].includes(method)) return handleTenantResources(req, res, resourceMatch[1], resourceMatch[2]);
   const workspaceCompatMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)$/);
   if (workspaceCompatMatch && ['GET', 'PATCH'].includes(method)) return handleWorkspaceCompat(req, res, workspaceCompatMatch[1]);
+  const workspaceAgentsMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/agents$/);
+  if (workspaceAgentsMatch && method === 'GET') return handleWorkspaceAgents(req, res, workspaceAgentsMatch[1]);
+  if (pathname === '/api/gateway/model-routing' && method === 'GET') return handleGatewayModelRouting(req, res);
   const workspaceMembersMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/members(?:\/([0-9a-f-]+)(?:\/role)?)?$/);
-  if (workspaceMembersMatch && ['GET', 'PATCH', 'DELETE'].includes(method)) return handleWorkspaceMembersCompat(req, res, workspaceMembersMatch[1], workspaceMembersMatch[2]);
+  if (workspaceMembersMatch && ['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) return handleWorkspaceMembersCompat(req, res, workspaceMembersMatch[1], workspaceMembersMatch[2]);
+  if (pathname === '/api/notifications/preferences' && (method === 'GET' || method === 'PUT')) {
+    return handleNotificationPreferences(req, res);
+  }
+  const platformMatch = pathname.match(/^\/api\/platform\/(overview|tenants|audit)(?:\/([0-9a-f-]+))?$/);
+  if (platformMatch && method === 'GET') return handlePlatformConsole(req, res, platformMatch[1], platformMatch[2]);
   const workspaceRolesMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/roles$/);
   if (workspaceRolesMatch && method === 'GET') return handleWorkspaceMembersCompat(req, res, workspaceRolesMatch[1]);
   if (pathname === '/api/apps' && method === 'GET') return handlePlatformApps(req, res);

@@ -1,4 +1,5 @@
-import { useIdentity, useHomeData, useOwnerDigest, type OwnerBrief } from './data';
+import { useState } from 'react';
+import { useIdentity, useHomeData, useOwnerDigest, useDigestActionRecorder, type OwnerBrief, type BriefCtaType } from './data';
 
 // Home — the calm retail "command home". Content comes from useHomeData: rich
 // demo data in preview, real/empty data in a live build (never the demo persona).
@@ -94,10 +95,25 @@ export function Home({ onAskShre, onConnect, onSection }: {
   );
 }
 
+// One primary action per CTA type. There is no in-app pricing / purchase-order
+// / campaign surface yet (audited 2026-07: the shell routes are stores / apps /
+// skills / agents / models / admin), so every CTA opens the digest's own rows
+// in an expander inside the card — no invented pages, no dead links. When a
+// real destination ships, route here instead and keep the tap recording.
+const CTA_LABELS: Record<BriefCtaType, string> = {
+  fix_price: 'Review pricing',
+  draft_po: 'Start reorder',
+  draft_campaign: 'Plan a promo',
+  buy_review: 'Review details',
+  review: 'Review details',
+};
+
 // Weekly Owner Brief — renders only when a digest exists (useOwnerDigest maps
 // every missing/failed state to null). With a connected POS but no digest yet,
 // a single quiet line; with no POS at all, nothing.
 function WeeklyBrief({ brief, hasPos }: { brief: OwnerBrief | null; hasPos: boolean }) {
+  const recordTap = useDigestActionRecorder();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   if (!brief) {
     return hasPos ? <div className="rsx2-brief__pending">Your weekly brief arrives Monday.</div> : null;
   }
@@ -131,6 +147,28 @@ function WeeklyBrief({ brief, hasPos }: { brief: OwnerBrief | null; hasPos: bool
             <div className="rsx2-feed__title">{brief.action}</div>
             {brief.reason && <div className="rsx2-feed__meta">{brief.reason}</div>}
           </div>
+          {brief.cta && brief.details.length > 0 && (
+            <div className="rsx2-feed__acts">
+              <button
+                className="rsx2-feed__approve"
+                aria-expanded={detailsOpen}
+                onClick={() => {
+                  if (!detailsOpen && brief.cta) recordTap(brief.cta); // tap = intent to act; closing isn't one
+                  setDetailsOpen(open => !open);
+                }}
+              >{detailsOpen ? 'Hide details' : CTA_LABELS[brief.cta.type]}</button>
+            </div>
+          )}
+        </div>
+      )}
+      {detailsOpen && brief.details.length > 0 && (
+        <div className="rsx2-brief__details">
+          {brief.details.map((d, i) => (
+            <div key={`${i}-${d.title}`} className="rsx2-brief__detail">
+              <div className="rsx2-feed__title">{d.title}</div>
+              {d.meta && <div className="rsx2-feed__meta">{d.meta}</div>}
+            </div>
+          ))}
         </div>
       )}
       {counts.length > 0 && <div className="rsx2-brief__counts">{counts.join(' · ')}</div>}

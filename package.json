@@ -16,6 +16,7 @@
     "clean": "turbo clean",
     "update:core": "tsx updater/index.ts",
     "marketplace:sync": "tsx marketplace/registry.ts",
+    "identity:claim-queue": "tsx scripts/identity/prepare-shre-id-claim-queue.ts",
     "security:auth": "tsx scripts/auth-conformance.mts",
     "test:auth-conformance": "vitest run src/__tests__/auth-conformance.test.ts",
     "serve": "tsx src/server.ts",

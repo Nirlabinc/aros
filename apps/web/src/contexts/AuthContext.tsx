@@ -86,6 +86,11 @@ async function fetchMemberships(userId: string): Promise<TenantMembership[]> {
       const message = lastError instanceof Error ? lastError.message : String(lastError);
       if (code === '42703' || code.startsWith('PGRST2')) {
         console.error(`[AuthContext] Supabase schema drift (${code}): tenant membership query failed. Apply the production schema catch-up.`, error);
+      } else if (attempt < MEMBERSHIP_FETCH_ATTEMPTS - 1) {
+        // Non-final attempts routinely abort when a login redirect tears the
+        // page down mid-fetch ("Failed to fetch" on every session) — warn,
+        // don't error: only the FINAL failure is a real problem.
+        console.warn(`[AuthContext] Tenant membership query failed (attempt ${attempt + 1}/${MEMBERSHIP_FETCH_ATTEMPTS}), retrying: ${message}`);
       } else {
         console.error(`[AuthContext] Tenant membership query failed (attempt ${attempt + 1}/${MEMBERSHIP_FETCH_ATTEMPTS}): ${message}`, error);
       }

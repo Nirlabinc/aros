@@ -3,10 +3,12 @@ import { useArosTheme } from '../lib/useArosTheme';
 import { ConciergeChat } from './ConciergeChat';
 import { SectionPanel } from './SectionPanel';
 import { IntelligencePage } from './pages/intelligence';
-import { StoresPage, AppsPage } from './pages/connections';
+import { StoresPage, AppsPage, MarketplacePage, ConnectorsPage, PluginsPage } from './pages/connections';
+import { listMarketplaceEntitlements } from './pages/connections/api';
 import {
-  BillingPage, UsagePage, TeamPage, SettingsPage, PermissionsPage, ConnectionHealthPage, DevicesPage,
+  BillingPage, UsagePage, TeamPage, SettingsPage, PermissionsPage, ProfilePage, ConnectionHealthPage, DevicesPage,
 } from './pages/admin';
+import { NotificationsPage } from './pages/admin/NotificationsPage';
 import { DocumentsPage } from './pages/Documents';
 import { EdiInvoices } from './pages/EdiInvoices';
 import { ConnectWizard } from './ConnectWizard';
@@ -18,35 +20,16 @@ import { type CanvasWidgetItem } from '../aros-ai/canvas';
 import { useConnectionSummary, useDemo, useIdentity } from './data';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  PRIMARY_NAV, WORKSPACE_NAV, USER, ROLES, SECTION_TITLES, type SectionKey, type NavItem, type ChatMsg, type Conversation,
+  PRIMARY_NAV, WORKSPACE_NAV, EMBEDDED_APP_NAV, USER, ROLES, SECTION_TITLES, type SectionKey, type NavItem, type ChatMsg, type Conversation,
 } from './shellData';
+import { routeState, SECTION_TO_PATH } from './routes';
 
 const ChatIcon = () => (<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>);
 const MenuIcon = () => (<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>);
 const PlusIcon = () => (<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>);
 const API_BASE = (window as any).__AROS_API_URL__ || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
 
-const PATH_TO_SECTION: Record<string, Exclude<SectionKey, 'chat'>> = {
-  '/stores': 'stores', '/apps': 'apps', '/skills': 'skills', '/agents': 'agents',
-  '/models': 'models', '/computers': 'devices', '/connection-health': 'health', '/settings': 'settings',
-  '/permissions': 'permissions', '/documents': 'documents',
-  '/edi-invoices': 'edi-invoices',
-  '/profile': 'settings', '/billing': 'billing', '/costs': 'usage', '/users': 'team',
-  '/workspace': 'settings', '/marketplace': 'apps', '/channels': 'apps',
-};
-const SECTION_TO_PATH: Partial<Record<SectionKey, string>> = {
-  stores: '/stores', apps: '/apps', skills: '/skills', agents: '/agents',
-  models: '/models', devices: '/computers', health: '/connection-health', settings: '/settings',
-  billing: '/billing', usage: '/costs', team: '/users', permissions: '/permissions', documents: '/documents',
-  'edi-invoices': '/edi-invoices',
-};
-
-function routeState(path = window.location.pathname): { mode: 'home' | 'chat' | 'app'; section: Exclude<SectionKey, 'chat'> } {
-  if (path === '/dashboard' || path === '/human' || path === '/auth') return { mode: 'home', section: 'stores' };
-  if (path === '/chat') return { mode: 'chat', section: 'stores' };
-  const match = Object.entries(PATH_TO_SECTION).find(([prefix]) => path.startsWith(prefix));
-  return { mode: match ? 'app' : 'home', section: match?.[1] ?? 'stores' };
-}
+const routeStateHere = () => routeState(window.location.pathname);
 
 function NavRow({ item, active, onClick }: { item: NavItem; active: boolean; onClick: () => void }) {
   return (
@@ -71,13 +54,25 @@ function UserRow({ onClick }: { onClick: () => void }) {
   );
 }
 
+function AppInstallPrompt({ name, onBrowse }: { name: string; onBrowse: () => void }) {
+  return (
+    <div className="rsx-panel">
+      <div className="rsx2-empty">
+        <div className="rsx2-empty__title">{name} isn’t installed in this workspace</div>
+        <div className="rsx2-empty__text">{name} is available as an app in the Marketplace. An owner or admin can install it to turn it on for everyone in the workspace.</div>
+        <button className="rsx-panel__cta" type="button" onClick={onBrowse}>Install from Marketplace</button>
+      </div>
+    </div>
+  );
+}
+
 export function AppShell() {
   const { signOut, session, tenant } = useAuth();
   const b = branding();
   const ident = useIdentity();
   const demo = useDemo();
   const connections = useConnectionSummary();
-  const initialRoute = routeState();
+  const initialRoute = routeStateHere();
   const [mode, setMode] = useState<'home' | 'chat' | 'app'>(initialRoute.mode);
   const [section, setSection] = useState<Exclude<SectionKey, 'chat'>>(initialRoute.section);
   const role = demo ? USER.role : ident.role;
@@ -94,6 +89,24 @@ export function AppShell() {
   const { label: themeLabel, toggle: toggleTheme } = useArosTheme();
   const chatToggleRef = useRef<HTMLButtonElement>(null);
 
+  // Active marketplace entitlements drive which in-shell apps (Documents,
+  // EDI Invoices) are routable and appear in the workspace nav. null = loading.
+  // Demo/preview treats every embedded app as installed.
+  const [installedApps, setInstalledApps] = useState<Set<string> | null>(demo ? new Set(Object.keys(EMBEDDED_APP_NAV)) : null);
+  const refreshInstalledApps = () => {
+    if (demo) { setInstalledApps(new Set(Object.keys(EMBEDDED_APP_NAV))); return; }
+    listMarketplaceEntitlements({ accessToken: session?.access_token, tenantId: tenant?.id })
+      .then(grants => setInstalledApps(new Set(grants.filter(g => g.status === 'active').map(g => g.app_key))))
+      .catch(() => setInstalledApps(new Set()));
+  };
+  useEffect(() => {
+    refreshInstalledApps();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demo, session?.access_token, tenant?.id]);
+  const installedAppNav: NavItem[] = (Object.keys(EMBEDDED_APP_NAV) as Array<keyof typeof EMBEDDED_APP_NAV>)
+    .filter(key => installedApps?.has(key))
+    .map(key => EMBEDDED_APP_NAV[key]);
+
   const navigate = (nextMode: 'home' | 'chat' | 'app', nextSection?: Exclude<SectionKey, 'chat'>) => {
     const path = nextMode === 'home' ? '/dashboard' : nextMode === 'chat' ? '/chat' : SECTION_TO_PATH[nextSection ?? section] ?? '/dashboard';
     if (window.location.pathname !== path) window.history.pushState({}, '', path);
@@ -102,7 +115,7 @@ export function AppShell() {
   };
 
   useEffect(() => {
-    const onPopState = () => { const next = routeState(); setMode(next.mode); setSection(next.section); };
+    const onPopState = () => { const next = routeStateHere(); setMode(next.mode); setSection(next.section); };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
@@ -156,10 +169,22 @@ export function AppShell() {
   };
   const title = mode === 'chat' ? 'Concierge' : mode === 'home' ? 'Home' : SECTION_TITLES[section];
   const renderSection = () => {
-    if (section === 'documents') return <DocumentsPage />;
+    // In-shell marketplace apps gate on an active entitlement: not installed →
+    // an install prompt pointing at Marketplace, never a broken page.
+    if (section === 'documents' || section === 'edi-invoices') {
+      if (installedApps === null) return <div className="rsx-panel"><div className="rsx2-empty"><div className="rsx2-empty__title">Loading…</div></div></div>;
+      if (!installedApps.has(section)) {
+        return <AppInstallPrompt name={EMBEDDED_APP_NAV[section].label} onBrowse={() => goSection('marketplace')} />;
+      }
+      if (section === 'documents') return <DocumentsPage />;
+      return demo ? <SectionPanel section={section} onConnect={openWizard} /> : <EdiInvoices />;
+    }
     if (demo) return <SectionPanel section={section} onConnect={openWizard} />;
+    if (section === 'marketplace') return <MarketplacePage onChange={refreshInstalledApps} />;
+    if (section === 'connectors') return <ConnectorsPage onBrowse={() => goSection('marketplace')} />;
+    if (section === 'plugins') return <PluginsPage onBrowse={() => goSection('marketplace')} />;
     if (section === 'stores') return <StoresPage onConnect={openWizard} />;
-    if (section === 'apps') return <AppsPage />;
+    if (section === 'apps') return <AppsPage onBrowse={() => goSection('marketplace')} />;
     if (section === 'permissions') return <PermissionsPage />;
     if (section === 'health') return <ConnectionHealthPage />;
     if (section === 'devices') return <DevicesPage />;
@@ -167,7 +192,8 @@ export function AppShell() {
     if (section === 'billing') return <BillingPage />;
     if (section === 'usage') return <UsagePage />;
     if (section === 'settings') return <SettingsPage />;
-    if (section === 'edi-invoices') return <EdiInvoices />;
+    if (section === 'profile') return <ProfilePage />;
+    if (section === 'notifications') return <NotificationsPage />;
     if (section === 'skills' || section === 'agents' || section === 'models') {
       const kind = section === 'skills' ? 'skill' : section === 'agents' ? 'agent' : 'model';
       return <IntelligencePage kind={kind} />;
@@ -276,9 +302,10 @@ export function AppShell() {
               {demo ? ROLES.map(r => (<span key={r} className="aros-role__pill" aria-pressed={role === r}>{r}</span>)) : <span className="aros-role__pill" aria-pressed>{role}</span>}
             </div>
             <div className="aros-side__section" style={{ marginLeft: 0 }}>Account</div>
+            <NavRow item={{ key: 'profile', label: 'Profile', glyph: 'Pr' }} active={mode === 'app' && section === 'profile'} onClick={() => goProfileSection('profile')} />
             <NavRow item={{ key: 'devices', label: 'Sessions & Devices', glyph: 'PC' }} active={mode === 'app' && section === 'devices'} onClick={() => goProfileSection('devices')} />
             <div className="aros-side__section" style={{ marginLeft: 0 }}>Workspace</div>
-            {WORKSPACE_NAV.map(item => (
+            {[...installedAppNav, ...WORKSPACE_NAV].map(item => (
               <NavRow key={item.key} item={item} active={mode === 'app' && section === item.key} onClick={() => goProfileSection(item.key)} />
             ))}
           </div>

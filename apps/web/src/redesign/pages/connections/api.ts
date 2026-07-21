@@ -27,6 +27,7 @@ export type PlatformApp = {
   url?: string | null;
   launch_url?: string | null;
   icon?: string | null;
+  embedded?: boolean | null;
   repo?: string | null;
   vault_namespace?: string | null;
   bundle?: AppCapabilityBundle | null;

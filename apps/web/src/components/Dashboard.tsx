@@ -91,200 +91,39 @@ interface DashboardData {
   }>;
 }
 
-function createHumanLayerMock(): HumanLayer {
+function emptyHumanLayer(): HumanLayer {
   return {
     briefing: {
-      date: new Date().toISOString().slice(0, 10),
-      generatedAt: new Date().toISOString(),
-      executiveSummary: 'The human layer is online. Briefing, tasks, projects, goals, and connectors are ready to drive the day.',
-      focus: 'Clear the first priority task',
-      topPriorities: [
-        {
-          id: 'task-brief-1',
-          title: 'Review overnight inbox',
-          priority: 'critical',
-          status: 'pending',
-          project: 'Operations',
-          nextAction: 'Open the inbox summary and triage the urgent queue',
-          updatedAt: new Date().toISOString(),
-        },
-        {
-          id: 'task-brief-2',
-          title: 'Check project blockers',
-          priority: 'high',
-          status: 'pending',
-          project: 'Delivery',
-          nextAction: 'Clear dependency issues before midday',
-          updatedAt: new Date().toISOString(),
-        },
-        {
-          id: 'task-brief-3',
-          title: 'Review goals and KPIs',
-          priority: 'normal',
-          status: 'pending',
-          project: 'Strategy',
-          nextAction: 'Compare today against the weekly target',
-          updatedAt: new Date().toISOString(),
-        },
-      ],
-      decisionsNeeded: ['Approve the top priority task queue'],
-      waitingOn: ['Calendar sync and inbox connections'],
-      followUps: ['Reconnect with key contacts this afternoon'],
-      alerts: ['Human layer mock is active until live tasks are available'],
+      date: '',
+      generatedAt: '',
+      executiveSummary: '',
+      focus: '',
+      topPriorities: [],
+      decisionsNeeded: [],
+      waitingOn: [],
+      followUps: [],
+      alerts: [],
     },
-    tasks: {
-      total: 3,
-      open: 3,
-      overdue: 0,
-      urgent: 1,
-      items: [
-        {
-          id: 'task-brief-1',
-          title: 'Review overnight inbox',
-          priority: 'critical',
-          status: 'pending',
-          project: 'Operations',
-          nextAction: 'Open the inbox summary and triage the urgent queue',
-          updatedAt: new Date().toISOString(),
-        },
-        {
-          id: 'task-brief-2',
-          title: 'Check project blockers',
-          priority: 'high',
-          status: 'pending',
-          project: 'Delivery',
-          nextAction: 'Clear dependency issues before midday',
-          updatedAt: new Date().toISOString(),
-        },
-        {
-          id: 'task-brief-3',
-          title: 'Review goals and KPIs',
-          priority: 'normal',
-          status: 'pending',
-          project: 'Strategy',
-          nextAction: 'Compare today against the weekly target',
-          updatedAt: new Date().toISOString(),
-        },
-      ],
-    },
-    projects: [
-      {
-        id: 'ops',
-        name: 'Operations',
-        status: 'on_track',
-        progress: 65,
-        openTasks: 2,
-        completedTasks: 4,
-        blockers: ['Inbox triage'],
-      },
-      {
-        id: 'delivery',
-        name: 'Delivery',
-        status: 'watch',
-        progress: 42,
-        openTasks: 3,
-        completedTasks: 2,
-        blockers: ['Dependency review'],
-      },
-      {
-        id: 'strategy',
-        name: 'Strategy',
-        status: 'on_track',
-        progress: 78,
-        openTasks: 1,
-        completedTasks: 5,
-        blockers: [],
-      },
-    ],
-    goals: [
-      {
-        id: 'goal-briefing',
-        name: 'Daily briefing readiness',
-        status: 'on_track',
-        progress: 90,
-        metric: 'Briefing generated at 6 AM',
-        target: '100% of business days',
-      },
-      {
-        id: 'goal-execution',
-        name: 'Top task completion',
-        status: 'at_risk',
-        progress: 58,
-        metric: '3 of 5 priority tasks complete',
-        target: 'At least 80% completion',
-      },
-      {
-        id: 'goal-connectors',
-        name: 'Connector coverage',
-        status: 'done',
-        progress: 100,
-        metric: 'Human connectors enabled',
-        target: 'All connectors active',
-      },
-    ],
-    connectors: [
-      {
-        id: 'gmail',
-        name: 'Gmail',
-        domain: 'communication',
-        status: 'active',
-        description: 'Inbox triage and follow-up capture.',
-        connectsTo: ['briefing', 'tasks', 'projects'],
-      },
-      {
-        id: 'calendar-google',
-        name: 'Google Calendar',
-        domain: 'time',
-        status: 'active',
-        description: 'Daily schedule, meetings, and buffers.',
-        connectsTo: ['briefing', 'tasks'],
-      },
-      {
-        id: 'asana',
-        name: 'Asana',
-        domain: 'projects',
-        status: 'active',
-        description: 'Project milestones and dependencies.',
-        connectsTo: ['projects', 'tasks'],
-      },
-      {
-        id: 'notion',
-        name: 'Notion',
-        domain: 'knowledge',
-        status: 'active',
-        description: 'Notes, decisions, and operating context.',
-        connectsTo: ['knowledge', 'goals'],
-      },
-    ],
+    tasks: { total: 0, open: 0, overdue: 0, urgent: 0, items: [] },
+    projects: [],
+    goals: [],
+    connectors: [],
     importantInfo: {
-      unreadMessages: 4,
-      missedCalls: 1,
-      pendingDecisions: 1,
-      pendingFollowUps: 2,
+      unreadMessages: 0,
+      missedCalls: 0,
+      pendingDecisions: 0,
+      pendingFollowUps: 0,
     },
   };
 }
 
-const MOCK_DATA: DashboardData = {
-  todaySales: { revenue: 4827.5, changePercent: 12.3 },
-  activeAlerts: { count: 3, critical: 1 },
-  aiAgents: { active: 4, total: 6, statuses: { running: 4, idle: 1, error: 1 } },
-  lowStock: {
-    count: 7,
-    items: [
-      { name: 'Paper Towels (6pk)', current: 3, threshold: 10 },
-      { name: 'Energy Drink 16oz', current: 8, threshold: 24 },
-      { name: 'AA Batteries (4pk)', current: 2, threshold: 12 },
-    ],
-  },
-  humanLayer: createHumanLayerMock(),
-  recentActivity: [
-    { id: '1', agent: 'Inventory Agent', action: 'Generated reorder list for 7 low-stock items', timestamp: '2 min ago', type: 'warning' },
-    { id: '2', agent: 'Sales Agent', action: 'Morning sales report processed — $1,240 in first 3 hours', timestamp: '18 min ago', type: 'success' },
-    { id: '3', agent: 'Pricing Agent', action: 'Adjusted 12 promotional prices for weekend sale', timestamp: '45 min ago', type: 'info' },
-    { id: '4', agent: 'Security Agent', action: 'Flagged unusual void pattern at Register 3', timestamp: '1 hr ago', type: 'error' },
-    { id: '5', agent: 'Compliance Agent', action: 'Age verification audit completed — 100% pass rate', timestamp: '2 hr ago', type: 'success' },
-  ],
+const EMPTY_DATA: DashboardData = {
+  todaySales: { revenue: 0, changePercent: 0 },
+  activeAlerts: { count: 0, critical: 0 },
+  aiAgents: { active: 0, total: 0, statuses: {} },
+  lowStock: { count: 0, items: [] },
+  humanLayer: emptyHumanLayer(),
+  recentActivity: [],
 };
 
 const DOT_COLORS: Record<string, string> = {
@@ -487,6 +326,7 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [activatingConnectors, setActivatingConnectors] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [dataUnavailable, setDataUnavailable] = useState(false);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDescription, setTaskDescription] = useState('');
   const [taskPriority, setTaskPriority] = useState<'low' | 'normal' | 'high' | 'critical'>('normal');
@@ -544,7 +384,8 @@ export function Dashboard() {
       const [sales, apiData] = await Promise.all([fetchFromSupabase(), fetchDashboard()]);
       if (cancelled) return;
 
-      const next = apiData ?? MOCK_DATA;
+      setDataUnavailable(apiData === null);
+      const next = apiData ?? EMPTY_DATA;
       setData({ ...next, todaySales: sales ?? next.todaySales });
       setLoading(false);
     }
@@ -687,6 +528,38 @@ export function Dashboard() {
 
   return (
     <div className="aros-dashboard">
+      {dataUnavailable && (
+        <div style={{
+          padding: '12px 16px',
+          borderRadius: 12,
+          marginBottom: 16,
+          background: '#FEF3C7',
+          border: '1px solid #FCD34D',
+          color: '#92400E',
+          fontSize: 14,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          flexWrap: 'wrap',
+        }}>
+          <span>Live data isn’t available right now — showing empty values, not sample data. Connect your POS or retry to see real numbers.</span>
+          <button
+            type="button"
+            onClick={() => setReloadKey((n) => n + 1)}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 8,
+              border: '1px solid #B45309',
+              background: 'transparent',
+              color: '#92400E',
+              fontSize: 13,
+              cursor: 'pointer',
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
       <div style={{
         padding: '28px 28px 24px',
         borderRadius: 20,

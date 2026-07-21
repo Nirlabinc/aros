@@ -1,0 +1,49 @@
+{
+  "$schema": "./mesh.schema.json",
+  "_doc": "Minimal AROS service mesh metadata for shre-sdk heartbeat resolution in the AROS deploy root.",
+  "_tailnet": {
+    "suffix": "taile6b7d4.ts.net",
+    "account": "nirp86@"
+  },
+  "nodes": {
+    "aros-vps": {
+      "hostname": "shre",
+      "tailscaleIp": "100.107.37.98",
+      "magicDns": "aros-vps.taile6b7d4.ts.net",
+      "hardware": "Hostinger VPS",
+      "os": "linux",
+      "role": "edge",
+      "description": "Public AROS production origin and platform services.",
+      "services": [
+        "aros-platform",
+        "shre-router",
+        "mib007",
+        "shre-model-gateway",
+        "shre-secrets"
+      ],
+      "priority": "P0",
+      "keepAlive": true
+    },
+    "shadow": {
+      "hostname": "shadow",
+      "tailscaleIp": "100.86.194.36",
+      "magicDns": "shadow.taile6b7d4.ts.net",
+      "hardware": "GPU workstation",
+      "os": "windows",
+      "role": "gpu",
+      "description": "Remote Ollama inference node.",
+      "services": ["ollama-gpu", "ollama-remote"],
+      "priority": "P1",
+      "keepAlive": false
+    }
+  },
+  "failover": {
+    "strategy": "graceful-degradation",
+    "detection": {
+      "method": "heartbeat",
+      "intervalMs": 30000,
+      "missThreshold": 3,
+      "deadThreshold": 6
+    }
+  }
+}
