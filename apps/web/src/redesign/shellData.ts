@@ -7,6 +7,7 @@
 export type SectionKey =
   | 'chat' | 'stores' | 'marketplace' | 'apps' | 'connectors' | 'plugins' | 'skills' | 'agents'
   | 'models' | 'devices' | 'permissions' | 'health' | 'documents' | 'team' | 'billing' | 'usage' | 'settings'
+  | 'notifications'
   | 'edi-invoices';
 
 export interface NavItem { key: SectionKey; label: string; glyph: string; count?: number; }
@@ -43,6 +44,7 @@ export const WORKSPACE_NAV: NavItem[] = [
   { key: 'billing', label: 'Billing', glyph: 'Bi' },
   { key: 'usage', label: 'Usage', glyph: 'Us' },
   { key: 'settings', label: 'Settings', glyph: 'Se' },
+  { key: 'notifications', label: 'Notifications', glyph: 'No' },
 ];
 
 export const HEALTH = { healthy: 2, degraded: 1, down: 1 };
@@ -237,6 +239,11 @@ export const SECTIONS: Record<Exclude<SectionKey, 'chat'>, SectionSpec> = {
       { mark: 'CO', title: 'Store concierge', sub: '2,350 calls · $42.10 (frontier)', ...rowStatus(s('on', 'Running')), action: 'View' },
     ],
   },
+  notifications: {
+    eyebrow: 'Administration', primaryCta: 'Save preferences',
+    lead: 'Choose which notifications reach you and on which channel (email, text).',
+    stats: [{ value: 5, label: 'Notification types' }, { value: 2, label: 'Channels' }],
+  },
   settings: {
     eyebrow: 'Administration', primaryCta: 'Save changes',
     lead: 'Workspace name, branding, and account preferences.',
@@ -260,7 +267,7 @@ export const STORES_SCOPE = ['Main St', 'Oak Ave', '3rd St Express', 'Harbor', '
 export const SECTION_TITLES: Record<SectionKey, string> = {
   chat: 'Concierge', stores: 'Stores', marketplace: 'Marketplace', apps: 'Apps', connectors: 'Connectors', plugins: 'Plugins', skills: 'Skills', agents: 'Agents',
   models: 'Models', devices: 'Computers', permissions: 'Permissions', health: 'Connection Health',
-  documents: 'Documents', team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings', 'edi-invoices': 'EDI Invoices',
+  documents: 'Documents', team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings', notifications: 'Notifications', 'edi-invoices': 'EDI Invoices',
 };
 
 function rowStatus([status, statusLabel]: [Status, string]) { return { status, statusLabel }; }

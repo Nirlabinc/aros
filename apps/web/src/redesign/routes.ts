@@ -15,6 +15,7 @@ export const PATH_TO_SECTION: Record<string, ShellSection> = {
   // Natural-name aliases — typing /team or /usage previously fell through to
   // Home, which read as "this feature is missing" (validation sweep finding).
   '/team': 'team', '/usage': 'usage',
+  '/notifications': 'notifications',
   '/workspace': 'settings', '/channels': 'apps',
 };
 
@@ -23,6 +24,7 @@ export const SECTION_TO_PATH: Partial<Record<SectionKey, string>> = {
   skills: '/skills', agents: '/agents',
   models: '/models', devices: '/computers', health: '/connection-health', settings: '/settings',
   billing: '/billing', usage: '/costs', team: '/users', permissions: '/permissions', documents: '/documents',
+  notifications: '/notifications',
   'edi-invoices': '/edi-invoices',
 };
 

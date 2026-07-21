@@ -22,6 +22,7 @@ import { listTasks } from '../tasks/store.js';
 import { createSupabaseAdmin, createSupabaseAuthClient } from './supabase.js';
 import { validateAddMemberInput, INVITEE_NOT_REGISTERED } from './workspace-members.js';
 import { parsePlatformAdmins, isPlatformAdmin } from './platform-admin.js';
+import { NOTIFICATION_CATALOG, NOTIFICATION_CHANNELS, mergePreferences, validatePreferenceUpdate, type PreferenceRow } from './notifications.js';
 import { createTermsModule } from './terms/gate.js';
 import { createEventBus } from 'shre-sdk/events';
 import { createHeartbeatMonitor } from 'shre-sdk/heartbeat';
@@ -2064,6 +2065,71 @@ async function handleGatewayModelRouting(req: IncomingMessage, res: ServerRespon
   } catch (err) {
     console.error('[gateway.models]', err instanceof Error ? err.message : err);
     json(res, 404, { error: 'Model gateway unreachable' });
+  }
+}
+
+/**
+ * Per-user notification preferences for the current workspace.
+ * GET  → catalog + channels + merged event×channel matrix (unset pairs show
+ *        code defaults so the UI never renders a blank state).
+ * PUT  → upsert ONE {event, channel, enabled, destination} choice.
+ * Preferences are per user per workspace; delivery lanes (owner-digest
+ * recipients, future SMS) read this table via the same defaults
+ * (src/notifications.ts isEnabled).
+ */
+async function handleNotificationPreferences(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const supabase = createSupabaseAdmin();
+
+  try {
+    if (req.method === 'GET') {
+      const { data, error } = await supabase
+        .from('notification_preferences')
+        .select('event_type,channel,enabled,destination')
+        .eq('tenant_id', auth.tenantId)
+        .eq('user_id', auth.userId);
+      if (error) throw error;
+      return json(res, 200, {
+        catalog: NOTIFICATION_CATALOG,
+        channels: NOTIFICATION_CHANNELS,
+        preferences: mergePreferences((data || []) as PreferenceRow[]),
+      });
+    }
+
+    const body = await parseJsonBody(req);
+    const input = validatePreferenceUpdate(body);
+    if ('error' in input) return json(res, 400, { error: input.error });
+
+    const { error: upsertError } = await supabase
+      .from('notification_preferences')
+      .upsert(
+        {
+          tenant_id: auth.tenantId,
+          user_id: auth.userId,
+          event_type: input.event,
+          channel: input.channel,
+          enabled: input.enabled,
+          destination: input.destination,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'tenant_id,user_id,event_type,channel' },
+      );
+    if (upsertError) throw upsertError;
+
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'notifications.preference_updated',
+      resource: `${input.event}:${input.channel}`,
+      detail: { enabled: input.enabled, hasDestination: Boolean(input.destination) },
+      ip: getClientIp(req),
+    });
+    json(res, 200, { ok: true, event: input.event, channel: input.channel, enabled: input.enabled, destination: input.destination });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : (err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : 'Notification preferences request failed');
+    console.error('[notifications.preferences]', message);
+    json(res, 500, { error: message });
   }
 }
 
@@ -4571,6 +4637,9 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (pathname === '/api/gateway/model-routing' && method === 'GET') return handleGatewayModelRouting(req, res);
   const workspaceMembersMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/members(?:\/([0-9a-f-]+)(?:\/role)?)?$/);
   if (workspaceMembersMatch && ['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) return handleWorkspaceMembersCompat(req, res, workspaceMembersMatch[1], workspaceMembersMatch[2]);
+  if (pathname === '/api/notifications/preferences' && (method === 'GET' || method === 'PUT')) {
+    return handleNotificationPreferences(req, res);
+  }
   const platformMatch = pathname.match(/^\/api\/platform\/(overview|tenants|audit)(?:\/([0-9a-f-]+))?$/);
   if (platformMatch && method === 'GET') return handlePlatformConsole(req, res, platformMatch[1], platformMatch[2]);
   const workspaceRolesMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/roles$/);

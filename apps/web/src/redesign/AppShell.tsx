@@ -8,6 +8,7 @@ import { listMarketplaceEntitlements } from './pages/connections/api';
 import {
   BillingPage, UsagePage, TeamPage, SettingsPage, PermissionsPage, ConnectionHealthPage, DevicesPage,
 } from './pages/admin';
+import { NotificationsPage } from './pages/admin/NotificationsPage';
 import { DocumentsPage } from './pages/Documents';
 import { EdiInvoices } from './pages/EdiInvoices';
 import { ConnectWizard } from './ConnectWizard';
@@ -191,6 +192,7 @@ export function AppShell() {
     if (section === 'billing') return <BillingPage />;
     if (section === 'usage') return <UsagePage />;
     if (section === 'settings') return <SettingsPage />;
+    if (section === 'notifications') return <NotificationsPage />;
     if (section === 'skills' || section === 'agents' || section === 'models') {
       const kind = section === 'skills' ? 'skill' : section === 'agents' ? 'agent' : 'model';
       return <IntelligencePage kind={kind} />;
