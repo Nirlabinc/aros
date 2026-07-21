@@ -42,3 +42,5 @@ playwright-report/
 # Runtime state written by the dev server — never commit
 /data/
 
+node_modules
+apps/web/node_modules
