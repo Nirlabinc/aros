@@ -27,6 +27,8 @@ Entry point: **Marketplace** in the sidebar (`/marketplace`), or the
 - Marketplace always has the built-in catalog (Documents, EDI Invoices, StorePulse, …) — it is never blank.
 - A freshly installed Documents shows its own first-run empty state (no files yet), not a void.
 - `/connectors` and `/plugins` with nothing active say so and offer **Browse Marketplace**.
+- `/apps` (Active apps) lists only installed apps, A→Z with search on top; with
+  nothing installed it says so and offers **Browse Marketplace**.
 
 ## Success signal
 The app card reads **Active**, the app shows up in his Workspace nav, and

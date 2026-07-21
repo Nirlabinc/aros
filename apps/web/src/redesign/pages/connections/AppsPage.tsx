@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../../contexts/AuthContext';
 import { createAppLaunch, disableApp, grantApp, listApps, listStores, type AppGrant, type PlatformApp, type StoreConnector } from './api';
+import { activeApps } from './appsLogic';
 
-export function AppsPage() {
+export function AppsPage({ onBrowse }: { onBrowse?: () => void } = {}) {
   const { session, tenant } = useAuth();
   const auth = useMemo(() => ({ accessToken: session?.access_token, tenantId: tenant?.id }), [session?.access_token, tenant?.id]);
   const [apps, setApps] = useState<PlatformApp[]>([]);
@@ -24,7 +25,8 @@ export function AppsPage() {
   useEffect(() => { void load(); }, [load]);
 
   const active = new Set(grants.filter(grant => grant.status === 'active').map(grant => grant.app_key));
-  const visible = apps.filter(app => `${app.name} ${app.description || ''}`.toLowerCase().includes(query.toLowerCase()));
+  // Active apps only, A→Z, filtered by the search box — catalog/discovery lives in Marketplace.
+  const visible = activeApps(apps, grants, query);
 
   async function beginSetup(app: PlatformApp) {
     setError('');
@@ -68,11 +70,11 @@ export function AppsPage() {
   }
 
   return <div className="rsx-panel">
-    <div className="rsx-panel__head"><div><div className="rsx-panel__eyebrow">Workspace apps</div><p className="rsx-panel__lead">Grant only the capabilities each workspace needs, then open connected apps directly.</p></div></div>
+    <div className="rsx-panel__head"><div><div className="rsx-panel__eyebrow">Active apps</div><p className="rsx-panel__lead">Everything turned on for this workspace, A to Z. Add more from the Marketplace.</p></div>{onBrowse && <div className="rsx-section-actions"><button className="rsx-panel__cta" type="button" onClick={onBrowse}>Browse Marketplace</button></div>}</div>
     {error && <div className="rsx-note" role="alert"><div className="rsx-note__title">Apps unavailable</div><div className="rsx-note__body">{error}</div><button className="rsx-row__btn" onClick={() => void load()}>Retry</button></div>}
-    {loading ? <div className="rsx2-empty"><div className="rsx2-empty__text">Loading apps…</div></div> : apps.length === 0 ? <div className="rsx2-empty"><div className="rsx2-empty__icon">◇</div><div className="rsx2-empty__title">No apps published</div><div className="rsx2-empty__text">The platform catalog returned no apps for this workspace.</div></div> : <>
-      <div className="rsx-stats"><div className="rsx-stat"><strong>{active.size}</strong><span>Active</span></div><div className="rsx-stat"><strong>{apps.length}</strong><span>Available</span></div></div>
-      <div className="rsx-form"><label className="rsx-form__field"><span className="rsx-form__label">Find an app</span><input className="rsx-form__input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search apps" /></label></div>
+    {loading ? <div className="rsx2-empty"><div className="rsx2-empty__text">Loading apps…</div></div> : active.size === 0 ? <div className="rsx2-empty"><div className="rsx2-empty__icon">◇</div><div className="rsx2-empty__title">No active apps yet</div><div className="rsx2-empty__text">Install apps from the Marketplace and they'll show up here, ready to open.</div>{onBrowse && <button className="rsx-panel__cta" type="button" onClick={onBrowse}>Browse Marketplace</button>}</div> : <>
+      <div className="rsx-form"><label className="rsx-form__field"><span className="rsx-form__label">Find an app</span><input className="rsx-form__input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search active apps" /></label></div>
+      <div className="rsx-stats"><div className="rsx-stat"><strong>{active.size}</strong><span>Active</span></div><div className="rsx-stat"><strong>{apps.length}</strong><span>In catalog</span></div></div>
       {visible.length === 0 ? <div className="rsx2-empty"><div className="rsx2-empty__title">No matching apps</div><div className="rsx2-empty__text">Try another name or keyword.</div></div> : <div className="rsx-cards">{visible.map(app => {
         const enabled = active.has(app.id); const unavailable = app.status !== 'active';
         const mapped = grants.find(item => item.app_key === app.id)?.service_config?.storeIds?.length || 0;

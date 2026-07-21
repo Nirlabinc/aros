@@ -183,7 +183,7 @@ export function AppShell() {
     if (section === 'connectors') return <ConnectorsPage onBrowse={() => goSection('marketplace')} />;
     if (section === 'plugins') return <PluginsPage onBrowse={() => goSection('marketplace')} />;
     if (section === 'stores') return <StoresPage onConnect={openWizard} />;
-    if (section === 'apps') return <AppsPage />;
+    if (section === 'apps') return <AppsPage onBrowse={() => goSection('marketplace')} />;
     if (section === 'permissions') return <PermissionsPage />;
     if (section === 'health') return <ConnectionHealthPage />;
     if (section === 'devices') return <DevicesPage />;
