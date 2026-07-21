@@ -6,7 +6,7 @@ const API_BASE = (window as any).__AROS_API_URL__
   || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
 
 type CatalogEntry = { id: string; label: string; description: string };
-type Channel = { id: string; label: string; status: 'activating' | 'pending-provider'; destinationHint: string };
+type Channel = { id: string; label: string; status: 'active' | 'activating' | 'pending-provider'; destinationHint: string };
 type Pref = { event: string; channel: string; enabled: boolean; destination: string | null };
 
 /**
@@ -90,9 +90,11 @@ export function NotificationsPage() {
               <section key={channel.id} style={{ border: '1px solid var(--line)', borderRadius: 14, background: 'var(--surface)', padding: 18, boxShadow: 'var(--shadow-card)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <strong style={{ fontSize: 15 }}>{channel.label}</strong>
-                  {channel.status === 'activating'
-                    ? <Pill>delivery activating — choices apply from the first send</Pill>
-                    : <Pill>provider not connected yet — choices saved for activation</Pill>}
+                  {channel.status === 'active'
+                    ? <Pill>delivery live</Pill>
+                    : channel.status === 'activating'
+                      ? <Pill>delivery activating — choices apply from the first send</Pill>
+                      : <Pill>provider not connected yet — choices saved for activation</Pill>}
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '12px 0 6px', flexWrap: 'wrap' }}>
                   <input

@@ -11,9 +11,9 @@ export const NOTIFICATION_CHANNELS = [
   {
     id: 'email' as const,
     label: 'Email',
-    // Owner-digest delivery lane is rolling out (phase 5 = recipients); the
-    // preference is honored from the first send.
-    status: 'activating' as const,
+    // Live since 2026-07-21: team-change and connector-health emails send via
+    // SendGrid; the weekly-brief lane joins as the digest recipients ship.
+    status: 'active' as const,
     destinationHint: 'Defaults to your account email',
   },
   {

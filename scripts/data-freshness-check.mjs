@@ -78,5 +78,59 @@ try {
 
 if (failures.length) {
   for (const f of failures) console.log(f);
+  await emailOwners(failures).catch((e) => console.log(`WARN · data-freshness · email step failed: ${e.message}`));
   process.exit(1);
+}
+
+/**
+ * Email workspace members who enabled connector-health notifications.
+ * 20h cooldown per tenant (state file) so a persistent failure emails at
+ * most daily, not every 6h cron tick. Best-effort: email problems never
+ * change the exit code — the log line above is the primary alert.
+ */
+async function emailOwners(failLines) {
+  const sgKey = process.env.SENDGRID_API_KEY;
+  if (!sgKey) return;
+  const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const stateFile = '/opt/shre-ops/state/data-freshness-mail.json';
+  let sent = {};
+  try { sent = JSON.parse(readFileSync(stateFile, 'utf8')); } catch { /* first run */ }
+
+  const byTenant = new Map();
+  for (const line of failLines) {
+    const m = line.match(/tenant ([0-9a-f-]{36})/);
+    if (m) byTenant.set(m[1], [...(byTenant.get(m[1]) || []), line]);
+  }
+
+  for (const [tenantId, lines] of byTenant) {
+    if (sent[tenantId] && Date.now() - sent[tenantId] < 20 * 3600_000) continue;
+    const [members, prefs] = await Promise.all([
+      rest(`tenant_members?tenant_id=eq.${tenantId}&status=eq.active&select=user_id`),
+      rest(`notification_preferences?tenant_id=eq.${tenantId}&select=user_id,event_type,channel,enabled,destination`),
+    ]);
+    for (const member of members) {
+      const mine = prefs.filter((p) => p.user_id === member.user_id);
+      const row = mine.find((p) => p.event_type === 'connector-health' && p.channel === 'email');
+      if (row ? !row.enabled : false) continue; // default for connector-health email is ON
+      let to = mine.find((p) => p.channel === 'email' && p.destination)?.destination || '';
+      if (!to) {
+        const userRes = await fetch(`${url}/auth/v1/admin/users/${member.user_id}`, { headers: { apikey: key, Authorization: `Bearer ${key}` } });
+        if (userRes.ok) to = (await userRes.json()).email || '';
+      }
+      if (!to) continue;
+      await fetch('https://api.sendgrid.com/v3/mail/send', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${sgKey}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          personalizations: [{ to: [{ email: to }] }],
+          from: { email: process.env.EMAIL_FROM || 'no-reply@aros.live', name: 'AROS' },
+          subject: 'AROS: a store connection needs attention',
+          content: [{ type: 'text/plain', value: `Your store data has stopped syncing:\n\n${lines.join('\n')}\n\nCheck Stores → Connection Health at https://app.aros.live/connection-health\nManage notifications: https://app.aros.live/notifications` }],
+        }),
+      }).catch(() => {});
+    }
+    sent[tenantId] = Date.now();
+  }
+  mkdirSync('/opt/shre-ops/state', { recursive: true });
+  writeFileSync(stateFile, JSON.stringify(sent));
 }
