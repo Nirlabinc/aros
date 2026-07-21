@@ -1,0 +1,12 @@
+# Vendored-integrity manifest for the platform.role_bundle contract.
+# sha256 of each canonical file with line endings normalized to LF (\r stripped).
+# SOURCE OF TRUTH — every consumer that vendors these files (sia, aros,
+# shre-command-center) must match. Regenerate on any contract change:
+#   scripts/gen-platform-checksums.sh   (then re-vendor files + this manifest in lockstep)
+# Verify a vendored copy:  sha256 of (tr -d '\r' < file) == the line here.
+820fbe5aba8d4ece6aee224c23a86f19b4fb089953891309f45ce21a7f461a44  role-bundle.v1.schema.json
+3353b67be3025e2373d97148b3ea9595c60190b0cfd1b08de314d950bba63a88  presets/bookkeeper.v1.json
+6b78cfacf32a21c43a1d6dfb8024e27591676b09775d63d369860aaa6ed5aa4f  presets/owner.v1.json
+162768150de9c58651d118e8b0be41c25fad4efc39928009192f7abd6d2c0767  presets/regional.v1.json
+0565fc3202bb176340edeff51c59daa0f1bf4275eb824b64731022acd753d4bd  presets/shift-lead.v1.json
+4420859ad2214b253a80de4104d975722ae48ad573f553bcddb45ed1ef01cd67  presets/store-manager.v1.json
