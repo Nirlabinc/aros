@@ -723,7 +723,11 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
       const meterUrl = new URL('/v1/costs/summary', SHRE_METER_URL);
       meterUrl.searchParams.set('from', periodStart);
       meterUrl.searchParams.set('to', periodEnd);
-      meterUrl.searchParams.set('tenantId', tenantId);
+      // The meter records the ROUTER tenant (client-<N>, from the chat
+      // passport) — querying by workspace UUID matches nothing and Usage
+      // reads $0 forever. Same mapping the /v1 proxy uses.
+      const meterTenant = await routerTenantFor(tenantId);
+      meterUrl.searchParams.set('tenantId', meterTenant);
 
       // The meter's gate-auth accepts a service identity header.
       const meterHeaders = { 'x-gate-user': 'aros-platform', 'x-gate-role': 'service' };
@@ -735,7 +739,7 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
       const byModelUrl = new URL('/v1/costs/by-model', SHRE_METER_URL);
       byModelUrl.searchParams.set('from', periodStart);
       byModelUrl.searchParams.set('to', periodEnd);
-      byModelUrl.searchParams.set('tenantId', tenantId);
+      byModelUrl.searchParams.set('tenantId', meterTenant);
       const byModelRes = await fetch(byModelUrl, { headers: meterHeaders });
       if (byModelRes.ok) {
         const rows = (await byModelRes.json()) as Array<{ model?: string; requests?: number; costUsd?: number; totalTokens?: number }>;
@@ -759,7 +763,9 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
       plan: subscription?.plan || data.plan,
       // A free-plan workspace is honestly "active" (it works), not "none" —
       // Billing said "none" while Settings said "active" (sweep finding).
-      billingStatus: subscription?.status || data.billing_status || 'active',
+      // tenants.billing_status is the literal string "none" for free-plan
+      // rows — a working free workspace is honestly "active".
+      billingStatus: subscription?.status || (data.billing_status && data.billing_status !== 'none' ? data.billing_status : 'active'),
       stripeCustomerId: data.stripe_customer_id,
       subscription,
       licenseTier: data.license_tier,
