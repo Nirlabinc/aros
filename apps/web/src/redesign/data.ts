@@ -291,6 +291,9 @@ export function useHomeData(): HomeData {
 // malformed field maps to "render nothing" — never a fabricated number.
 
 export interface BriefTile { value: string; label: string; delta: string; up?: boolean; down?: boolean }
+export type BriefCtaType = 'fix_price' | 'draft_po' | 'draft_campaign' | 'buy_review' | 'review';
+export interface BriefCta { type: BriefCtaType; items: string[] }
+export interface BriefDetail { title: string; meta: string }
 export interface OwnerBrief {
   /** Human period-end label ("Jul 13"), or '' when unknown. */
   periodEnd: string;
@@ -303,6 +306,10 @@ export interface OwnerBrief {
   reorderCount: number;
   reorderCost: number | null;
   deadStockCapital: number | null;
+  /** Machine-routable CTA from the recommendation (null → no button). */
+  cta: BriefCta | null;
+  /** The digest rows behind the CTA — shown in the card's expander. */
+  details: BriefDetail[];
 }
 
 const DEMO_BRIEF: OwnerBrief = {
@@ -316,6 +323,12 @@ const DEMO_BRIEF: OwnerBrief = {
   action: 'Fix pricing on 3 items selling below cost',
   reason: 'Three top-velocity SKUs are priced under invoice cost — every sale loses money.',
   leakCount: 3, reorderCount: 19, reorderCost: 1240, deadStockCapital: 5180,
+  cta: { type: 'fix_price', items: ['1001', '1002', '1003'] },
+  details: [
+    { title: 'Marlboro Red Box', meta: '-4% margin · price $9.49 · cost $9.87' },
+    { title: 'Red Bull 12oz', meta: '-2% margin · price $2.99 · cost $3.05' },
+    { title: 'Bud Light 24pk', meta: '-1% margin · price $21.99 · cost $22.20' },
+  ],
 };
 
 function briefMoney(n: any, cents = false): string | null {
@@ -333,6 +346,79 @@ function briefDay(iso: any): string {
     const d = new Date(`${String(iso).slice(0, 10)}T00:00:00Z`);
     return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
   } catch { return ''; }
+}
+
+const BRIEF_CTA_TYPES: BriefCtaType[] = ['fix_price', 'draft_po', 'draft_campaign', 'buy_review', 'review'];
+const MAX_BRIEF_DETAILS = 8;
+
+function buildBriefCta(raw: any): BriefCta | null {
+  const type = raw?.type;
+  if (!BRIEF_CTA_TYPES.includes(type)) return null;
+  return { type, items: Array.isArray(raw?.items) ? raw.items.map(String).filter(Boolean) : [] };
+}
+
+// The digest rows behind each CTA, as human lines for the card's expander —
+// same defensive mapping as the tiles: a missing/malformed field renders
+// nothing rather than a fabricated number.
+function briefLeakDetails(digest: any): BriefDetail[] {
+  const leaks = Array.isArray(digest?.margin_leaks) ? digest.margin_leaks : [];
+  return leaks.slice(0, MAX_BRIEF_DETAILS).map((l: any): BriefDetail => ({
+    title: String(l?.name ?? l?.source_id ?? 'Unknown item'),
+    meta: [
+      Number.isFinite(Number(l?.margin_pct)) ? `${l.margin_pct}% margin` : null,
+      briefMoney(l?.unit_price, true) ? `price ${briefMoney(l?.unit_price, true)}` : null,
+      briefMoney(l?.cost, true) ? `cost ${briefMoney(l?.cost, true)}` : null,
+    ].filter(Boolean).join(' · '),
+  }));
+}
+function briefReorderDetails(digest: any): BriefDetail[] {
+  const rows = Array.isArray(digest?.reorder) ? digest.reorder : [];
+  return rows.slice(0, MAX_BRIEF_DETAILS).map((r: any): BriefDetail => ({
+    title: String(r?.name ?? r?.upc ?? 'Unknown item'),
+    meta: [
+      r?.stock_status === 'out_of_stock' ? 'out of stock' : Number.isFinite(Number(r?.qty_on_hand)) ? `${r.qty_on_hand} on hand` : null,
+      Number.isFinite(Number(r?.demand_frequency)) ? `sold ${r.demand_frequency}× recently` : null,
+      Number.isFinite(Number(r?.suggested_qty)) ? `suggest ${r.suggested_qty}` : null,
+      briefMoney(r?.est_reorder_cost) ? `~${briefMoney(r?.est_reorder_cost)}` : null,
+    ].filter(Boolean).join(' · '),
+  }));
+}
+function briefDeadStockDetails(digest: any): BriefDetail[] {
+  const rows = Array.isArray(digest?.dead_stock) ? digest.dead_stock : [];
+  return rows.slice(0, MAX_BRIEF_DETAILS).map((d: any): BriefDetail => ({
+    title: String(d?.name ?? d?.upc ?? 'Unknown item'),
+    meta: [
+      briefMoney(d?.tied_capital) ? `${briefMoney(d?.tied_capital)} tied up` : null,
+      Number.isFinite(Number(d?.qty_on_hand)) ? `${d.qty_on_hand} on hand` : null,
+    ].filter(Boolean).join(' · '),
+  }));
+}
+function briefDetails(digest: any, cta: BriefCta | null): BriefDetail[] {
+  if (!cta) return [];
+  switch (cta.type) {
+    case 'fix_price': return briefLeakDetails(digest);
+    case 'draft_po': return briefReorderDetails(digest);
+    case 'draft_campaign': {
+      // No campaign builder in-app yet — surface the digest's attach pairs
+      // (real basket data) as promo material, else the recommendation itself.
+      const attach = Array.isArray(digest?.attach) ? digest.attach : [];
+      const pairs = attach.slice(0, MAX_BRIEF_DETAILS).map((a: any): BriefDetail => ({
+        title: `${a?.name_a ?? '?'} + ${a?.name_b ?? '?'}`,
+        meta: [
+          Number.isFinite(Number(a?.together)) ? `bought together ${a.together}×` : null,
+          Number.isFinite(Number(a?.lift)) ? `${a.lift}× lift` : null,
+        ].filter(Boolean).join(' · '),
+      }));
+      if (pairs.length > 0) return pairs;
+      const action = typeof digest?.recommendation?.action === 'string' ? digest.recommendation.action : '';
+      return action ? [{ title: action, meta: typeof digest?.recommendation?.reason === 'string' ? digest.recommendation.reason : '' }] : [];
+    }
+    case 'buy_review': return briefDeadStockDetails(digest);
+    case 'review': {
+      const leaks = briefLeakDetails(digest);
+      return leaks.length > 0 ? leaks : briefDeadStockDetails(digest);
+    }
+  }
 }
 
 /** Server contract (src/server.ts handleOwnerDigest): always 200 with a
@@ -364,6 +450,7 @@ export function buildBrief(raw: any): OwnerBrief | null {
   const reorderCandidates = Number(digest?.reorder_total_candidates);
   const reorderCost = Number(digest?.reorder_total_cost);
   const deadStock = Number(digest?.dead_stock_total_capital);
+  const cta = buildBriefCta(digest?.recommendation?.cta);
   return {
     periodEnd: briefDay(raw?.period_end ?? digest?.period?.end),
     tiles,
@@ -373,6 +460,27 @@ export function buildBrief(raw: any): OwnerBrief | null {
     reorderCount: Number.isFinite(reorderCandidates) ? reorderCandidates : (Array.isArray(digest?.reorder) ? digest.reorder.length : 0),
     reorderCost: Number.isFinite(reorderCost) ? reorderCost : null,
     deadStockCapital: Number.isFinite(deadStock) ? deadStock : null,
+    cta,
+    details: briefDetails(digest, cta),
+  };
+}
+
+/**
+ * Fire-and-forget CTA tap → POST /api/digest/action (the warehouse's
+ * shre.digest_action ledger, via the server proxy). Best-effort by contract:
+ * the server always answers {ok:true}, a network failure is swallowed, and
+ * demo/preview taps are never recorded. The UI never waits on this.
+ */
+export function useDigestActionRecorder(): (cta: BriefCta) => void {
+  const { session, tenant } = useAuth();
+  const demo = useDemo();
+  return (cta: BriefCta) => {
+    if (demo) return;
+    fetch(`${API_BASE}/api/digest/action`, {
+      method: 'POST',
+      headers: headers(session, tenant),
+      body: JSON.stringify({ cta_type: cta.type, items: cta.items }),
+    }).catch(() => {});
   };
 }
 
