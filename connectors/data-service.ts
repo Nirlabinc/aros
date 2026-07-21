@@ -98,10 +98,20 @@ function isInactiveItem(row: Record<string, unknown>): boolean {
 // connects.
 const REVENUE_FIELDS = ['Total', 'NetSales', 'NetTotal', 'GrandTotal', 'SalesAmount', 'Amount', 'TotalAmount', 'BillAmount', 'billAmount', 'subTotal', 'grandTotal', 'bill_amount'];
 const SALES_DATE_FIELDS = ['InvoiceDate', 'invoiceDate', 'invoice_date', 'CreatedDate', 'createdDate', 'BusinessDate', 'business_date', 'datetime', 'Date', 'date'];
-const INVOICE_FIELDS = ['InvoiceNo', 'invoiceNo', 'invoice_no', 'InvoiceNumber', 'TransactionId', 'transaction_id'];
+const INVOICE_NUMBER_FIELDS = ['InvoiceNo', 'invoiceNo', 'invoice_no', 'InvoiceNumber', 'invoiceNumber', 'ReceiptNo', 'receiptNo', 'BillNo', 'billNo'];
+const INVOICE_FIELDS = [...INVOICE_NUMBER_FIELDS, 'TransactionId', 'transaction_id', 'InvoiceId', 'invoiceId', 'id'];
 const QTY_FIELDS = ['iteM_InStock', 'OnHand', 'QtyOnHand', 'Quantity', 'Qty', 'StockOnHand', 'CurrentStock'];
 const REORDER_FIELDS = ['iteM_MinStockLevel', 'ReorderPoint', 'ReorderLevel', 'MinQty', 'MinimumQty', 'Threshold', 'ParLevel'];
 const NAME_FIELDS = ['description', 'iteM_ShortName', 'Name', 'ItemName', 'Description', 'ProductName', 'Product'];
+const ITEM_CODE_FIELDS = ['ItemCode', 'itemCode', 'item_code', 'Barcode', 'barcode', 'UPC', 'upc', 'sku', 'Sku', 'PLU', 'plu'];
+const ITEM_QTY_FIELDS = ['Qty', 'qty', 'Quantity', 'quantity', 'SoldQty', 'soldQty', 'item_qty', 'ItemQty', 'ItemQuantity', 'itemQuantity'];
+const ITEM_TOTAL_FIELDS = ['LineTotal', 'lineTotal', 'Total', 'total', 'TotalAmount', 'totalAmount', 'Amount', 'amount', 'SalesAmount', 'salesAmount'];
+const PRICE_FIELDS = ['Price', 'price', 'RetailPrice', 'retailPrice', 'UnitPrice', 'unitPrice', 'SellingPrice', 'sellingPrice', 'iteM_Price'];
+const COST_FIELDS = ['Cost', 'cost', 'CostPrice', 'costPrice', 'UnitCost', 'unitCost', 'AvgCost', 'avgCost', 'iteM_Cost'];
+const CREATED_FIELDS = ['CreatedDate', 'createdDate', 'created_at', 'DateCreated', 'dateCreated', 'AddedDate', 'addedDate', 'itemCreatedDate'];
+const UPDATED_FIELDS = ['UpdatedDate', 'updatedDate', 'updated_at', 'ModifiedDate', 'modifiedDate', 'LastUpdated', 'lastUpdated', 'LastModified', 'lastModified'];
+const PRICE_CHANGED_FIELDS = ['PriceChangedDate', 'priceChangedDate', 'LastPriceChangeDate', 'lastPriceChangeDate', 'PriceUpdatedDate', 'priceUpdatedDate'];
+const COST_CHANGED_FIELDS = ['CostChangedDate', 'costChangedDate', 'LastCostChangeDate', 'lastCostChangeDate', 'CostUpdatedDate', 'costUpdatedDate'];
 
 /** Fallback when a connector has no configured timezone: US retail default. */
 export const DEFAULT_STORE_TIMEZONE = 'America/New_York';
@@ -474,6 +484,294 @@ export async function fetchExceptionSummary(
   } finally {
     await Promise.all(refs.map((ref) => deleteCredential(ref).catch(() => {})));
   }
+}
+
+export interface TopSoldItem {
+  name: string;
+  code: string | null;
+  quantity: number;
+  sales: number;
+}
+
+export interface ItemChange {
+  name: string;
+  code: string | null;
+  changedAt: string;
+  changeType: 'created' | 'updated' | 'price' | 'cost';
+  price?: number | null;
+  cost?: number | null;
+}
+
+export interface StoreInvoice {
+  invoiceNo: string | null;
+  recordId: string | null;
+  businessDate: string | null;
+  timestamp: string | null;
+  amount: number | null;
+  isVoid: boolean;
+}
+
+export interface StoreItemsReport {
+  mode: 'top_sold';
+  items: TopSoldItem[];
+  from: string;
+  to: string;
+  source: { type: string; name: string };
+  fetchedAt: string;
+}
+
+export interface StoreItemChangesReport {
+  mode: 'recently_added' | 'recently_edited' | 'recent_price_changes' | 'recent_cost_changes';
+  items: ItemChange[];
+  available: boolean;
+  source: { type: string; name: string };
+  fetchedAt: string;
+  note?: string;
+}
+
+export interface StoreInvoicesReport {
+  invoices: StoreInvoice[];
+  from: string;
+  to: string;
+  matchedInvoice?: string;
+  source: { type: string; name: string };
+  fetchedAt: string;
+}
+
+function flattenSalesRows(payload: unknown): Array<Record<string, unknown>> {
+  const rows = toRows(payload);
+  const out: Array<Record<string, unknown>> = [];
+  for (const row of rows) {
+    let addedNested = false;
+    for (const key of ['Items', 'items', 'LineItems', 'lineItems', 'InvoiceItems', 'invoiceItems', 'details', 'Details']) {
+      const nested = toRows(row[key]);
+      for (const item of nested) {
+        out.push({ ...row, ...item });
+        addedNested = true;
+      }
+    }
+    if (!addedNested) out.push(row);
+  }
+  return out;
+}
+
+function pickDateString(row: Record<string, unknown>, fields: string[]): string | null {
+  for (const field of fields) {
+    const value = row[field];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function normalizeDateTime(value: string | null): string | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+  const day = normalizeBusinessDate(value);
+  return day ? `${day}T00:00:00.000Z` : null;
+}
+
+export function collectTopSoldItems(rows: Array<Record<string, unknown>>, limit = 10): TopSoldItem[] {
+  const totals = new Map<string, TopSoldItem>();
+  for (const row of rows) {
+    if (isVoided(row)) continue;
+    const name = pickStr(row, NAME_FIELDS);
+    const qty = pickNum(row, ITEM_QTY_FIELDS);
+    if (!name || qty === null) continue;
+    const code = pickStr(row, ITEM_CODE_FIELDS);
+    const key = code || name.toLowerCase();
+    const current = totals.get(key) || { name, code, quantity: 0, sales: 0 };
+    current.quantity += qty;
+    current.sales += pickNum(row, ITEM_TOTAL_FIELDS) ?? 0;
+    totals.set(key, current);
+  }
+  return [...totals.values()]
+    .map((item) => ({ ...item, quantity: Math.round(item.quantity * 1000) / 1000, sales: Math.round(item.sales * 100) / 100 }))
+    .sort((a, b) => b.quantity - a.quantity || b.sales - a.sales || a.name.localeCompare(b.name))
+    .slice(0, limit);
+}
+
+export function collectItemChanges(
+  rows: Array<Record<string, unknown>>,
+  mode: StoreItemChangesReport['mode'],
+  limit = 10,
+): { items: ItemChange[]; available: boolean; note?: string } {
+  const fields = mode === 'recently_added'
+    ? CREATED_FIELDS
+    : mode === 'recent_price_changes'
+      ? PRICE_CHANGED_FIELDS
+      : mode === 'recent_cost_changes'
+        ? COST_CHANGED_FIELDS
+        : UPDATED_FIELDS;
+  const fallbackFields = mode === 'recently_added' ? [] : UPDATED_FIELDS;
+  const changeType: ItemChange['changeType'] = mode === 'recently_added'
+    ? 'created'
+    : mode === 'recent_price_changes'
+      ? 'price'
+      : mode === 'recent_cost_changes'
+        ? 'cost'
+        : 'updated';
+
+  const items: ItemChange[] = [];
+  let sawDedicatedDate = false;
+  for (const row of rows) {
+    if (isInactiveItem(row)) continue;
+    const name = pickStr(row, NAME_FIELDS);
+    if (!name) continue;
+    const dedicated = pickDateString(row, fields);
+    if (dedicated) sawDedicatedDate = true;
+    const changedAt = normalizeDateTime(dedicated || pickDateString(row, fallbackFields));
+    if (!changedAt) continue;
+    items.push({
+      name,
+      code: pickStr(row, ITEM_CODE_FIELDS),
+      changedAt,
+      changeType,
+      price: pickNum(row, PRICE_FIELDS),
+      cost: pickNum(row, COST_FIELDS),
+    });
+  }
+
+  const needsDedicated = mode === 'recent_price_changes' || mode === 'recent_cost_changes';
+  if (needsDedicated && !sawDedicatedDate) {
+    return {
+      items: [],
+      available: false,
+      note: 'RapidRMS did not expose dedicated change timestamps for this field; no change list was returned rather than guessing.',
+    };
+  }
+  return {
+    items: items.sort((a, b) => b.changedAt.localeCompare(a.changedAt)).slice(0, limit),
+    available: items.length > 0,
+  };
+}
+
+export function collectInvoices(
+  rows: Array<Record<string, unknown>>,
+  from: string,
+  to: string,
+  limit = 10,
+  invoiceNo?: string,
+): StoreInvoice[] {
+  const needle = invoiceNo?.trim().toLowerCase();
+  const invoices = rows.map((row) => {
+    const trueInvoiceNo = pickStr(row, INVOICE_NUMBER_FIELDS);
+    const recordId = pickStr(row, INVOICE_FIELDS);
+    const timestamp = normalizeDateTime(pickDateString(row, SALES_DATE_FIELDS));
+    const businessDate = pickBusinessDate(row) || (from === to ? from : null);
+    return {
+      invoiceNo: trueInvoiceNo,
+      recordId,
+      businessDate,
+      timestamp,
+      amount: pickNum(row, REVENUE_FIELDS),
+      isVoid: isVoided(row),
+    };
+  }).filter((row) => {
+    if (!row.businessDate || row.businessDate < from || row.businessDate > to) return false;
+    if (!needle) return true;
+    return row.invoiceNo?.toLowerCase() === needle || row.recordId?.toLowerCase() === needle;
+  });
+
+  return invoices
+    .sort((a, b) => String(b.timestamp || b.businessDate).localeCompare(String(a.timestamp || a.businessDate)))
+    .slice(0, limit);
+}
+
+async function withRapidRmsSession<T>(
+  record: ConnectorRecord,
+  vaultSecret: string,
+  purpose: string,
+  fn: (session: RapidRmsSession) => Promise<T>,
+): Promise<T> {
+  const refs: string[] = [];
+  try {
+    setTenantSecret(vaultSecret);
+    const emailRef = await storeCredential(`${record.id}:${purpose}-email`, record.secrets.email ?? '', vaultSecret);
+    const passwordRef = await storeCredential(`${record.id}:${purpose}-password`, record.secrets.password ?? '', vaultSecret);
+    refs.push(emailRef, passwordRef);
+    const session = await rapidRms.authenticate(
+      {
+        baseUrl: String(record.config.baseUrl || 'https://rapidrmsapi.azurewebsites.net'),
+        clientId: String(record.config.clientId || ''),
+        sessionTimeout: Number(record.config.sessionTimeout) || 420,
+      },
+      emailRef,
+      passwordRef,
+    );
+    return await fn(session);
+  } finally {
+    await Promise.all(refs.map((ref) => deleteCredential(ref).catch(() => {})));
+  }
+}
+
+export async function fetchTopSoldItems(
+  record: ConnectorRecord,
+  vaultSecret: string,
+  from: string,
+  to: string,
+  limit = 10,
+): Promise<StoreItemsReport | null> {
+  if (!hasSummaryMapper(record.type)) return null;
+  return withRapidRmsSession(record, vaultSecret, 'top-items', async (session) => {
+    const bounds = invoiceDayBounds(from, to);
+    const params = { ...bounds, fromDate: bounds.FromDate, toDate: bounds.ToDate };
+    let rows: Array<Record<string, unknown>> = [];
+    try {
+      rows = flattenSalesRows(await rapidRms.getSalesDetail(session, params));
+    } catch {
+      rows = flattenSalesRows(await rapidRms.getInvoiceReport(session, params));
+    }
+    return {
+      mode: 'top_sold',
+      items: collectTopSoldItems(rows, limit),
+      from,
+      to,
+      source: { type: record.type, name: record.name },
+      fetchedAt: new Date().toISOString(),
+    };
+  });
+}
+
+export async function fetchItemChanges(
+  record: ConnectorRecord,
+  vaultSecret: string,
+  mode: StoreItemChangesReport['mode'],
+  limit = 10,
+): Promise<StoreItemChangesReport | null> {
+  if (!hasSummaryMapper(record.type)) return null;
+  return withRapidRmsSession(record, vaultSecret, `item-${mode}`, async (session) => {
+    const rows = toRows(await rapidRms.getInventory(session, {}));
+    const result = collectItemChanges(rows, mode, limit);
+    return {
+      mode,
+      ...result,
+      source: { type: record.type, name: record.name },
+      fetchedAt: new Date().toISOString(),
+    };
+  });
+}
+
+export async function fetchStoreInvoices(
+  record: ConnectorRecord,
+  vaultSecret: string,
+  from: string,
+  to: string,
+  limit = 10,
+  invoiceNo?: string,
+): Promise<StoreInvoicesReport | null> {
+  if (!hasSummaryMapper(record.type)) return null;
+  return withRapidRmsSession(record, vaultSecret, 'invoices', async (session) => {
+    const rows = await fetchInvoiceRows(session, invoiceDayBounds(from, to));
+    return {
+      invoices: collectInvoices(rows, from, to, limit, invoiceNo),
+      from,
+      to,
+      matchedInvoice: invoiceNo,
+      source: { type: record.type, name: record.name },
+      fetchedAt: new Date().toISOString(),
+    };
+  });
 }
 
 export type DailyStoreSales = { businessDate: string; revenue: number; transactions: number };

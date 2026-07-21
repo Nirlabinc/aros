@@ -302,14 +302,20 @@ import {
   EXCEPTION_SUPPORTED_TYPES,
   EXCEPTION_UNSUPPORTED_TYPES,
   fetchExceptionSummary,
+  fetchItemChanges,
   fetchInventoryRisks,
   fetchStoreSalesRange,
+  fetchStoreInvoices,
   fetchStoreSummary,
+  fetchTopSoldItems,
   hasSummaryMapper,
   businessToday,
   DEFAULT_STORE_TIMEZONE,
+  type ItemChange,
   type InventoryRiskItem,
   type StoreSummary,
+  type StoreInvoice,
+  type TopSoldItem,
   type VoidExceptionBucket,
 } from '../connectors/data-service.js';
 import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
@@ -3457,6 +3463,135 @@ async function handleArosSalesChat(req: IncomingMessage, res: ServerResponse, bo
   }
 }
 
+type ChatStoreIntent =
+  | { kind: 'top_items'; from: string; to: string; limit: number }
+  | { kind: 'item_changes'; mode: 'recently_added' | 'recently_edited' | 'recent_price_changes' | 'recent_cost_changes'; limit: number }
+  | { kind: 'invoices'; from: string; to: string; limit: number; invoiceNo?: string };
+
+function chatLimit(text: string): number {
+  const match = text.match(/\b(?:top|last|latest|recent)\s+(\d{1,3})\b/) || text.match(/\b(\d{1,3})\s+(?:items?|invoices?)\b/);
+  const value = match ? Number(match[1]) : 10;
+  return Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), 25) : 10;
+}
+
+function chatDateRange(text: string): { from: string; to: string } {
+  if (/\byesterday\b/.test(text)) {
+    const day = nyBusinessDate(1);
+    return { from: day, to: day };
+  }
+  const daysMatch = text.match(/\blast\s+(\d{1,2})\s+days?\b/);
+  if (daysMatch) {
+    const days = Math.max(1, Math.min(Number(daysMatch[1]), 31));
+    return { from: nyBusinessDate(days - 1), to: nyBusinessDate() };
+  }
+  if (/\b(last|this)\s+week\b/.test(text)) return { from: nyBusinessDate(6), to: nyBusinessDate() };
+  const today = nyBusinessDate();
+  return { from: today, to: today };
+}
+
+function invoiceNumberFromChat(text: string): string | undefined {
+  const match = text.match(/\binvoice\s*(?:#|number|no\.?)?\s*([a-z0-9][a-z0-9-]{2,})\b/i);
+  if (!match) return undefined;
+  const value = match[1].toLowerCase();
+  return value === 'number' || value === 'numbers' || value === 'report' ? undefined : match[1];
+}
+
+function storeChatIntent(req: IncomingMessage, body: Record<string, unknown> | null): ChatStoreIntent | null {
+  if (!isArosChatContext(req, body)) return null;
+  const text = chatLatestText(body).toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  const limit = chatLimit(text);
+  if (/\binvoices?\b/.test(text)) return { kind: 'invoices', ...chatDateRange(text), limit, invoiceNo: invoiceNumberFromChat(text) };
+  if (/\b(price|retail)\b.*\b(change|changed|updated|recent)\b|\b(change|changed|updated|recent)\b.*\b(price|retail)\b/.test(text)) {
+    return { kind: 'item_changes', mode: 'recent_price_changes', limit };
+  }
+  if (/\bcost\b.*\b(change|changed|updated|recent)\b|\b(change|changed|updated|recent)\b.*\bcost\b/.test(text)) {
+    return { kind: 'item_changes', mode: 'recent_cost_changes', limit };
+  }
+  if (/\b(new|newly|recently added|latest added|most recently added)\b.*\bitems?\b|\bitems?\b.*\b(new|newly|recently added|latest added|most recently added)\b/.test(text)) {
+    return { kind: 'item_changes', mode: 'recently_added', limit };
+  }
+  if (/\b(edited|updated|modified|changed|recently edited|recently updated)\b.*\bitems?\b|\bitems?\b.*\b(edited|updated|modified|changed|recently edited|recently updated)\b/.test(text)) {
+    return { kind: 'item_changes', mode: 'recently_edited', limit };
+  }
+  if (/\b(top|best|most)\b.*\b(sold|selling|items?)\b|\btop\s+\d+\s+items?\b|\btop[-\s]?sold\b/.test(text)) {
+    return { kind: 'top_items', ...chatDateRange(text), limit };
+  }
+  return null;
+}
+
+function money(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : 'n/a';
+}
+
+async function handleArosStoreDataChat(req: IncomingMessage, res: ServerResponse, body: Record<string, unknown> | null): Promise<boolean> {
+  const intent = storeChatIntent(req, body);
+  if (!intent) return false;
+  const tenantId = arosChatTenant(req, body);
+  if (!UUID_RE.test(tenantId)) return false;
+
+  try {
+    const rows = await connectedConnectorRows(tenantId);
+    if (rows.length === 0) {
+      json(res, 200, {
+        content: 'No connected RapidRMS store is mapped to this workspace yet.',
+        _shre: { model: 'aros-store-data', toolsUsed: [], mode: 'aros-store-data-direct', connected: false },
+      });
+      return true;
+    }
+
+    const lines: string[] = [];
+    const toolsUsed: string[] = [];
+    for (const row of rows) {
+      if (!hasSummaryMapper(row.type)) continue;
+      const record = decryptedConnectorRecord(row);
+      if (intent.kind === 'top_items') {
+        const report = await fetchTopSoldItems(record, vaultSecretFor(tenantId), intent.from, intent.to, intent.limit);
+        toolsUsed.push('mib_top_items');
+        lines.push(`**${row.name} top sold items (${intent.from} to ${intent.to})**`);
+        if (!report?.items.length) lines.push('- No item-level sales rows were returned for that range.');
+        for (const [index, item] of (report?.items ?? []).entries()) {
+          lines.push(`${index + 1}. ${item.name}${item.code ? ` (${item.code})` : ''} - ${item.quantity.toLocaleString('en-US')} sold, ${money(item.sales)} sales`);
+        }
+      } else if (intent.kind === 'item_changes') {
+        const report = await fetchItemChanges(record, vaultSecretFor(tenantId), intent.mode, intent.limit);
+        toolsUsed.push(intent.mode === 'recent_price_changes' ? 'mib_recent_price_changes' : intent.mode === 'recent_cost_changes' ? 'mib_recent_cost_changes' : intent.mode === 'recently_added' ? 'mib_recent_items_added' : 'mib_recent_items_edited');
+        const label = intent.mode.replace(/_/g, ' ');
+        lines.push(`**${row.name} ${label}**`);
+        if (report?.note) lines.push(`- ${report.note}`);
+        if (!report?.items.length) lines.push('- No verified item changes were returned.');
+        for (const [index, item] of (report?.items ?? []).entries()) {
+          lines.push(`${index + 1}. ${item.name}${item.code ? ` (${item.code})` : ''} - ${item.changedAt.slice(0, 10)}; price ${money(item.price)}, cost ${money(item.cost)}`);
+        }
+      } else {
+        const report = await fetchStoreInvoices(record, vaultSecretFor(tenantId), intent.from, intent.to, intent.limit, intent.invoiceNo);
+        toolsUsed.push('mib_invoices');
+        lines.push(`**${row.name} invoices (${intent.from} to ${intent.to})**`);
+        if (!report?.invoices.length) lines.push(intent.invoiceNo ? `- No invoice matched ${intent.invoiceNo}.` : '- No invoices were returned for that range.');
+        for (const [index, invoice] of (report?.invoices ?? []).entries()) {
+          const invoiceLabel = invoice.invoiceNo ? `Invoice ${invoice.invoiceNo}` : `Record ${invoice.recordId ?? 'unknown'}`;
+          lines.push(`${index + 1}. ${invoiceLabel} - ${invoice.businessDate ?? 'unknown date'}, ${money(invoice.amount)}${invoice.isVoid ? ' (void)' : ''}`);
+        }
+      }
+    }
+
+    json(res, 200, {
+      content: lines.length ? lines.join('\n') : 'No supported RapidRMS store data source is mapped to this workspace yet.',
+      _shre: { model: 'aros-store-data', toolsUsed, mode: 'aros-store-data-direct', tenantId, source: 'RapidRMS API' },
+    });
+    return true;
+  } catch (err) {
+    console.error('[aros-store-data-chat]', err instanceof Error ? err.message : err);
+    json(res, 200, {
+      content: 'RapidRMS store data could not be retrieved right now.',
+      _shre: { model: 'aros-store-data', toolsUsed: [], mode: 'aros-store-data-direct', error: 'store_data_unavailable' },
+    });
+    return true;
+  }
+}
+
 // ── Store risk / exception reads (backing the mcp-aros operator tools) ──
 // Read-only, tenant-scoped like /api/store/summary. Both iterate EVERY
 // connected connector and degrade per store: connector types without a data
@@ -3630,9 +3765,152 @@ async function handleStoreExceptions(req: IncomingMessage, res: ServerResponse):
   }
 }
 
+function boundedLimit(raw: string | null, fallback = 10): number {
+  const limit = Number(raw);
+  return Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 100) : fallback;
+}
+
+function validateStoreDateRange(res: ServerResponse, from: string, to: string, maxDays: number, label: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) {
+    json(res, 400, { error: 'from and to must be a valid date range' });
+    return null;
+  }
+  const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000) + 1;
+  if (days > maxDays) {
+    json(res, 413, { error: `${label} queries are limited to ${maxDays} days.` });
+    return null;
+  }
+  return days;
+}
+
+async function handleStoreItems(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const request = getRequestUrl(req);
+  const to = request.searchParams.get('to') || request.searchParams.get('endDate') || businessDate();
+  const from = request.searchParams.get('from') || request.searchParams.get('startDate') || to;
+  const limit = boundedLimit(request.searchParams.get('limit'));
+  if (validateStoreDateRange(res, from, to, 31, 'Item ranking') === null) return;
+
+  try {
+    const rows = await connectedConnectorRows(auth.tenantId);
+    const sources: ConnectorSourceStatus[] = [];
+    const items = new Map<string, TopSoldItem & { store: string }>();
+    let anyLive = false;
+    for (const row of rows) {
+      if (!hasSummaryMapper(row.type)) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false });
+        continue;
+      }
+      try {
+        const report = await fetchTopSoldItems(decryptedConnectorRecord(row), vaultSecretFor(auth.tenantId), from, to, limit);
+        if (!report) { sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false }); continue; }
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: true });
+        anyLive = true;
+        for (const item of report.items) {
+          const key = item.code || `${row.name}:${item.name.toLowerCase()}`;
+          const current = items.get(key) || { ...item, quantity: 0, sales: 0, store: row.name };
+          current.quantity += item.quantity;
+          current.sales += item.sales;
+          items.set(key, current);
+        }
+      } catch (err) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: false, error: err instanceof Error ? err.message : 'unreachable' });
+      }
+    }
+    const ranked = [...items.values()]
+      .map((item) => ({ ...item, quantity: Math.round(item.quantity * 1000) / 1000, sales: Math.round(item.sales * 100) / 100 }))
+      .sort((a, b) => b.quantity - a.quantity || b.sales - a.sales || a.name.localeCompare(b.name))
+      .slice(0, limit);
+    await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'store.items.read', resource: `tenant:${auth.tenantId}`, detail: { from, to, count: ranked.length }, ip: getClientIp(req) });
+    json(res, 200, { connected: anyLive, mode: 'top_sold', from, to, items: ranked, sources, fetchedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error('[store-items]', err instanceof Error ? err.message : err);
+    json(res, 502, { error: 'Item ranking data could not be retrieved' });
+  }
+}
+
+async function handleStoreItemChanges(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const request = getRequestUrl(req);
+  const rawMode = request.searchParams.get('mode') || 'recently_edited';
+  const mode = ['recently_added', 'recently_edited', 'recent_price_changes', 'recent_cost_changes'].includes(rawMode) ? rawMode as 'recently_added' | 'recently_edited' | 'recent_price_changes' | 'recent_cost_changes' : 'recently_edited';
+  const limit = boundedLimit(request.searchParams.get('limit'));
+
+  try {
+    const rows = await connectedConnectorRows(auth.tenantId);
+    const sources: ConnectorSourceStatus[] = [];
+    const items: Array<ItemChange & { store: string }> = [];
+    const notes: string[] = [];
+    let anyLive = false;
+    for (const row of rows) {
+      if (!hasSummaryMapper(row.type)) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false });
+        continue;
+      }
+      try {
+        const report = await fetchItemChanges(decryptedConnectorRecord(row), vaultSecretFor(auth.tenantId), mode, limit);
+        if (!report) { sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false }); continue; }
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: report.available });
+        if (report.available) anyLive = true;
+        if (report.note) notes.push(`${row.name}: ${report.note}`);
+        items.push(...report.items.map((item) => ({ ...item, store: row.name })));
+      } catch (err) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: false, error: err instanceof Error ? err.message : 'unreachable' });
+      }
+    }
+    const sorted = items.sort((a, b) => b.changedAt.localeCompare(a.changedAt)).slice(0, limit);
+    await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'store.item_changes.read', resource: `tenant:${auth.tenantId}`, detail: { mode, count: sorted.length }, ip: getClientIp(req) });
+    json(res, 200, { connected: anyLive, mode, items: sorted, sources, notes, fetchedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error('[store-item-changes]', err instanceof Error ? err.message : err);
+    json(res, 502, { error: 'Item change data could not be retrieved' });
+  }
+}
+
+async function handleStoreInvoices(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const request = getRequestUrl(req);
+  const to = request.searchParams.get('to') || request.searchParams.get('endDate') || businessDate();
+  const from = request.searchParams.get('from') || request.searchParams.get('startDate') || to;
+  const limit = boundedLimit(request.searchParams.get('limit'));
+  const invoiceNo = request.searchParams.get('invoiceNo') || request.searchParams.get('invoice') || undefined;
+  if (validateStoreDateRange(res, from, to, 31, 'Invoice') === null) return;
+
+  try {
+    const rows = await connectedConnectorRows(auth.tenantId);
+    const sources: ConnectorSourceStatus[] = [];
+    const invoices: Array<StoreInvoice & { store: string }> = [];
+    let anyLive = false;
+    for (const row of rows) {
+      if (!hasSummaryMapper(row.type)) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false });
+        continue;
+      }
+      try {
+        const report = await fetchStoreInvoices(decryptedConnectorRecord(row), vaultSecretFor(auth.tenantId), from, to, limit, invoiceNo);
+        if (!report) { sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false }); continue; }
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: true });
+        anyLive = true;
+        invoices.push(...report.invoices.map((invoice) => ({ ...invoice, store: row.name })));
+      } catch (err) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: false, error: err instanceof Error ? err.message : 'unreachable' });
+      }
+    }
+    const sorted = invoices.sort((a, b) => String(b.timestamp || b.businessDate).localeCompare(String(a.timestamp || a.businessDate))).slice(0, limit);
+    await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'store.invoices.read', resource: `tenant:${auth.tenantId}`, detail: { from, to, count: sorted.length, invoiceNo: invoiceNo || null }, ip: getClientIp(req) });
+    json(res, 200, { connected: anyLive, from, to, invoiceNo: invoiceNo || null, invoices: sorted, sources, fetchedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error('[store-invoices]', err instanceof Error ? err.message : err);
+    json(res, 502, { error: 'Invoice data could not be retrieved' });
+  }
+}
+
 const APP_CAPABILITY_BUNDLES: Record<string, { tools: string[]; skills: Array<{ name: string; capabilities: string[] }>; agents: Array<{ name: string; capabilities: string[] }> }> = {
   storepulse: {
-    tools: ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_item_search', 'mib_low_inventory'],
+    tools: ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_recent_items_added', 'mib_recent_items_edited', 'mib_recent_price_changes', 'mib_recent_cost_changes', 'mib_item_search', 'mib_low_inventory'],
     skills: [
       { name: 'Daily Sales Summary', capabilities: ['pos.sales.read'] },
       { name: 'Inventory Health', capabilities: ['pos.inventory.read'] },
@@ -3647,7 +3925,7 @@ const APP_CAPABILITY_BUNDLES: Record<string, { tools: string[]; skills: Array<{ 
 };
 
 const CONNECTOR_CAPABILITY_TOOLS: Record<string, string[]> = {
-  'rapidrms-api': ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_store_list', 'mib_item_search', 'mib_low_inventory', 'mib_invoices', 'rapidrms_storepulse'],
+  'rapidrms-api': ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_recent_items_added', 'mib_recent_items_edited', 'mib_recent_price_changes', 'mib_recent_cost_changes', 'mib_store_list', 'mib_item_search', 'mib_low_inventory', 'mib_invoices', 'rapidrms_storepulse'],
   'verifone-commander': ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_store_list', 'mib_item_search', 'mib_low_inventory', 'mib_invoices'],
 };
 
@@ -4842,6 +5120,7 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (pathname === '/v1/chat' && method === 'POST') {
     const body = await parseJsonBody(req);
     if (await handleArosHealthPing(req, res, body)) return;
+    if (await handleArosStoreDataChat(req, res, body)) return;
     if (await handleArosSalesChat(req, res, body)) return;
     return proxyRequest(req, res, SHRE_ROUTER_URL, body);
   }
@@ -5034,6 +5313,18 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (pathname === '/api/store/sales' && method === 'GET') {
     return handleStoreSales(req, res);
+  }
+
+  if (pathname === '/api/store/items' && method === 'GET') {
+    return handleStoreItems(req, res);
+  }
+
+  if (pathname === '/api/store/item-changes' && method === 'GET') {
+    return handleStoreItemChanges(req, res);
+  }
+
+  if (pathname === '/api/store/invoices' && method === 'GET') {
+    return handleStoreInvoices(req, res);
   }
 
   if (pathname === '/api/store/inventory-risks' && method === 'GET') {

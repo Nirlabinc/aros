@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   collectInventoryRisks,
+  collectInvoices,
+  collectItemChanges,
+  collectTopSoldItems,
   computeVoidExceptions,
   fetchExceptionSummary,
   fetchInventoryRisks,
@@ -106,6 +109,47 @@ describe('computeVoidExceptions', () => {
   it('declares exactly which exception types the data source supports', () => {
     expect([...EXCEPTION_SUPPORTED_TYPES]).toEqual(['void']);
     expect([...EXCEPTION_UNSUPPORTED_TYPES]).toEqual(['refund', 'no_sale', 'cashier']);
+  });
+});
+
+describe('store item and invoice chat data', () => {
+  it('ranks top sold items by quantity, then sales', () => {
+    expect(collectTopSoldItems([
+      { ItemName: 'Coffee', ItemCode: 'COF', Qty: 2, LineTotal: 5 },
+      { ItemName: 'Coffee', ItemCode: 'COF', Qty: 3, LineTotal: 7.5 },
+      { ItemName: 'Water', ItemCode: 'H2O', Qty: 10, LineTotal: 10 },
+      { ItemName: 'Voided', ItemCode: 'VOID', Qty: 99, LineTotal: 99, isVoid: true },
+    ])).toEqual([
+      { name: 'Water', code: 'H2O', quantity: 10, sales: 10 },
+      { name: 'Coffee', code: 'COF', quantity: 5, sales: 12.5 },
+    ]);
+  });
+
+  it('uses true invoice numbers before transaction ids for invoice display', () => {
+    expect(collectInvoices([
+      { invoiceNo: 'INV-100', TransactionId: 'TX-999', datetime: '2026-07-21T10:00:00Z', Total: 12.34 },
+      { TransactionId: 'TX-101', datetime: '2026-07-21T11:00:00Z', Total: 3.21 },
+    ], '2026-07-21', '2026-07-21', 10)).toEqual([
+      { invoiceNo: null, recordId: 'TX-101', businessDate: '2026-07-21', timestamp: '2026-07-21T11:00:00.000Z', amount: 3.21, isVoid: false },
+      { invoiceNo: 'INV-100', recordId: 'INV-100', businessDate: '2026-07-21', timestamp: '2026-07-21T10:00:00.000Z', amount: 12.34, isVoid: false },
+    ]);
+  });
+
+  it('does not fabricate price changes without dedicated price-change dates', () => {
+    const result = collectItemChanges([
+      { description: 'Changed item', modifiedDate: '2026-07-21T10:00:00', Price: 9.99 },
+    ], 'recent_price_changes');
+    expect(result.available).toBe(false);
+    expect(result.items).toEqual([]);
+    expect(result.note).toMatch(/dedicated change timestamps/);
+  });
+
+  it('sorts recently added items by created timestamp when present', () => {
+    const result = collectItemChanges([
+      { description: 'Older', createdDate: '2026-07-20T10:00:00', Price: 1 },
+      { description: 'Newer', createdDate: '2026-07-21T10:00:00', Price: 2 },
+    ], 'recently_added');
+    expect(result.items.map((item) => item.name)).toEqual(['Newer', 'Older']);
   });
 });
 
