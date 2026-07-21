@@ -577,6 +577,29 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
 
   try {
     const supabase = createSupabaseAdmin();
+
+    // Billing status is tenant-private (plan/tier/Stripe presence). Require an
+    // authenticated member of THIS tenant — previously this was unauthenticated,
+    // so any tenantId could be read (IDOR).
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) {
+      return json(res, 401, { error: 'Authentication required' });
+    }
+    const { data: { user }, error: authError } = await supabase.auth.getUser(authHeader.slice(7));
+    if (authError || !user) {
+      return json(res, 401, { error: 'Invalid session' });
+    }
+    const { data: membership } = await supabase
+      .from('tenant_members')
+      .select('role')
+      .eq('tenant_id', tenantId)
+      .eq('user_id', user.id)
+      .limit(1)
+      .maybeSingle();
+    if (!membership) {
+      return json(res, 403, { error: 'You do not have access to this tenant' });
+    }
+
     const { data, error } = await supabase
       .from('tenants')
       .select(
