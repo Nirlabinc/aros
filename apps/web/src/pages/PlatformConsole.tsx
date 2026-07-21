@@ -16,6 +16,11 @@ type TenantDetail = {
 
 type SortKey = 'name' | 'members' | 'connectors' | 'created_at';
 
+/** Workspaces created by test tooling — QA fixtures, journey walkers, E2E
+ * accounts. Name-based on purpose: no schema flag exists yet, and the
+ * operator can always toggle them visible. */
+const TEST_WORKSPACE_RE = /\b(QA|E2E|Test Store|Walk|Demo)\b/i;
+
 /**
  * Founder-only, read-only cross-tenant console (/platform), themed on the
  * AROS design tokens (aros-design.css) so it follows light/dark like the
@@ -36,6 +41,7 @@ export function PlatformConsole() {
   const [state, setState] = useState<'loading' | 'denied' | 'ready' | 'error'>('loading');
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
+  const [showTest, setShowTest] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>('created_at');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
@@ -75,7 +81,10 @@ export function PlatformConsole() {
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const filtered = q ? tenants.filter(t => [t.name, t.pos_system, t.plan].some(v => (v || '').toLowerCase().includes(q))) : tenants;
+    // Test/QA workspaces (journey walkers, E2E fixtures) drown out real
+    // customers in the default view (UX review) — hidden unless toggled.
+    const base = showTest ? tenants : tenants.filter(t => !TEST_WORKSPACE_RE.test(t.name));
+    const filtered = q ? base.filter(t => [t.name, t.pos_system, t.plan].some(v => (v || '').toLowerCase().includes(q))) : base;
     const dir = sortDir === 'asc' ? 1 : -1;
     return [...filtered].sort((a, b) => {
       if (sortKey === 'name') return a.name.localeCompare(b.name) * dir;
@@ -112,10 +121,16 @@ export function PlatformConsole() {
       <section>
         <div style={s.tableHead}>
           <h2 style={s.h2}>Workspaces</h2>
-          <input
-            type="search" placeholder="Search name, POS, plan…" aria-label="Search workspaces"
-            value={query} onChange={e => setQuery(e.target.value)} style={s.search}
-          />
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5, color: 'var(--ink-2)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={showTest} onChange={e => setShowTest(e.target.checked)} />
+              Show test workspaces ({tenants.filter(t => TEST_WORKSPACE_RE.test(t.name)).length})
+            </label>
+            <input
+              type="search" placeholder="Search name, POS, plan…" aria-label="Search workspaces"
+              value={query} onChange={e => setQuery(e.target.value)} style={s.search}
+            />
+          </div>
         </div>
         <div style={s.tableWrap}>
           <table style={s.table}>
@@ -131,7 +146,7 @@ export function PlatformConsole() {
               </tr>
             </thead>
             <tbody>
-              {visible.length === 0 && <tr><td colSpan={8} style={{ ...s.td, color: 'var(--ink-3)' }}>No workspaces match "{query}".</td></tr>}
+              {visible.length === 0 && <tr><td colSpan={8} style={{ ...s.td, color: 'var(--ink-3)' }}>No workspaces match. Adjust the search or enable test workspaces.</td></tr>}
               {visible.map(t => (
                 <>
                   <tr key={t.id} style={openTenant === t.id ? { background: 'var(--surface-2)' } : undefined}>
