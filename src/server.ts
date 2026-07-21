@@ -4625,7 +4625,7 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
     return proxyRequest(req, res, SHRE_ROUTER_URL);
   }
 
-  // ── Public customer commerce (Regulars Phase 1) ─────────────────────────
+  // ── Regulars read-only public surface ───────────────────────────────────
   // Unauthenticated, rate-limited, strict projection; serves the customer MCP
   // gateway. Terminal for the whole prefix — the handler always answers with a
   // customer-safe envelope (even near-misses), so nothing under this prefix

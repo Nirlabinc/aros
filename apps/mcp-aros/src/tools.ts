@@ -75,6 +75,15 @@ export const operatorTools: McpTool[] = [
 
 export const customerTools: McpTool[] = [
   {
+    name: 'regulars_get_business_profile',
+    description: 'Read the business-approved public Regulars profile for a business. This tool is read-only and cannot change business data.',
+    inputSchema: objectSchema({
+      businessSlug: stringSchema('Public business slug.'),
+      storeId: stringSchema('Optional public store ID.')
+    }, ['businessSlug']),
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  },
+  {
     name: 'aros_customer_search_products',
     description: 'Search the public customer catalog for products available at a business location.',
     inputSchema: objectSchema({
@@ -104,38 +113,13 @@ export const customerTools: McpTool[] = [
     annotations: { readOnlyHint: true, destructiveHint: false }
   },
   {
-    name: 'aros_customer_create_cart',
-    description: 'Create or update a customer cart for pickup or delivery. This does not capture payment.',
+    name: 'regulars_get_links',
+    description: 'Read approved public website, map, social, support, legal, QR/deep link, and assistant install links for a business. This tool is read-only.',
     inputSchema: objectSchema({
       businessSlug: stringSchema('Public business slug.'),
-      storeId: stringSchema('Public store ID.'),
-      fulfillment: stringSchema('pickup or delivery.'),
-      items: {
-        type: 'array',
-        description: 'Cart items with public product IDs and quantities.',
-        items: {
-          type: 'object',
-          properties: {
-            productId: { type: 'string' },
-            quantity: { type: 'number' }
-          },
-          required: ['productId', 'quantity'],
-          additionalProperties: false
-        }
-      }
-    }, ['businessSlug', 'storeId', 'fulfillment', 'items']),
-    annotations: { readOnlyHint: false, destructiveHint: false }
-  },
-  {
-    name: 'aros_customer_create_checkout',
-    description: 'Create a hosted checkout session for a customer cart. Payment is completed with the payment provider, not inside the model.',
-    inputSchema: objectSchema({
-      businessSlug: stringSchema('Public business slug.'),
-      cartId: stringSchema('Customer cart ID.'),
-      successUrl: stringSchema('Return URL after successful payment.'),
-      cancelUrl: stringSchema('Return URL after canceled payment.')
-    }, ['businessSlug', 'cartId', 'successUrl', 'cancelUrl']),
-    annotations: { readOnlyHint: false, destructiveHint: false }
+      storeId: stringSchema('Optional public store ID.')
+    }, ['businessSlug']),
+    annotations: { readOnlyHint: true, destructiveHint: false }
   }
 ];
 
@@ -321,19 +305,29 @@ function customerDemoResult(name: string, args: Record<string, unknown>, correla
     };
   }
 
-  if (name === 'aros_customer_create_cart') {
+  if (name === 'regulars_get_business_profile') {
     return {
       ...common,
-      cart: { id: `cart_${correlationId}`, status: 'created', fulfillment: args.fulfillment, items: args.items || [] }
+      profile: {
+        name: 'Demo Market',
+        category: 'Convenience store',
+        phone: '+1-555-0100',
+        website: 'https://regulars.aros.live/demo-market',
+        address: { locality: 'Calhoun', region: 'GA', country: 'US' },
+        readonly: true
+      }
     };
   }
 
   return {
     ...common,
-    checkout: {
-      id: `checkout_${correlationId}`,
-      url: 'https://checkout.example.invalid/demo',
-      status: 'hosted_payment_required'
+    links: {
+      website: 'https://regulars.aros.live/demo-market',
+      assistantInstall: {
+        chatgpt: 'https://regulars.aros.live/demo-market/connect/chatgpt',
+        claude: 'https://regulars.aros.live/demo-market/connect/claude'
+      },
+      social: []
     }
   };
 }

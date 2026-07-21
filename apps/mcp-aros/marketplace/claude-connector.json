@@ -4,7 +4,7 @@
   "status": "draft",
   "distribution": "Claude remote MCP connector",
   "serverUrl": "https://mcp.shre.ai/aros/operator",
-  "customerServerUrl": "https://mcp.shre.ai/aros/customer",
+  "regularsServerUrl": "https://mcp.shre.ai/regulars",
   "transport": "streamable-http",
   "authentication": {
     "type": "oauth2",
@@ -37,10 +37,10 @@
       "auth": "required tenant-bound OAuth",
       "data": "operator-scoped connected app and POS data"
     },
-    "customer": {
+    "regulars": {
       "audience": "end customers",
-      "auth": "public projection reads; customer session for cart and checkout",
-      "data": "customer-safe public catalog, promotions, hours, cart, checkout"
+      "auth": "public read-only projection reads",
+      "data": "business-approved profile, catalog, promotions, hours, website, map, social, support, legal, QR/deep link, and assistant install links"
     }
   },
   "toolPolicy": {
@@ -48,6 +48,11 @@
     "writeTools": ["aros_draft_action"],
     "destructiveTools": []
   },
+  "regularsPolicy": {
+    "writesAllowed": false,
+    "readOnlyGuarantee": "Regulars cannot change business profiles, connector state, POS data, orders, carts, checkout, payments, or external pages."
+  },
+  "submissionContact": "info@rapidinfosoft.com",
   "reviewDemo": {
     "tenant": "NirLab Demo Market",
     "store": "Demo Store 001",

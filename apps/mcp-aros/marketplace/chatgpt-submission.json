@@ -5,9 +5,9 @@
   "distribution": "ChatGPT Apps SDK plugin submission",
   "mcp": {
     "productionUrl": "https://mcp.shre.ai/aros/operator",
-    "customerProductionUrl": "https://mcp.shre.ai/aros/customer",
+    "regularsProductionUrl": "https://mcp.shre.ai/regulars",
     "developmentUrl": "http://localhost:5468/mcp/operator",
-    "customerDevelopmentUrl": "http://localhost:5468/mcp/customer",
+    "regularsDevelopmentUrl": "http://localhost:5468/regulars",
     "transport": "streamable-http",
     "oauth": {
       "issuer": "https://id.shre.ai",
@@ -27,8 +27,8 @@
     "categories": ["Business operations", "Retail", "Analytics", "Productivity"],
     "privacyPolicyUrl": "https://www.aros.live/legal/privacy/",
     "termsUrl": "https://www.aros.live/legal/terms/",
-    "supportEmail": "support@aros.live",
-    "securityEmail": "info@nirlab.net"
+    "supportEmail": "info@rapidinfosoft.com",
+    "securityEmail": "info@rapidinfosoft.com"
   },
   "reviewDemo": {
     "tenant": "NirLab Demo Market",
@@ -42,10 +42,10 @@
       "auth": "required tenant-bound OAuth",
       "purpose": "run the business through connected apps, MCP tools, POS data, approvals, and audit"
     },
-    "customer": {
+    "regulars": {
       "audience": "the operator's end customers",
-      "auth": "public projection reads; customer session for cart, checkout, order status, delivery, loyalty, or restricted products",
-      "purpose": "search products, promotions, business hours, pickup, delivery, cart, and hosted checkout"
+      "auth": "public read-only projection reads",
+      "purpose": "read business-approved profile, catalog, promotions, business hours, website, map, social, support, legal, QR/deep link, and assistant install links"
     }
   },
   "tools": [
@@ -55,13 +55,18 @@
     "aros_get_exception_summary",
     "aros_draft_action"
   ],
-  "customerTools": [
+  "regularsTools": [
+    "regulars_get_business_profile",
     "aros_customer_search_products",
     "aros_customer_get_promotions",
     "aros_customer_get_business_hours",
-    "aros_customer_create_cart",
-    "aros_customer_create_checkout"
+    "regulars_get_links"
   ],
+  "regularsPolicy": {
+    "writesAllowed": false,
+    "readOnlyGuarantee": "Regulars cannot change business profiles, connector state, POS data, orders, carts, checkout, payments, or external pages."
+  },
+  "submissionContact": "info@rapidinfosoft.com",
   "submissionBlockers": [
     "Register ChatGPT OAuth client in shre-id after ChatGPT shows the exact callback ID",
     "Run production token test and then set AROS_MCP_DEMO_MODE=false",

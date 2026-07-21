@@ -16,7 +16,7 @@ const PUBLIC_BASE_URL = (process.env.AROS_MCP_PUBLIC_BASE_URL || `http://localho
 const OAUTH_ISSUER = (process.env.AROS_OAUTH_ISSUER || 'https://id.shre.ai').replace(/\/$/, '');
 const MCP_RESOURCE = process.env.AROS_MCP_RESOURCE || 'https://mcp.shre.ai/aros';
 const OPERATOR_MCP_URL = process.env.AROS_OPERATOR_MCP_URL || `${PUBLIC_BASE_URL}/aros/operator`;
-const CUSTOMER_MCP_URL = process.env.AROS_CUSTOMER_MCP_URL || `${PUBLIC_BASE_URL}/aros/customer`;
+const CUSTOMER_MCP_URL = process.env.AROS_CUSTOMER_MCP_URL || `${PUBLIC_BASE_URL}/regulars`;
 const DEMO_MODE = process.env.AROS_MCP_DEMO_MODE === 'true';
 const OAUTH_AUDIENCE = (process.env.AROS_OAUTH_AUDIENCE || MCP_RESOURCE).split(',').map((item) => item.trim()).filter(Boolean);
 const REQUIRED_OPERATOR_SCOPES = (process.env.AROS_OPERATOR_REQUIRED_SCOPES || 'openid').split(',').map((item) => item.trim()).filter(Boolean);
@@ -245,6 +245,12 @@ async function callCustomerTool(name: string, args: Record<string, unknown>, cor
   const businessSlug = encodeURIComponent(String(args.businessSlug || ''));
   if (!businessSlug) return toolText({ error: 'missing_business_slug', correlationId }, true);
 
+  if (name === 'regulars_get_business_profile') {
+    const query = new URLSearchParams();
+    addQuery(query, 'storeId', args.storeId);
+    return toolText(await arosPublicFetch(`/api/public/businesses/${businessSlug}/profile?${query}`, correlationId, authHeader));
+  }
+
   if (name === 'aros_customer_search_products') {
     const query = new URLSearchParams();
     addQuery(query, 'q', args.query);
@@ -265,18 +271,10 @@ async function callCustomerTool(name: string, args: Record<string, unknown>, cor
     return toolText(await arosPublicFetch(`/api/public/businesses/${businessSlug}/hours?${query}`, correlationId, authHeader));
   }
 
-  if (name === 'aros_customer_create_cart') {
-    return toolText(await arosPublicFetch(`/api/public/businesses/${businessSlug}/cart`, correlationId, authHeader, {
-      method: 'POST',
-      body: JSON.stringify({ storeId: args.storeId, fulfillment: args.fulfillment, items: args.items })
-    }));
-  }
-
-  if (name === 'aros_customer_create_checkout') {
-    return toolText(await arosPublicFetch(`/api/public/businesses/${businessSlug}/checkout`, correlationId, authHeader, {
-      method: 'POST',
-      body: JSON.stringify({ cartId: args.cartId, successUrl: args.successUrl, cancelUrl: args.cancelUrl })
-    }));
+  if (name === 'regulars_get_links') {
+    const query = new URLSearchParams();
+    addQuery(query, 'storeId', args.storeId);
+    return toolText(await arosPublicFetch(`/api/public/businesses/${businessSlug}/links?${query}`, correlationId, authHeader));
   }
 
   return toolText({ error: 'not_implemented', name, correlationId }, true);
@@ -382,7 +380,7 @@ function json(res: ServerResponse, status: number, body: unknown) {
 
 function surfaceForPath(pathname: string): Surface | null {
   if (pathname === '/mcp' || pathname === '/mcp/operator' || pathname === '/aros/operator') return 'operator';
-  if (pathname === '/mcp/customer' || pathname === '/aros/customer') return 'customer';
+  if (pathname === '/mcp/customer' || pathname === '/aros/customer' || pathname === '/regulars') return 'customer';
   return null;
 }
 
@@ -508,20 +506,20 @@ function mcpMetadata(surface: Surface) {
   const toolset = toolsBySurface[surface];
   const endpoint = surface === 'operator' ? OPERATOR_MCP_URL : CUSTOMER_MCP_URL;
   return {
-    name: surface === 'operator' ? 'AROS Retail Operations' : 'AROS Customer Commerce',
+    name: surface === 'operator' ? 'AROS Retail Operations' : 'Regulars',
     publisher: 'Nirlab Inc.',
     description: surface === 'operator'
       ? 'Remote MCP server for AROS retail operations intelligence.'
-      : 'Remote MCP server for customer-facing product search, promotions, business hours, carts, and checkout.',
+      : 'Remote MCP server for read-only Regulars business profiles, catalog search, promotions, hours, and approved links.',
     endpoint,
     transport: 'streamable-http',
     auth: {
-      type: surface === 'operator' ? 'oauth2' : 'public-or-customer-session',
+      type: surface === 'operator' ? 'oauth2' : 'public-read-only',
       issuer: OAUTH_ISSUER,
       resource: MCP_RESOURCE,
       scopes: surface === 'operator'
         ? protectedResourceMetadata().scopes_supported
-        : ['aros.public_catalog.read', 'aros.customer_cart.write', 'aros.customer_checkout.create']
+        : ['regulars.profile.read', 'regulars.catalog.read', 'regulars.promotions.read', 'regulars.hours.read', 'regulars.links.read']
     },
     tools: toolset.map((tool) => ({
       name: tool.name,

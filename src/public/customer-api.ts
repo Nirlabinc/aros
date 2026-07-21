@@ -1,17 +1,16 @@
 // Regulars Phase 1 — customer-safe public commerce API.
-// Serves /api/public/businesses/{slug}/(products|promotions|hours|cart|checkout)
-// for the customer MCP gateway (apps/mcp-aros). Unauthenticated public
-// projection: every response is grounded in rows (public_products_v /
-// public_promotions / stores.metadata) or is a structured refusal — never
-// invented. Mission contract: Nirpat3/regulars docs/missions/regulars-phase1.md
-// Journey spec: docs/journeys/customer-orders-through-their-assistant.md
+// Serves /api/public/businesses/{slug}/(profile|products|promotions|hours|links)
+// for the Regulars customer MCP gateway (apps/mcp-aros). Unauthenticated
+// read-only projection: every response is grounded in rows (stores.metadata /
+// public_products_v / public_promotions) or is a structured refusal — never
+// invented. Regulars must not mutate business data, carts, orders, payments,
+// POS systems, connector state, or external pages.
 
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createSupabaseAdmin } from '../supabase.js';
 
 const MAX_RESULTS = 25;
-const CART_MAX_ITEMS = 20;
 const SYNTHETIC_SLUGS = new Set(['demo-market']);
 
 // ── rate limiting: token bucket per client IP (public surface must never ship unthrottled) ──
@@ -88,12 +87,12 @@ function emitEvent(event: Record<string, unknown>): void {
   console.log(JSON.stringify({ evt: 'public_api', ts: new Date().toISOString(), ...event }));
 }
 
-type Business = { tenantId: string; storeId: string; storeName: string; timezone: string; metadata: Record<string, unknown> };
+type Business = { tenantId: string; tenantName: string; storeId: string; storeName: string; timezone: string; metadata: Record<string, unknown> };
 
 async function resolveBusiness(slug: string, storeSlug: string | null): Promise<Business | null> {
   const supabase = createSupabaseAdmin();
   const { data: tenant } = await supabase
-    .from('tenants').select('id, slug, status').eq('slug', slug).eq('status', 'active').maybeSingle();
+    .from('tenants').select('id, name, slug, status').eq('slug', slug).eq('status', 'active').maybeSingle();
   if (!tenant) return null;
   let q = supabase.from('stores')
     .select('id, name, slug, timezone, status, metadata')
@@ -106,21 +105,45 @@ async function resolveBusiness(slug: string, storeSlug: string | null): Promise<
   const store = stores?.[0];
   if (!store) return null;
   return {
-    tenantId: tenant.id, storeId: store.id, storeName: store.name,
+    tenantId: tenant.id, tenantName: tenant.name ?? store.name, storeId: store.id, storeName: store.name,
     timezone: store.timezone ?? 'America/New_York',
     metadata: (store.metadata ?? {}) as Record<string, unknown>,
   };
 }
 
-async function readBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
-  try {
-    const chunks: Buffer[] = [];
-    for await (const c of req) { chunks.push(c as Buffer); if (chunks.reduce((n, b) => n + b.length, 0) > 64_000) return null; }
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
-  } catch { return null; }
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function listStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
 }
 
 // ── endpoint handlers ──────────────────────────────────────────────────────
+
+async function handleProfile(res: ServerResponse, biz: Business, slug: string, correlationId: string): Promise<void> {
+  const profile = record(biz.metadata.profile);
+  const address = record(profile.address ?? biz.metadata.address);
+  const category = stringOrNull(profile.category) ?? stringOrNull(biz.metadata.category);
+  send(res, 200, {
+    ...envelope(slug, correlationId),
+    profile: {
+      businessSlug: slug,
+      name: stringOrNull(profile.name) ?? biz.tenantName,
+      store: { id: biz.storeId, name: biz.storeName, timezone: biz.timezone },
+      category,
+      phone: stringOrNull(profile.phone) ?? stringOrNull(biz.metadata.phone),
+      website: stringOrNull(profile.website) ?? stringOrNull(biz.metadata.website),
+      address,
+      serviceArea: record(profile.serviceArea ?? biz.metadata.serviceArea),
+      readonly: true,
+    },
+  });
+}
 
 async function handleProducts(res: ServerResponse, biz: Business, slug: string, url: URL, correlationId: string): Promise<void> {
   const supabase = createSupabaseAdmin();
@@ -175,70 +198,25 @@ async function handleHours(res: ServerResponse, biz: Business, slug: string, cor
   send(res, 200, { ...envelope(slug, correlationId), store: biz.storeName, timezone: biz.timezone, hours });
 }
 
-async function handleCart(req: IncomingMessage, res: ServerResponse, biz: Business, slug: string, correlationId: string): Promise<void> {
-  const body = await readBody(req);
-  const items = Array.isArray(body?.items) ? (body!.items as Array<{ sku?: unknown; qty?: unknown }>) : null;
-  if (!items || items.length === 0 || items.length > CART_MAX_ITEMS) {
-    return refuse(res, 400, slug, correlationId, 'invalid_cart', `Provide 1-${CART_MAX_ITEMS} items as [{sku, qty}].`);
-  }
-  const supabase = createSupabaseAdmin();
-  // Best-effort purge of expired drafts to bound growth from this public path.
-  supabase.rpc('purge_expired_cart_drafts').then(() => {}, () => {});
-  const skus = items.map((i) => String(i.sku ?? '')).filter(Boolean);
-  const { data: rows, error: lookupError } = await supabase.from('public_products_v')
-    .select('sku, name, unit_price, availability')
-    .eq('store_id', biz.storeId).in('sku', skus);
-  // A DB/projection error must surface as an outage, never a false "not in catalog".
-  if (lookupError) return refuse(res, 502, slug, correlationId, 'projection_unavailable', 'The product projection is temporarily unavailable.');
-  const bySku = new Map((rows ?? []).map((r) => [r.sku as string, r]));
-  const missing = skus.filter((s) => !bySku.has(s));
-  if (missing.length > 0) {
-    return refuse(res, 404, slug, correlationId, 'unknown_items', `Not in this store's catalog: ${missing.join(', ')}.`);
-  }
-  const unavailable = skus.filter((s) => bySku.get(s)?.availability === 'unavailable');
-  if (unavailable.length > 0) {
-    return refuse(res, 409, slug, correlationId, 'items_unavailable',
-      `Out of stock at this store: ${unavailable.map((s) => bySku.get(s)?.name ?? s).join(', ')}.`);
-  }
-  const priced = items.map((i) => {
-    const row = bySku.get(String(i.sku))!;
-    const qty = Math.max(1, Math.min(99, Math.floor(Number(i.qty) || 1)));
-    return { sku: row.sku, name: row.name, qty, unit_price: Number(row.unit_price), availability: row.availability };
-  });
-  const subtotal = Math.round(priced.reduce((n, i) => n + i.unit_price * i.qty, 0) * 100) / 100;
-  const { data: cart, error } = await supabase.from('public_cart_drafts')
-    .insert({ tenant_id: biz.tenantId, store_id: biz.storeId, items: priced, subtotal, status: 'draft', correlation_id: correlationId })
-    .select('id, expires_at').single();
-  if (error || !cart) return refuse(res, 502, slug, correlationId, 'cart_unavailable', 'Could not create a cart draft right now.');
-  send(res, 201, {
-    ...envelope(slug, correlationId),
-    cart: { cartId: cart.id, items: priced, subtotal, status: 'draft', expiresAt: cart.expires_at },
-    note: 'Draft only — payment is completed at pickup in this phase.',
-  });
-}
-
-async function handleCheckout(req: IncomingMessage, res: ServerResponse, biz: Business, slug: string, correlationId: string): Promise<void> {
-  const body = await readBody(req);
-  const cartId = String(body?.cartId ?? '');
-  if (!cartId) return refuse(res, 400, slug, correlationId, 'invalid_checkout', 'Provide the cartId to check out.');
-  const supabase = createSupabaseAdmin();
-  // Scope by store, not just tenant — a cart drafted at store A must not be
-  // checked out under store B of the same tenant (wrong prices/location).
-  const { data: cart, error: cartError } = await supabase.from('public_cart_drafts')
-    .select('id, items, subtotal, status, expires_at')
-    .eq('id', cartId).eq('tenant_id', biz.tenantId).eq('store_id', biz.storeId).maybeSingle();
-  if (cartError) return refuse(res, 502, slug, correlationId, 'checkout_unavailable', 'Could not look up that cart right now.');
-  if (!cart) return refuse(res, 404, slug, correlationId, 'unknown_cart', 'That cart draft does not exist for this store.');
-  if (cart.status === 'expired' || new Date(String(cart.expires_at)) < new Date()) {
-    return refuse(res, 410, slug, correlationId, 'cart_expired', 'That cart draft has expired — start a new one.');
-  }
-  const { error } = await supabase.from('public_cart_drafts')
-    .update({ status: 'checkout_draft' }).eq('id', cartId);
-  if (error) return refuse(res, 502, slug, correlationId, 'checkout_unavailable', 'Could not create the checkout draft right now.');
+async function handleLinks(res: ServerResponse, biz: Business, slug: string, correlationId: string): Promise<void> {
+  const profile = record(biz.metadata.profile);
+  const links = record(profile.links ?? biz.metadata.links);
+  const social = record(profile.social ?? biz.metadata.social);
+  const website = stringOrNull(links.website) ?? stringOrNull(profile.website) ?? stringOrNull(biz.metadata.website);
   send(res, 200, {
     ...envelope(slug, correlationId),
-    checkout: { checkoutDraftId: cart.id, subtotal: Number(cart.subtotal), status: 'checkout_draft', payment: 'not_enabled_in_phase_1' },
-    note: 'Order drafted. In-chat payment is not yet enabled — pay at pickup to complete it.',
+    links: {
+      website,
+      maps: record(links.maps),
+      social,
+      assistantInstall: {
+        chatgpt: stringOrNull(links.chatgpt) ?? `https://regulars.aros.live/${slug}/connect/chatgpt`,
+        claude: stringOrNull(links.claude) ?? `https://regulars.aros.live/${slug}/connect/claude`,
+      },
+      support: stringOrNull(links.support),
+      legal: listStrings(links.legal),
+    },
+    readonly: true,
   });
 }
 
@@ -249,7 +227,7 @@ async function handleCheckout(req: IncomingMessage, res: ServerResponse, biz: Bu
 // fall through to the platform's generic 404/SPA output, which the gateway
 // would relay as non-customer-safe.
 const PREFIX = '/api/public/businesses/';
-const ROUTE = /^\/api\/public\/businesses\/([a-z0-9-]{1,64})\/(products|promotions|hours|cart|checkout)$/;
+const ROUTE = /^\/api\/public\/businesses\/([a-z0-9-]{1,64})\/(profile|products|promotions|hours|links)$/;
 
 export async function handlePublicBusinessApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   if (!url.pathname.startsWith(PREFIX)) return false;
@@ -260,7 +238,7 @@ export async function handlePublicBusinessApi(req: IncomingMessage, res: ServerR
   if (!match) {
     const slugGuess = normalized.slice(PREFIX.length).split('/')[0] || 'unknown';
     refuse(res, 404, slugGuess, correlationId0, 'unknown_resource',
-      'That is not a valid customer endpoint. Use /products, /promotions, /hours, /cart, or /checkout for a business.');
+      'That is not a valid Regulars endpoint. Use /profile, /products, /promotions, /hours, or /links for a business.');
     return true;
   }
   const [, slug, resource] = match;
@@ -274,9 +252,8 @@ export async function handlePublicBusinessApi(req: IncomingMessage, res: ServerR
     return true;
   }
 
-  const isWrite = resource === 'cart' || resource === 'checkout';
-  if ((isWrite && req.method !== 'POST') || (!isWrite && req.method !== 'GET')) {
-    refuse(res, 405, slug, correlationId, 'method_not_allowed', `Use ${isWrite ? 'POST' : 'GET'} for ${resource}.`);
+  if (req.method !== 'GET') {
+    refuse(res, 405, slug, correlationId, 'method_not_allowed', `Regulars is read-only. Use GET for ${resource}.`);
     return true;
   }
 
@@ -287,11 +264,11 @@ export async function handlePublicBusinessApi(req: IncomingMessage, res: ServerR
       emitEvent({ resource, slug, status: 404, ms: Date.now() - started, correlationId });
       return true;
     }
-    if (resource === 'products') await handleProducts(res, biz, slug, url, correlationId);
+    if (resource === 'profile') await handleProfile(res, biz, slug, correlationId);
+    else if (resource === 'products') await handleProducts(res, biz, slug, url, correlationId);
     else if (resource === 'promotions') await handlePromotions(res, biz, slug, correlationId);
     else if (resource === 'hours') await handleHours(res, biz, slug, correlationId);
-    else if (resource === 'cart') await handleCart(req, res, biz, slug, correlationId);
-    else await handleCheckout(req, res, biz, slug, correlationId);
+    else await handleLinks(res, biz, slug, correlationId);
     emitEvent({ resource, slug, status: res.statusCode, ms: Date.now() - started, correlationId });
   } catch (err) {
     console.error('[public-api]', resource, slug, err instanceof Error ? err.message : err);

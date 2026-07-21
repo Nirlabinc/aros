@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   demoResult,
+  customerTools,
   missingOperatorScope,
   operatorToolRoute,
   operatorTools,
@@ -51,6 +52,30 @@ describe('mcp-aros operator tool surface', () => {
     const properties = (tool.inputSchema as { properties: Record<string, unknown> }).properties;
     expect(Object.keys(properties).sort()).toEqual(['endDate', 'startDate', 'storeIds']);
     expect(tool.annotations).toMatchObject({ readOnlyHint: true });
+  });
+});
+
+describe('mcp-aros Regulars customer tool surface', () => {
+  it('advertises only the read-only Regulars customer tools', () => {
+    expect(customerTools.map((tool) => tool.name)).toEqual([
+      'regulars_get_business_profile',
+      'aros_customer_search_products',
+      'aros_customer_get_promotions',
+      'aros_customer_get_business_hours',
+      'regulars_get_links',
+    ]);
+    expect(toolsBySurface.customer).toBe(customerTools);
+  });
+
+  it('marks every Regulars tool read-only and does not advertise commerce writes', () => {
+    const serialized = JSON.stringify(customerTools).toLowerCase();
+    expect(serialized).not.toContain('create_cart');
+    expect(serialized).not.toContain('create_checkout');
+    expect(serialized).not.toContain('checkout');
+    expect(serialized).not.toContain('order');
+    for (const tool of customerTools) {
+      expect(tool.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    }
   });
 });
 
@@ -117,5 +142,15 @@ describe('demo mode payloads (unchanged behavior)', () => {
     const result = demoResult('aros_get_exception_summary', { storeIds: ['demo_store_001'] }, 'corr-2', 'operator') as Record<string, unknown>;
     expect(result.source).toBe('synthetic_demo');
     expect((result.exceptions as Array<Record<string, unknown>>)[0]).toMatchObject({ type: 'void' });
+  });
+
+  it('serves Regulars profile and links as read-only demo data', () => {
+    const profile = demoResult('regulars_get_business_profile', { businessSlug: 'demo-market' }, 'corr-3', 'customer') as Record<string, unknown>;
+    expect(profile).toMatchObject({ businessSlug: 'demo-market', channel: 'customer-mcp' });
+    expect(profile.profile).toMatchObject({ readonly: true });
+
+    const links = demoResult('regulars_get_links', { businessSlug: 'demo-market' }, 'corr-4', 'customer') as Record<string, unknown>;
+    expect(links).toMatchObject({ businessSlug: 'demo-market', channel: 'customer-mcp' });
+    expect(JSON.stringify(links).toLowerCase()).not.toContain('checkout');
   });
 });
