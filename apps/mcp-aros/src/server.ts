@@ -199,12 +199,12 @@ async function callTool(params: ToolCallParams, req: IncomingMessage, surface: S
   const authHeader = req.headers.authorization;
   let authContext: AuthContext | null = null;
   if (surface === 'operator' && !authHeader) {
-    return toolText({ error: 'missing_authorization', correlationId }, true);
+    return authToolError('Connect with NirLab / AROS OAuth before using this operator tool.', correlationId);
   }
 
   if (surface === 'operator' && authHeader) {
     const auth = await verifyOperatorAuthorization(authHeader);
-    if (!auth.ok) return toolText({ error: 'invalid_authorization', message: auth.message, correlationId }, true);
+    if (!auth.ok) return authToolError(auth.message, correlationId);
     authContext = auth.context;
   }
 
@@ -221,12 +221,12 @@ async function callTool(params: ToolCallParams, req: IncomingMessage, surface: S
   // binding for tokens that carry aros.* scopes; see tools.ts.
   const missingScope = missingOperatorScope(name, authContext?.scopes ?? []);
   if (missingScope) {
-    return toolText({
+    return authToolError(`Token is missing the required scope ${missingScope}.`, correlationId, 'insufficient_scope', missingScope, {
       error: 'insufficient_scope',
       message: `Token is missing the required scope ${missingScope}.`,
       requiredScope: missingScope,
       correlationId
-    }, true);
+    });
   }
 
   const route = operatorToolRoute(name, args);
@@ -350,6 +350,16 @@ function toolText(payload: unknown, isError = false) {
   };
 }
 
+function authToolError(description: string, correlationId: string, error = 'invalid_token', scope?: string, payload?: Record<string, unknown>) {
+  const challenge = bearerChallenge(description, error, scope);
+  return {
+    ...toolText(payload || { error: 'authorization_required', message: description, correlationId }, true),
+    _meta: {
+      'mcp/www_authenticate': [challenge]
+    }
+  };
+}
+
 function rpcResult(id: JsonRpcRequest['id'], result: unknown) {
   return { jsonrpc: '2.0', id, result };
 }
@@ -387,9 +397,19 @@ function surfaceForPath(pathname: string): Surface | null {
 function unauthorized(res: ServerResponse, description: string) {
   res.writeHead(401, {
     'Content-Type': 'application/json',
-    'WWW-Authenticate': `Bearer resource_metadata="${PUBLIC_BASE_URL}/.well-known/oauth-protected-resource", error="invalid_token", error_description="${description.replace(/"/g, "'")}"`
+    'WWW-Authenticate': bearerChallenge(description)
   });
   res.end(JSON.stringify({ error: 'unauthorized', message: description }));
+}
+
+function bearerChallenge(description: string, error = 'invalid_token', scope?: string) {
+  const parts = [
+    `resource_metadata="${PUBLIC_BASE_URL}/.well-known/oauth-protected-resource"`,
+    `error="${error.replace(/"/g, "'")}"`,
+    `error_description="${description.replace(/"/g, "'")}"`
+  ];
+  if (scope) parts.push(`scope="${scope.replace(/"/g, "'")}"`);
+  return `Bearer ${parts.join(', ')}`;
 }
 
 async function verifyOperatorAuthorization(authHeader?: string): Promise<{ ok: true; context: AuthContext } | { ok: false; message: string }> {

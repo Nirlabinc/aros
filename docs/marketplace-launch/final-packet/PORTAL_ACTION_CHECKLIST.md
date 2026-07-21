@@ -33,8 +33,7 @@ Status date: 2026-07-21
 - [ ] Add privacy URL: `https://www.aros.live/legal/privacy/`.
 - [ ] Add terms URL: `https://www.aros.live/legal/terms/`.
 - [ ] Enter MCP URL: `https://mcp.shre.ai/aros/operator`.
-- [ ] Copy the exact Claude hosted connector OAuth callback URI from the portal.
-- [ ] Register that callback URI in shre-id for the Claude marketplace client.
+- [ ] Register `https://claude.ai/api/mcp/auth_callback` in shre-id for the Claude hosted marketplace client.
 - [ ] Verify a real Claude marketplace token with `verify:oauth`.
 - [ ] Capture portal-required screenshots.
 - [ ] Submit after legal approval.

@@ -8,7 +8,7 @@ Status date: 2026-07-21
 | --- | --- | --- | --- |
 | Engineering | MCP deploy, live smoke, read-only Regulars enforcement | Legal, marketplace packet, demo data | In progress |
 | Demo data | Reviewer tenant, Regulars profile, products, promotions, hours, links | Engineering, legal | Pending |
-| OAuth | ChatGPT and Claude marketplace callback/client setup | Legal, screenshots after beta deploy | Blocked on marketplace callback URLs |
+| OAuth | ChatGPT and Claude marketplace callback/client setup | Legal, screenshots after beta deploy | ChatGPT callback pending; Claude hosted callback known |
 | Legal/compliance | Privacy, terms, security, data access wording | Engineering, demo data | Pending counsel signoff |
 | Marketplace packet | Submission JSON, screenshots, prompts, reviewer instructions | Engineering after beta URL is stable | In progress |
 | Review submission | Submit to OpenAI and Claude portals | None after all gates are green | Blocked until all gates pass |
@@ -47,10 +47,10 @@ Status date: 2026-07-21
 - [ ] Confirm shre-id issuer metadata at `https://id.shre.ai`.
 - [ ] Confirm MCP protected resource metadata at `https://mcp.shre.ai/.well-known/oauth-protected-resource`.
 - [ ] Register ChatGPT OAuth client after OpenAI provides the exact callback URI.
-- [ ] Register Claude OAuth client after Claude provides the exact callback URI.
+- [ ] Register Claude OAuth client with `https://claude.ai/api/mcp/auth_callback`.
 - [ ] Store any client secrets only in shre-secrets vault.
 - [ ] Run production token verification with `AROS_MCP_VERIFY_TOKEN`.
-- [ ] Set `AROS_MCP_DEMO_MODE=false` only after real marketplace token verification passes.
+- [x] Confirm production `AROS_MCP_DEMO_MODE=false`.
 
 ## Gate 4 - Legal and Compliance
 
@@ -108,6 +108,9 @@ Status date: 2026-07-21
   - `POST https://mcp.shre.ai/aros/operator` returned 401 without OAuth, which is expected for a protected operator surface.
 - Local background smoke using `Start-Process` was blocked by tool policy before execution; run `pnpm --filter @aros/mcp-aros smoke` after deploy or from an allowed shell session.
 - GitHub deploy workflow run `https://github.com/Nirlabinc/aros/actions/runs/29859156916` remains queued; production was patched directly on the VPS because the workflow did not start.
+- Merged final marketplace packet in PR `https://github.com/Nirlabinc/aros/pull/149`.
+- Production `https://mcp.shre.ai/health` reports `demoMode: false`; unauthenticated operator calls return 401 with `WWW-Authenticate`.
+- Claude hosted callback is known from Claude connector docs: `https://claude.ai/api/mcp/auth_callback`.
 
 ## Gate 6 - Submit
 

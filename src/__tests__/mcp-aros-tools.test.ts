@@ -31,6 +31,24 @@ describe('mcp-aros operator tool surface', () => {
     }
   });
 
+  it('declares OAuth security schemes for ChatGPT and Claude connector hosts', () => {
+    const expectedScopes: Record<string, string> = {
+      aros_get_store_summary: 'aros.store.read',
+      aros_get_connector_health: 'aros.connector.read',
+      aros_get_inventory_risks: 'aros.inventory.read',
+      aros_get_exception_summary: 'aros.exceptions.read',
+      aros_draft_action: 'aros.action.draft',
+    };
+    for (const tool of operatorTools) {
+      expect(tool.securitySchemes).toEqual([
+        {
+          type: 'oauth2',
+          scopes: [expectedScopes[tool.name]],
+        },
+      ]);
+    }
+  });
+
   it('returns no route for unknown tools', () => {
     expect(operatorToolRoute('aros_get_everything', {})).toBeNull();
   });
@@ -75,6 +93,7 @@ describe('mcp-aros Regulars customer tool surface', () => {
     expect(serialized).not.toContain('order');
     for (const tool of customerTools) {
       expect(tool.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+      expect(tool.securitySchemes).toEqual([{ type: 'noauth' }]);
     }
   });
 });
@@ -125,8 +144,13 @@ describe('granular scope gate (aros.inventory.read / aros.exceptions.read)', () 
     expect(missingOperatorScope('aros_get_exception_summary', ['openid', 'aros.exceptions.read'])).toBeNull();
   });
 
-  it('leaves non-gated tools unrestricted', () => {
-    expect(missingOperatorScope('aros_get_store_summary', ['openid', 'aros.inventory.read'])).toBeNull();
+  it('requires matching scopes for every advertised operator tool once granular scopes are present', () => {
+    expect(missingOperatorScope('aros_get_store_summary', ['openid', 'aros.inventory.read'])).toBe('aros.store.read');
+    expect(missingOperatorScope('aros_get_connector_health', ['openid', 'aros.inventory.read'])).toBe('aros.connector.read');
+    expect(missingOperatorScope('aros_draft_action', ['openid', 'aros.inventory.read'])).toBe('aros.action.draft');
+    expect(missingOperatorScope('aros_get_store_summary', ['openid', 'aros.store.read'])).toBeNull();
+    expect(missingOperatorScope('aros_get_connector_health', ['openid', 'aros.connector.read'])).toBeNull();
+    expect(missingOperatorScope('aros_draft_action', ['openid', 'aros.action.draft'])).toBeNull();
   });
 });
 

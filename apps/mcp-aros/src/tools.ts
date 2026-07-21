@@ -18,7 +18,11 @@ export type McpTool = {
   description: string;
   inputSchema: Record<string, unknown>;
   annotations?: Record<string, unknown>;
+  securitySchemes?: Array<Record<string, unknown>>;
 };
+
+const operatorOAuthSecurity = (scope: string) => [{ type: 'oauth2', scopes: [scope] }];
+const regularsNoAuthSecurity = [{ type: 'noauth' }];
 
 export const operatorTools: McpTool[] = [
   {
@@ -29,7 +33,8 @@ export const operatorTools: McpTool[] = [
       startDate: stringSchema('Start date in YYYY-MM-DD format.'),
       endDate: stringSchema('End date in YYYY-MM-DD format.')
     }, ['storeIds', 'startDate', 'endDate']),
-    annotations: { readOnlyHint: true, destructiveHint: false }
+    annotations: { readOnlyHint: true, destructiveHint: false },
+    securitySchemes: operatorOAuthSecurity('aros.store.read')
   },
   {
     name: 'aros_get_connector_health',
@@ -38,7 +43,8 @@ export const operatorTools: McpTool[] = [
       storeIds: arraySchema('string', 'AROS store IDs to include.'),
       includeInactive: booleanSchema('Whether inactive connectors should be returned.')
     }, ['storeIds']),
-    annotations: { readOnlyHint: true, destructiveHint: false }
+    annotations: { readOnlyHint: true, destructiveHint: false },
+    securitySchemes: operatorOAuthSecurity('aros.connector.read')
   },
   {
     name: 'aros_get_inventory_risks',
@@ -47,7 +53,8 @@ export const operatorTools: McpTool[] = [
       storeIds: arraySchema('string', 'AROS store IDs to include.'),
       limit: numberSchema('Maximum risks to return.')
     }, ['storeIds']),
-    annotations: { readOnlyHint: true, destructiveHint: false }
+    annotations: { readOnlyHint: true, destructiveHint: false },
+    securitySchemes: operatorOAuthSecurity('aros.inventory.read')
   },
   {
     name: 'aros_get_exception_summary',
@@ -57,7 +64,8 @@ export const operatorTools: McpTool[] = [
       startDate: stringSchema('Start date in YYYY-MM-DD format.'),
       endDate: stringSchema('End date in YYYY-MM-DD format.')
     }, ['storeIds', 'startDate', 'endDate']),
-    annotations: { readOnlyHint: true, destructiveHint: false }
+    annotations: { readOnlyHint: true, destructiveHint: false },
+    securitySchemes: operatorOAuthSecurity('aros.exceptions.read')
   },
   {
     name: 'aros_draft_action',
@@ -69,7 +77,8 @@ export const operatorTools: McpTool[] = [
       rationale: stringSchema('Why this draft was prepared.'),
       payload: { type: 'object', description: 'Draft payload. No secrets.' }
     }, ['storeId', 'actionType', 'title', 'rationale', 'payload']),
-    annotations: { readOnlyHint: false, destructiveHint: false }
+    annotations: { readOnlyHint: false, destructiveHint: false },
+    securitySchemes: operatorOAuthSecurity('aros.action.draft')
   }
 ];
 
@@ -81,7 +90,8 @@ export const customerTools: McpTool[] = [
       businessSlug: stringSchema('Public business slug.'),
       storeId: stringSchema('Optional public store ID.')
     }, ['businessSlug']),
-    annotations: { readOnlyHint: true, destructiveHint: false }
+    annotations: { readOnlyHint: true, destructiveHint: false },
+    securitySchemes: regularsNoAuthSecurity
   },
   {
     name: 'aros_customer_search_products',
@@ -92,7 +102,8 @@ export const customerTools: McpTool[] = [
       storeId: stringSchema('Optional public store ID.'),
       limit: numberSchema('Maximum products to return.')
     }, ['businessSlug', 'query']),
-    annotations: { readOnlyHint: true, destructiveHint: false }
+    annotations: { readOnlyHint: true, destructiveHint: false },
+    securitySchemes: regularsNoAuthSecurity
   },
   {
     name: 'aros_customer_get_promotions',
@@ -101,7 +112,8 @@ export const customerTools: McpTool[] = [
       businessSlug: stringSchema('Public business slug.'),
       storeId: stringSchema('Optional public store ID.')
     }, ['businessSlug']),
-    annotations: { readOnlyHint: true, destructiveHint: false }
+    annotations: { readOnlyHint: true, destructiveHint: false },
+    securitySchemes: regularsNoAuthSecurity
   },
   {
     name: 'aros_customer_get_business_hours',
@@ -110,7 +122,8 @@ export const customerTools: McpTool[] = [
       businessSlug: stringSchema('Public business slug.'),
       storeId: stringSchema('Optional public store ID.')
     }, ['businessSlug']),
-    annotations: { readOnlyHint: true, destructiveHint: false }
+    annotations: { readOnlyHint: true, destructiveHint: false },
+    securitySchemes: regularsNoAuthSecurity
   },
   {
     name: 'regulars_get_links',
@@ -119,7 +132,8 @@ export const customerTools: McpTool[] = [
       businessSlug: stringSchema('Public business slug.'),
       storeId: stringSchema('Optional public store ID.')
     }, ['businessSlug']),
-    annotations: { readOnlyHint: true, destructiveHint: false }
+    annotations: { readOnlyHint: true, destructiveHint: false },
+    securitySchemes: regularsNoAuthSecurity
   }
 ];
 
@@ -190,8 +204,11 @@ export function operatorToolRoute(name: string, args: Record<string, unknown>): 
 // behavior so this does not lock out live clients.
 
 const OPERATOR_TOOL_SCOPES: Record<string, string> = {
+  aros_get_store_summary: 'aros.store.read',
+  aros_get_connector_health: 'aros.connector.read',
   aros_get_inventory_risks: 'aros.inventory.read',
-  aros_get_exception_summary: 'aros.exceptions.read'
+  aros_get_exception_summary: 'aros.exceptions.read',
+  aros_draft_action: 'aros.action.draft'
 };
 
 /** Returns the missing required scope for a tool call, or null when the call may proceed. */

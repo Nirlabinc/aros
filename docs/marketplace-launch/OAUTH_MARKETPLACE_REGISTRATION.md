@@ -37,12 +37,19 @@ Registration tasks:
 
 ## Claude
 
-Blocked until the Claude connector submission UI provides the exact OAuth callback URI for hosted Claude.
+Hosted Claude surfaces use this callback URI:
+
+```text
+https://claude.ai/api/mcp/auth_callback
+```
+
+Keep Claude Code local loopback callbacks separate from this hosted connector
+client.
 
 Registration tasks:
 
 - [ ] Create a Claude marketplace OAuth client in shre-id.
-- [ ] Add the exact Claude hosted connector callback URI.
+- [ ] Add `https://claude.ai/api/mcp/auth_callback`.
 - [ ] Keep the existing Claude Code local callback separate if used for local testing.
 - [ ] Prefer Authorization Code + PKCE/public client if supported.
 - [ ] If a client secret is required, store it only in the shre-secrets vault.
