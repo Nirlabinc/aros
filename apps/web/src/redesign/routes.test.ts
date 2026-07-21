@@ -28,7 +28,7 @@ describe('shell route core', () => {
 
   it('keeps legacy aliases', () => {
     expect(routeState('/channels').section).toBe('apps');
-    expect(routeState('/profile').section).toBe('settings');
+    expect(routeState('/profile').section).toBe('profile');
     expect(routeState('/costs').section).toBe('usage');
   });
 

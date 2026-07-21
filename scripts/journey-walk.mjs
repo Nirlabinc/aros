@@ -199,6 +199,14 @@ const JOURNEYS = [
     ],
   },
   {
+    slug: 'manage-my-account',
+    title: 'J8 Manage my account (Profile)',
+    steps: [
+      ['/profile page', page('/profile')],
+      ['name/password save goes through Supabase auth directly (no AROS API seam)', browser('needs a session — save a name, verify the Saved note; wrong password shows the rule before any network call')],
+    ],
+  },
+  {
     slug: 'get-unstuck',
     title: 'J5 Get unstuck',
     steps: [

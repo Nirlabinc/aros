@@ -6,7 +6,7 @@ import { IntelligencePage } from './pages/intelligence';
 import { StoresPage, AppsPage, MarketplacePage, ConnectorsPage, PluginsPage } from './pages/connections';
 import { listMarketplaceEntitlements } from './pages/connections/api';
 import {
-  BillingPage, UsagePage, TeamPage, SettingsPage, PermissionsPage, ConnectionHealthPage, DevicesPage,
+  BillingPage, UsagePage, TeamPage, SettingsPage, PermissionsPage, ProfilePage, ConnectionHealthPage, DevicesPage,
 } from './pages/admin';
 import { NotificationsPage } from './pages/admin/NotificationsPage';
 import { DocumentsPage } from './pages/Documents';
@@ -192,6 +192,7 @@ export function AppShell() {
     if (section === 'billing') return <BillingPage />;
     if (section === 'usage') return <UsagePage />;
     if (section === 'settings') return <SettingsPage />;
+    if (section === 'profile') return <ProfilePage />;
     if (section === 'notifications') return <NotificationsPage />;
     if (section === 'skills' || section === 'agents' || section === 'models') {
       const kind = section === 'skills' ? 'skill' : section === 'agents' ? 'agent' : 'model';
@@ -301,6 +302,7 @@ export function AppShell() {
               {demo ? ROLES.map(r => (<span key={r} className="aros-role__pill" aria-pressed={role === r}>{r}</span>)) : <span className="aros-role__pill" aria-pressed>{role}</span>}
             </div>
             <div className="aros-side__section" style={{ marginLeft: 0 }}>Account</div>
+            <NavRow item={{ key: 'profile', label: 'Profile', glyph: 'Pr' }} active={mode === 'app' && section === 'profile'} onClick={() => goProfileSection('profile')} />
             <NavRow item={{ key: 'devices', label: 'Sessions & Devices', glyph: 'PC' }} active={mode === 'app' && section === 'devices'} onClick={() => goProfileSection('devices')} />
             <div className="aros-side__section" style={{ marginLeft: 0 }}>Workspace</div>
             {[...installedAppNav, ...WORKSPACE_NAV].map(item => (
