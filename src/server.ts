@@ -4073,6 +4073,12 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   try { traceMiddleware(req, res, () => {}); } catch { /* non-fatal */ }
 
   // ── Trace Endpoints ─────────────────────────────────────────
+  // Trace payloads expose internal error stack traces and server file paths,
+  // so they must not be public. Require an authenticated caller.
+  if (pathname.startsWith('/v1/traces/') && method === 'GET') {
+    const scope = await authenticateRequest(req);
+    if (!scope) return json(res, 401, { error: 'Authentication required' });
+  }
   if (url === '/v1/traces/recent' && method === 'GET') {
     return json(res, 200, getRecentTraces());
   }
