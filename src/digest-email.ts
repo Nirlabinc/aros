@@ -26,6 +26,40 @@ export interface DigestBody {
 
 const money = (v: number | undefined) => (v == null ? '' : `$${v.toFixed(2)}`);
 
+/** Daily sales summary — one glance at yesterday. Null when the day had no
+ * rows at all (fetch failed upstream); a genuine $0 day still sends. */
+export function formatDailySales(storeName: string, day: string, sales: { revenue: number; transactions: number } | null): { subject: string; text: string } | null {
+  if (!sales) return null;
+  return {
+    subject: `${storeName} yesterday: ${money(sales.revenue)} across ${sales.transactions} transactions`,
+    text: [
+      `${storeName} — ${day}`,
+      '',
+      `Revenue: ${money(sales.revenue)}`,
+      `Transactions: ${sales.transactions}`,
+      `Average ticket: ${sales.transactions > 0 ? money(sales.revenue / sales.transactions) : '—'}`,
+      '',
+      'Full picture: https://app.aros.live/dashboard',
+    ].join('\n'),
+  };
+}
+
+/** Low-stock alert — only when something is actually low. */
+export function formatLowStock(storeName: string, items: Array<{ name: string; current: number; threshold: number }>): { subject: string; text: string } | null {
+  if (items.length === 0) return null;
+  return {
+    subject: `${storeName}: ${items.length} item${items.length === 1 ? '' : 's'} at or below reorder point`,
+    text: [
+      `Low stock at ${storeName}:`,
+      '',
+      ...items.slice(0, 12).map((i) => `• ${i.name.trim()} — ${i.current} on hand (reorder at ${i.threshold})`),
+      ...(items.length > 12 ? [`…and ${items.length - 12} more`] : []),
+      '',
+      'Review inventory: https://app.aros.live/dashboard',
+    ].join('\n'),
+  };
+}
+
 export function formatWeeklyBrief(storeName: string, body: DigestBody): { subject: string; text: string; periodEnd: string } | null {
   const digest = body.digest;
   const periodEnd = body.period_end || digest?.period?.end || '';
