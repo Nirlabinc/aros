@@ -11,6 +11,7 @@ import {
 import { computeReadiness, type ReadinessItem } from '../../onboarding/readiness';
 import { ModelSetupStep } from './ModelSetupStep';
 import { ReadinessScreen } from './ReadinessScreen';
+import { StoreSetupStep } from './StoreSetupStep';
 
 const STORE_READY = new Set(['connected', 'healthy']);
 
@@ -22,8 +23,10 @@ const STORE_READY = new Set(['connected', 'healthy']);
  * right stage: model → connect → readiness. Progress is persisted to the backend
  * at every advance, so the flow resumes correctly on any device.
  *
- * The connect step reuses the existing /connect page and the real connectors
- * API — no duplicate connection form lives here.
+ * The connect step is intentionally store-by-store: select POS, setup the
+ * store, add more stores, then review readiness. This matches how operators
+ * actually provision multi-store retailers without blending store identity and
+ * POS credentials into one broad form.
  */
 export function JourneyPage() {
   const { session, tenant, onboardingStep, onboardingStepData, onboardingLoading, refreshOnboarding, signOut } = useAuth();
@@ -41,15 +44,18 @@ export function JourneyPage() {
 
   const loadSignals = useCallback(async () => {
     setSignalsLoading(true);
-    const [conns, summaryConnected, sk] = await Promise.all([
-      fetchConnectors(auth),
-      fetchStoreSummaryConnected(auth),
-      fetchSkills(auth),
-    ]);
-    setConnectors(conns);
-    setStoreSummaryConnected(summaryConnected);
-    setSkills(sk);
-    setSignalsLoading(false);
+    try {
+      const [conns, summaryConnected, sk] = await Promise.all([
+        fetchConnectors(auth),
+        fetchStoreSummaryConnected(auth),
+        fetchSkills(auth),
+      ]);
+      setConnectors(conns);
+      setStoreSummaryConnected(summaryConnected);
+      setSkills(sk);
+    } finally {
+      setSignalsLoading(false);
+    }
   }, [auth]);
 
   useEffect(() => { void loadSignals(); }, [loadSignals]);
@@ -86,6 +92,18 @@ export function JourneyPage() {
     setBusy(true);
     try {
       await saveOnboardingProgress(auth, PROGRESS_READINESS, {});
+      await refreshOnboarding();
+      setLocalStage('readiness');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reviewSetup() {
+    setBusy(true);
+    try {
+      await saveOnboardingProgress(auth, PROGRESS_READINESS, {});
+      await loadSignals();
       await refreshOnboarding();
       setLocalStage('readiness');
     } finally {
@@ -146,19 +164,13 @@ export function JourneyPage() {
         {stage === 'model' && <ModelSetupStep busy={busy} onSubmit={handleModelSubmit} />}
 
         {stage === 'connect' && (
-          <div style={s.card}>
-            <h2 style={s.cardTitle}>Connect your store</h2>
-            <p style={s.cardDesc}>
-              Link one point of sale so your agents work with your real numbers. This
-              opens the secure connection page — you can also do it later from the dashboard.
-            </p>
-            <div style={s.actions}>
-              <a href="/connect" style={s.primaryLink}>Connect a store</a>
-              <button type="button" onClick={skipConnect} disabled={busy} style={s.secondary}>
-                {busy ? 'Skipping…' : 'Skip for now'}
-              </button>
-            </div>
-          </div>
+          <StoreSetupStep
+            auth={auth}
+            busy={busy}
+            onSaved={loadSignals}
+            onContinue={reviewSetup}
+            onSkip={skipConnect}
+          />
         )}
 
         {stage === 'readiness' && (
@@ -179,7 +191,7 @@ export function JourneyPage() {
 const ACCENT = '#3b5bdb';
 const s: Record<string, React.CSSProperties> = {
   wrapper: { minHeight: '100vh', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', background: 'linear-gradient(135deg, #f0f4ff 0%, #e8ecf8 50%, #f5f3ff 100%)', padding: '48px 24px' },
-  container: { width: '100%', maxWidth: 560 },
+  container: { width: '100%', maxWidth: 860 },
   header: { textAlign: 'center', marginBottom: 24 },
   logo: { fontSize: 28, fontWeight: 800, letterSpacing: -1, color: '#1a1a2e' },
   tagline: { fontSize: 14, color: '#6b7280', marginTop: 4 },
@@ -189,7 +201,5 @@ const s: Record<string, React.CSSProperties> = {
   card: { background: '#fff', borderRadius: 16, padding: '32px', boxShadow: '0 4px 24px rgba(0,0,0,0.08)', border: '1px solid #e5e7eb', maxWidth: 520, margin: '0 auto' },
   cardTitle: { fontSize: 22, fontWeight: 800, color: '#1a1a2e', marginBottom: 8 },
   cardDesc: { fontSize: 14, color: '#6b7280', marginBottom: 24, lineHeight: 1.5 },
-  actions: { display: 'flex', gap: 12 },
-  primaryLink: { flex: 1, textAlign: 'center', padding: '14px 0', background: ACCENT, color: '#fff', textDecoration: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700 },
   secondary: { flex: 1, padding: '14px 0', background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' },
 };

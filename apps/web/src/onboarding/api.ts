@@ -24,7 +24,10 @@ function headers(auth: AuthScope): Record<string, string> {
 
 async function getJson<T>(path: string, auth: AuthScope): Promise<T | null> {
   try {
-    const res = await fetch(`${API_BASE}${path}`, { headers: headers(auth) });
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: headers(auth),
+      signal: AbortSignal.timeout(8_000),
+    });
     return res.ok ? (await res.json()) as T : null;
   } catch {
     return null;
