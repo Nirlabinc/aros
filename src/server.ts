@@ -3111,12 +3111,42 @@ function arosChatTenant(req: IncomingMessage, body: Record<string, unknown> | nu
   ).trim();
 }
 
-function isArosSalesChat(req: IncomingMessage, body: Record<string, unknown> | null): boolean {
+function isArosChatContext(req: IncomingMessage, body: Record<string, unknown> | null): boolean {
   const agentId = String(body?.agentId ?? body?.agent_id ?? '').toLowerCase();
   const channel = String(req.headers['x-channel'] ?? '').toLowerCase();
+  return agentId === 'aros-agent' || channel === 'aros';
+}
+
+function isArosHealthPing(req: IncomingMessage, body: Record<string, unknown> | null): boolean {
+  if (!isArosChatContext(req, body)) return false;
+  const text = chatLatestText(body).toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  return (
+    /^say online\b/.test(text) ||
+    /\bonline\b.*\bone word\b/.test(text) ||
+    (/\b(connection|connected|health|model)\b/.test(text) && /\b(status|check|working|available|online|up)\b/.test(text))
+  );
+}
+
+async function handleArosHealthPing(req: IncomingMessage, res: ServerResponse, body: Record<string, unknown> | null): Promise<boolean> {
+  if (!isArosHealthPing(req, body)) return false;
+  const tenantId = arosChatTenant(req, body);
+  json(res, 200, {
+    content: 'online',
+    _shre: {
+      model: 'aros-health',
+      toolsUsed: [],
+      mode: 'aros-health-direct',
+      connected: true,
+      ...(UUID_RE.test(tenantId) ? { tenantId } : {}),
+    },
+  });
+  return true;
+}
+
+function isArosSalesChat(req: IncomingMessage, body: Record<string, unknown> | null): boolean {
   const text = chatLatestText(body).toLowerCase();
-  const arosContext = agentId === 'aros-agent' || channel === 'aros';
-  return arosContext &&
+  return isArosChatContext(req, body) &&
     /\b(sales?|revenue|transactions?|average ticket|total)\b/.test(text) &&
     !/\b(inventory|stock|item|items|invoice|invoices|edi|exception|void|refund)\b/.test(text);
 }
@@ -4550,6 +4580,7 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (pathname === '/v1/chat' && method === 'POST') {
     const body = await parseJsonBody(req);
+    if (await handleArosHealthPing(req, res, body)) return;
     if (await handleArosSalesChat(req, res, body)) return;
     return proxyRequest(req, res, SHRE_ROUTER_URL, body);
   }
