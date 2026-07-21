@@ -25,7 +25,8 @@ import { validateAddMemberInput, INVITEE_NOT_REGISTERED } from './workspace-memb
 import { parsePlatformAdmins, isPlatformAdmin } from './platform-admin.js';
 import { NOTIFICATION_CATALOG, NOTIFICATION_CHANNELS, mergePreferences, validatePreferenceUpdate, isEnabled, type PreferenceRow } from './notifications.js';
 import { sendEmail, emailConfigured } from './email.js';
-import { formatWeeklyBrief, type DigestBody } from './digest-email.js';
+import { sendSms, smsConfigured } from './sms.js';
+import { formatWeeklyBrief, formatDailySales, formatLowStock, type DigestBody } from './digest-email.js';
 
 /**
  * Weekly Brief delivery — sends each connected workspace its owner digest by
@@ -34,6 +35,151 @@ import { formatWeeklyBrief, type DigestBody } from './digest-email.js';
  * resource=period_end) is the dedupe record, so restarts and the 12h check
  * cadence never double-send. Opt out platform-wide with WEEKLY_BRIEF_EMAILS=0.
  */
+/**
+ * Daily store emails: yesterday's sales summary + low-stock alerts. Both are
+ * OPT-IN (prefs default off), so tenants without explicit subscribers are
+ * skipped before any POS fetch. Deduped per (event, business date) via
+ * audit_log; the 6h cadence is therefore idempotent.
+ */
+async function runDailyStoreEmails(): Promise<void> {
+  if (!emailConfigured()) return;
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data: subs } = await supabase
+      .from('notification_preferences')
+      .select('tenant_id,event_type')
+      .in('event_type', ['daily-sales-summary', 'low-stock'])
+      .eq('enabled', true);
+    const wanting = new Map<string, Set<string>>();
+    for (const s of subs || []) {
+      if (!wanting.has(s.tenant_id)) wanting.set(s.tenant_id, new Set());
+      wanting.get(s.tenant_id)!.add(s.event_type);
+    }
+    if (wanting.size === 0) return;
+
+    const { data: rows } = await supabase
+      .from('tenant_connectors')
+      .select(`${CONNECTOR_COLUMNS}, credentials_encrypted`)
+      .eq('status', 'connected')
+      .eq('type', 'rapidrms-api');
+    const byTenant = new Map<string, NonNullable<typeof rows>[number]>();
+    for (const r of rows ?? []) if (wanting.has(r.tenant_id) && !byTenant.has(r.tenant_id)) byTenant.set(r.tenant_id, r);
+
+    for (const [tenantId, row] of byTenant) {
+      try {
+        ensureConnectorCrypto();
+        const secrets = JSON.parse(decryptValue(row.credentials_encrypted)) as Record<string, string>;
+        const record = { id: row.id, type: row.type, name: row.name, config: (row.config ?? {}) as Record<string, unknown>, secrets };
+        const today = businessToday(String((row.config as Record<string, unknown> | null)?.timezone || DEFAULT_STORE_TIMEZONE));
+        const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+        const events = wanting.get(tenantId)!;
+
+        if (events.has('daily-sales-summary')) {
+          const { data: already } = await supabase.from('audit_log').select('id').eq('tenant_id', tenantId).eq('action', 'notify.daily_sales_sent').eq('resource', yesterday).limit(1).maybeSingle();
+          if (!already) {
+            const daily = await fetchStoreSalesRange(record, vaultSecretFor(tenantId), yesterday, yesterday);
+            const sales = daily.find((d) => d.businessDate === yesterday) ?? (daily.length === 0 ? { businessDate: yesterday, revenue: 0, transactions: 0 } : null);
+            const message = formatDailySales(row.name, yesterday, sales ? { revenue: sales.revenue, transactions: sales.transactions } : null);
+            if (message) {
+              await notifyWorkspace(tenantId, 'daily-sales-summary', message.subject, message.text);
+              await auditLog({ tenantId, action: 'notify.daily_sales_sent', resource: yesterday, detail: { store: row.name }, ip: 'scheduler' });
+            }
+          }
+        }
+
+        if (events.has('low-stock')) {
+          const { data: already } = await supabase.from('audit_log').select('id').eq('tenant_id', tenantId).eq('action', 'notify.low_stock_sent').eq('resource', today).limit(1).maybeSingle();
+          if (!already) {
+            const summary = await fetchStoreSummary(record, vaultSecretFor(tenantId));
+            if (summary && summary.lowStock.available) {
+              const message = formatLowStock(row.name, summary.lowStock.items);
+              if (message) {
+                await notifyWorkspace(tenantId, 'low-stock', message.subject, message.text);
+                await auditLog({ tenantId, action: 'notify.low_stock_sent', resource: today, detail: { store: row.name, count: summary.lowStock.count }, ip: 'scheduler' });
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[daily-emails] tenant failed:', err instanceof Error ? err.message : err);
+      }
+    }
+  } catch (err) {
+    console.error('[daily-emails]', err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Metered usage → Stripe invoice items. For every tenant with a Stripe
+ * customer, bill each COMPLETED month's meter billedUsd (markup applied at
+ * record time; byok/local billed 0 by the meter). One invoice item per
+ * tenant per month, deduped via audit_log billing.usage_invoiced; amounts
+ * under 50¢ are skipped (Stripe minimum sanity). Free workspaces (no Stripe
+ * customer) are untouched.
+ */
+async function runUsageInvoicing(): Promise<void> {
+  const stripeKey = process.env.STRIPE_SECRET_KEY;
+  if (!stripeKey || process.env.STRIPE_USAGE_BILLING === '0') return;
+  try {
+    const now = new Date();
+    const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+    const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const periodKey = periodStart.toISOString().slice(0, 7);
+
+    const supabase = createSupabaseAdmin();
+    const { data: tenants } = await supabase
+      .from('tenants')
+      .select('id,name,stripe_customer_id')
+      .not('stripe_customer_id', 'is', null);
+
+    for (const tenant of tenants || []) {
+      try {
+        const { data: already } = await supabase.from('audit_log').select('id').eq('tenant_id', tenant.id).eq('action', 'billing.usage_invoiced').eq('resource', periodKey).limit(1).maybeSingle();
+        if (already) continue;
+
+        const meterTenant = await routerTenantFor(tenant.id);
+        const meterUrl = new URL('/v1/costs/summary', SHRE_METER_URL);
+        meterUrl.searchParams.set('from', periodStart.toISOString());
+        meterUrl.searchParams.set('to', periodEnd.toISOString());
+        meterUrl.searchParams.set('tenantId', meterTenant);
+        const meterRes = await fetch(meterUrl, { headers: { 'x-gate-user': 'aros-platform', 'x-gate-role': 'service' } });
+        if (!meterRes.ok) continue;
+        const summary = (await meterRes.json()) as { totalBilledUsd?: number; totalRequests?: number };
+        const cents = Math.round((summary.totalBilledUsd || 0) * 100);
+        if (cents < 50) {
+          // Nothing billable this period — record the decision so we don't
+          // re-evaluate the same closed month forever.
+          await auditLog({ tenantId: tenant.id, action: 'billing.usage_invoiced', resource: periodKey, detail: { cents, skipped: true }, ip: 'scheduler' });
+          continue;
+        }
+
+        const body = new URLSearchParams({
+          customer: tenant.stripe_customer_id as string,
+          amount: String(cents),
+          currency: 'usd',
+          description: `AI usage — ${periodKey} (${summary.totalRequests || 0} requests)`,
+        });
+        const stripeRes = await fetch('https://api.stripe.com/v1/invoiceitems', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${stripeKey}`, 'content-type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!stripeRes.ok) {
+          console.error(`[usage-invoice] Stripe HTTP ${stripeRes.status} for tenant ${tenant.id}:`, (await stripeRes.text()).slice(0, 200));
+          continue;
+        }
+        await auditLog({ tenantId: tenant.id, action: 'billing.usage_invoiced', resource: periodKey, detail: { cents, requests: summary.totalRequests || 0 }, ip: 'scheduler' });
+        console.log(`[usage-invoice] ${tenant.name}: $${(cents / 100).toFixed(2)} for ${periodKey}`);
+      } catch (err) {
+        console.error('[usage-invoice] tenant failed:', err instanceof Error ? err.message : err);
+      }
+    }
+  } catch (err) {
+    console.error('[usage-invoice]', err instanceof Error ? err.message : err);
+  }
+}
+
 async function runWeeklyBriefDelivery(): Promise<void> {
   if (!emailConfigured() || process.env.WEEKLY_BRIEF_EMAILS === '0') return;
   try {
@@ -104,6 +250,12 @@ async function notifyWorkspace(tenantId: string, event: string, subject: string,
         to = data?.user?.email || '';
       }
       if (to) void sendEmail(to, subject, `${text}\n\n— AROS · app.aros.live\nManage notifications: https://app.aros.live/notifications`);
+      // SMS: opt-in only (sms defaults off), requires an explicit destination
+      // number, and stays inert until Twilio is configured.
+      if (smsConfigured() && isEnabled(prefs, event, 'sms')) {
+        const number = prefs.find((p) => p.channel === 'sms' && p.destination)?.destination;
+        if (number) void sendSms(number, `AROS — ${subject}\n${text.split('\n')[0]}`);
+      }
     }
   } catch (err) {
     console.error('[notify]', err instanceof Error ? err.message : err);
@@ -154,6 +306,8 @@ import {
   fetchStoreSalesRange,
   fetchStoreSummary,
   hasSummaryMapper,
+  businessToday,
+  DEFAULT_STORE_TIMEZONE,
   type InventoryRiskItem,
   type StoreSummary,
   type VoidExceptionBucket,
@@ -2206,7 +2360,9 @@ async function handleNotificationPreferences(req: IncomingMessage, res: ServerRe
       if (error) throw error;
       return json(res, 200, {
         catalog: NOTIFICATION_CATALOG,
-        channels: NOTIFICATION_CHANNELS,
+        // SMS status reflects live provider config: the moment Twilio env
+        // lands, the channel reads active without a code change.
+        channels: NOTIFICATION_CHANNELS.map((c) => (c.id === 'sms' && smsConfigured() ? { ...c, status: 'active' as const } : c)),
         preferences: mergePreferences((data || []) as PreferenceRow[]),
       });
     }
@@ -5016,6 +5172,20 @@ server.listen(PORT, '0.0.0.0', () => {
     setInterval(() => void runWeeklyBriefDelivery(), 12 * 3600_000).unref();
     setTimeout(() => void runWeeklyBriefDelivery(), 90_000).unref();
     console.log('[aros-platform] weekly-brief email delivery enabled');
+    // Daily store emails (sales summary + low stock) share the cadence; both
+    // are opt-in (prefs default off) and dedupe per business date.
+    setInterval(() => void runDailyStoreEmails(), 6 * 3600_000).unref();
+    setTimeout(() => void runDailyStoreEmails(), 150_000).unref();
+    console.log('[aros-platform] daily store email delivery enabled');
+  }
+
+  // Usage → Stripe invoice items: bills each COMPLETED month's metered
+  // billedUsd to tenants that have a Stripe customer. Inert for everyone
+  // else. STRIPE_USAGE_BILLING=0 disables platform-wide.
+  if (process.env.STRIPE_USAGE_BILLING !== '0' && process.env.STRIPE_SECRET_KEY) {
+    setInterval(() => void runUsageInvoicing(), 24 * 3600_000).unref();
+    setTimeout(() => void runUsageInvoicing(), 300_000).unref();
+    console.log('[aros-platform] usage invoicing enabled');
   }
 });
 

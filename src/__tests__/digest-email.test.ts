@@ -3,7 +3,7 @@
  * digests yield null (never an empty send).
  */
 import { describe, expect, it } from 'vitest';
-import { formatWeeklyBrief } from '../digest-email';
+import { formatWeeklyBrief, formatDailySales, formatLowStock } from '../digest-email';
 
 const REAL_SHAPE = {
   provider: 'rapidrms', store_id: 'client-2', period_end: '2026-07-20', cadence: 'weekly',
@@ -34,5 +34,29 @@ describe('formatWeeklyBrief', () => {
   it('returns null when there is nothing to say', () => {
     expect(formatWeeklyBrief('S', { period_end: '2026-07-20', digest: { period: { end: '2026-07-20' }, reorder: [], attach: [] } })).toBeNull();
     expect(formatWeeklyBrief('S', { digest: null })).toBeNull();
+  });
+});
+
+describe('formatDailySales', () => {
+  it('formats a real day and keeps genuine $0 days', () => {
+    const out = formatDailySales('Party Liquor', '2026-07-20', { revenue: 956.36, transactions: 66 });
+    expect(out?.subject).toBe('Party Liquor yesterday: $956.36 across 66 transactions');
+    expect(out?.text).toContain('Average ticket: $14.49');
+    expect(formatDailySales('S', '2026-07-20', { revenue: 0, transactions: 0 })).not.toBeNull();
+  });
+  it('returns null when the day could not be read', () => {
+    expect(formatDailySales('S', '2026-07-20', null)).toBeNull();
+  });
+});
+
+describe('formatLowStock', () => {
+  it('lists items and caps at 12', () => {
+    const items = Array.from({ length: 15 }, (_, i) => ({ name: `ITEM ${i}`, current: 0, threshold: 2 }));
+    const out = formatLowStock('Party Liquor', items);
+    expect(out?.subject).toContain('15 items');
+    expect(out?.text).toContain('…and 3 more');
+  });
+  it('never sends for an empty list', () => {
+    expect(formatLowStock('S', [])).toBeNull();
   });
 });
