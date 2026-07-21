@@ -92,7 +92,7 @@ export function PlatformConsole() {
       if (sortKey === 'connectors') return (a.connectors.connected - b.connectors.connected) * dir;
       return a.created_at.localeCompare(b.created_at) * dir;
     });
-  }, [tenants, query, sortKey, sortDir]);
+  }, [tenants, query, sortKey, sortDir, showTest]);
 
   if (state === 'loading') return <Shell><p style={s.muted}>Loading…</p></Shell>;
   if (state === 'denied') return <Shell><h1 style={s.h1}>Not available</h1><p style={s.muted}>This page does not exist for this account.</p></Shell>;
