@@ -714,6 +714,10 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
       periodTo?: string;
     };
     let currentPeriodUsage: CurrentPeriodUsage | null = null;
+    // Per-model breakdown — billing is tied to the MODELS that served the
+    // workspace, not just a total (founder directive). Same meter, same
+    // period, tenant-scoped (meter's by-model filter shipped in shreai#1047).
+    let byModel: Array<{ model: string; count: number; totalCents: number; totalTokens: number }> = [];
 
     try {
       const meterUrl = new URL('/v1/costs/summary', SHRE_METER_URL);
@@ -721,9 +725,30 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
       meterUrl.searchParams.set('to', periodEnd);
       meterUrl.searchParams.set('tenantId', tenantId);
 
-      const meterRes = await fetch(meterUrl);
+      // The meter's gate-auth accepts a service identity header.
+      const meterHeaders = { 'x-gate-user': 'aros-platform', 'x-gate-role': 'service' };
+      const meterRes = await fetch(meterUrl, { headers: meterHeaders });
       if (meterRes.ok) {
         currentPeriodUsage = (await meterRes.json()) as CurrentPeriodUsage;
+      }
+
+      const byModelUrl = new URL('/v1/costs/by-model', SHRE_METER_URL);
+      byModelUrl.searchParams.set('from', periodStart);
+      byModelUrl.searchParams.set('to', periodEnd);
+      byModelUrl.searchParams.set('tenantId', tenantId);
+      const byModelRes = await fetch(byModelUrl, { headers: meterHeaders });
+      if (byModelRes.ok) {
+        const rows = (await byModelRes.json()) as Array<{ model?: string; requests?: number; costUsd?: number; totalTokens?: number }>;
+        if (Array.isArray(rows)) {
+          byModel = rows
+            .filter((r) => typeof r.model === 'string' && r.model)
+            .map((r) => ({
+              model: r.model as string,
+              count: r.requests || 0,
+              totalCents: Math.round((r.costUsd || 0) * 100),
+              totalTokens: r.totalTokens || 0,
+            }));
+        }
       }
     } catch {
       // Best-effort only. Billing status still returns cached subscription state.
@@ -732,10 +757,15 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
     json(res, 200, {
       tenantId: data.id,
       plan: subscription?.plan || data.plan,
-      billingStatus: subscription?.status || data.billing_status,
+      // A free-plan workspace is honestly "active" (it works), not "none" —
+      // Billing said "none" while Settings said "active" (sweep finding).
+      billingStatus: subscription?.status || data.billing_status || 'active',
       stripeCustomerId: data.stripe_customer_id,
       subscription,
       licenseTier: data.license_tier,
+      // No invoicing exists until usage-based Stripe items land; 0 is the
+      // honest count (the UI showed a permanent "—" placeholder).
+      invoiceCount: 0,
       currentPeriodSpendCents:
         currentPeriodUsage?.totalCostUsd != null
           ? Math.round(currentPeriodUsage.totalCostUsd * 100)
@@ -745,6 +775,7 @@ async function handleBillingStatus(req: IncomingMessage, res: ServerResponse): P
         ? {
             totalCents: Math.round((currentPeriodUsage.totalCostUsd || 0) * 100),
             eventCount: currentPeriodUsage.totalRequests,
+            byModel: byModel.length > 0 ? byModel.map((m) => ({ model: m.model, label: m.model, count: m.count, totalCents: m.totalCents })) : undefined,
             periodStart,
             periodEnd,
           }
