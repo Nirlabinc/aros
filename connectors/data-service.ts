@@ -10,6 +10,7 @@
 // fabricated numbers. We never guess a value we can't read confidently.
 
 import * as rapidRms from './rapidrms-api.js';
+import { fetchBosTimecards, type BosTimecardReport } from './rapidrms-bos.js';
 import type { RapidRmsSession } from './types.js';
 import { setTenantSecret, storeCredential, deleteCredential } from './vault-ref.js';
 
@@ -772,6 +773,22 @@ export async function fetchStoreInvoices(
       fetchedAt: new Date().toISOString(),
     };
   });
+}
+
+export async function fetchStoreTimecards(
+  record: ConnectorRecord,
+  from: string,
+  to: string,
+  employee?: string,
+): Promise<BosTimecardReport | null> {
+  if (!hasSummaryMapper(record.type)) return null;
+  return fetchBosTimecards(
+    { bosBaseUrl: String(record.config.bosBaseUrl || 'https://www.rapidrms.com'), timezone: storeTimezone(record.config) },
+    record.secrets,
+    from,
+    to,
+    employee,
+  );
 }
 
 export type DailyStoreSales = { businessDate: string; revenue: number; transactions: number };

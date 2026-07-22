@@ -64,6 +64,15 @@ table headers, script URLs, and read-path hints. A BOS scraper must not become a
 production answer contract until selectors, date filters, pagination, empty
 states, tenant/store labels, and session expiry behavior are pinned by tests.
 
+Promoted read adapter:
+
+- Connector: `connectors/rapidrms-bos.ts`
+- Authenticated API: `GET /api/store/timecards?from=YYYY-MM-DD&to=YYYY-MM-DD&employee=<optional>&limit=25`
+- Chat intent: Larry answers time stamp, timecard, clock in/out, employee hours, and payroll-period summary reads.
+- Source: RapidRMS BOS read endpoints, not the public RapidRMS API.
+- Audit action: `store.timecards.read`; detail records the date range, row counts, and whether an employee filter was used, not employee names or raw punch data.
+- Writes remain disabled: edit/add/void routes are known to exist but are not implemented as executable tools without the payroll write gate.
+
 ## Probe script
 
 Run from a deployed environment with normal AROS secrets loaded:
