@@ -61,6 +61,19 @@ function preview(payloadText: string): string {
   return payloadText.replace(/\s+/g, ' ').slice(0, 220);
 }
 
+function hasUsefulPayload(payload: unknown, text: string): boolean {
+  const rows = toRows(payload);
+  if (rows.length > 0) return true;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return text.trim().length > 16 && !/No Data available/i.test(text);
+  const envelope = payload as Record<string, unknown>;
+  const data = envelope.data ?? envelope.Data ?? envelope.result ?? envelope.Result ?? envelope.value;
+  if (data === '' || data === null || data === undefined) return false;
+  if (Array.isArray(data)) return data.length > 0;
+  if (typeof data === 'string') return data.trim().length > 0 && !/No Data available/i.test(data);
+  if (typeof data === 'object') return Object.keys(data as Record<string, unknown>).length > 0;
+  return true;
+}
+
 function isProbablyReadOnly(candidate: Candidate): boolean {
   if (MUTATION_WORDS.test(candidate.path)) return false;
   if (candidate.method === 'GET') return true;
@@ -173,6 +186,7 @@ async function rawRequest(session: RapidRmsSession, candidate: Candidate): Promi
     contentType: res.headers.get('content-type') || '',
     bytes: text.length,
     empty: rows.length === 0 && (text === '' || text === '[]' || /No Data available/i.test(text)),
+    useful: hasUsefulPayload(payload, text),
     envelopeError: envelope.isError ?? envelope.IsError ?? null,
     envelopeMessage: String(envelope.message ?? envelope.Message ?? '').slice(0, 180),
     rowCount: rows.length,
@@ -245,7 +259,7 @@ try {
     result.envelopeError !== true &&
     result.envelopeError !== 1 &&
     result.envelopeError !== '1' &&
-    (Number(result.rowCount) > 0 || Number(result.bytes) > 16)
+    result.useful === true
   );
 
   console.log(JSON.stringify({

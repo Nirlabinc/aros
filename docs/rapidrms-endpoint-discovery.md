@@ -15,16 +15,16 @@ This matrix tracks which AROS agent skillsets have verified RapidRMS HTTP API co
 
 | Agent | Skill family | Back-office page / candidate | Latest probe result |
 | --- | --- | --- | --- |
-| Larry | Time stamp report, employee hours, payroll period summary | `/TimeStamp`; candidates `/api/TimeStamp`, `/api/TimeStamp/Get`, `/api/TimeStamp/Employee` | Needs live mapping |
+| Larry | Time stamp report, employee hours, payroll period summary | `/TimeStamp`; candidates `/api/TimeStamp`, `/api/TimeStamp/Get`, `/api/TimeStamp/Employee` | No direct API hit in 900-route read sweep; `/api/User` returned only empty `data` |
 | Larry | Time stamp edit/add/void | `/TimeStamp` write controls | Must be approval-gated; no API contract verified |
 | Larry | Payroll reminder schedule | AROS scheduled job + notification lane | Needs job contract |
-| Marco | Tender reports | `/TenderReport`; candidate `/api/TenderReport` | 404 in live probe |
-| Marco | Hourly sales | `/HourlyReport`; candidate `/api/HourlyReport` | 404 in live probe |
-| Nora add-on | Tax breakdown | `/ReportItemSold/...`, `/Tax`; candidate `/api/ReportItemSold/Tax` | 404 in live probe |
-| Felix add-on | Fuel breakdown | `/FuelReport`, `/FuelDetailsReport`, Verifone fuel reports | 404 in live probe |
+| Marco | Tender reports | `/TenderReport`; candidate `/api/TenderReport` | 404 in report-family read sweep |
+| Marco | Hourly sales | `/HourlyReport`; candidate `/api/HourlyReport` | 404 in report-family read sweep |
+| Nora add-on | Tax breakdown | `/ReportItemSold/...`, `/Tax`; candidate `/api/ReportItemSold/Tax` | 404 in report-family read sweep |
+| Felix add-on | Fuel breakdown | `/FuelReport`, `/FuelDetailsReport`, Verifone fuel reports | 404 in report-family read sweep |
 | Priya add-on | Promotion performance | `/Discount/SalesByPromotion`, `/Promotion` | candidate returned 400/404 in live probe |
-| Tessa | Gift card activity/liability | `/GiftCardInventory`; candidate `/api/GiftCardInventory` | 404 in live probe |
-| Victor | Payout/drop review | `/DropAmountReport`; candidate `/api/DropAmountReport` | 404 in live probe |
+| Tessa | Gift card activity/liability | `/GiftCardInventory`; candidate `/api/GiftCardInventory` | 404 in report-family read sweep |
+| Victor | Payout/drop review | `/DropAmountReport`; candidate `/api/DropAmountReport` | 404 in report-family read sweep |
 | Owen add-on | Department/vendor/report comparisons | `/ReportItemSold/...` and analytics views | Direct API routes need mapping; CortexDB skill connector has SQL-style methods |
 
 ## Mutation safety rule
