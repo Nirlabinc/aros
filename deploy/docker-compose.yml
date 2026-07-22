@@ -25,7 +25,7 @@ services:
   aros-db:
     image: postgres:16-alpine
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"   # localhost only (security audit 2026-07-15, M3)
     environment:
       - POSTGRES_DB=aros
       - POSTGRES_USER=aros
@@ -42,7 +42,7 @@ services:
   aros-redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"   # localhost only (security audit 2026-07-15, M3)
     volumes:
       - redis-data:/data
     command: redis-server --appendonly yes
