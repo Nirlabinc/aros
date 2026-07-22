@@ -307,6 +307,7 @@ import {
   fetchStoreSalesRange,
   fetchStoreInvoices,
   fetchStoreSummary,
+  fetchStoreTimecards,
   fetchTopSoldItems,
   hasSummaryMapper,
   businessToday,
@@ -318,6 +319,7 @@ import {
   type TopSoldItem,
   type VoidExceptionBucket,
 } from '../connectors/data-service.js';
+import type { BosEmployeeHours } from '../connectors/rapidrms-bos.js';
 import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
 import { proxyToMib } from '../connectors/mib-documents.js';
 import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
@@ -3540,7 +3542,8 @@ async function handleArosSalesChat(req: IncomingMessage, res: ServerResponse, bo
 type ChatStoreIntent =
   | { kind: 'top_items'; from: string; to: string; limit: number }
   | { kind: 'item_changes'; mode: 'recently_added' | 'recently_edited' | 'recent_price_changes' | 'recent_cost_changes'; limit: number }
-  | { kind: 'invoices'; from: string; to: string; limit: number; invoiceNo?: string };
+  | { kind: 'invoices'; from: string; to: string; limit: number; invoiceNo?: string }
+  | { kind: 'timecards'; from: string; to: string; limit: number; employee?: string };
 
 function chatLimit(text: string): number {
   const match = text.match(/\b(?:top|last|latest|recent)\s+(\d{1,3})\b/) || text.match(/\b(\d{1,3})\s+(?:items?|invoices?)\b/);
@@ -3570,11 +3573,19 @@ function invoiceNumberFromChat(text: string): string | undefined {
   return value === 'number' || value === 'numbers' || value === 'report' ? undefined : match[1];
 }
 
+function employeeFromChat(text: string): string | undefined {
+  const match = text.match(/\b(?:employee|user|cashier)\s+([a-z][a-z0-9 .'-]{1,40})\b/i);
+  return match?.[1]?.replace(/\b(hours?|timecards?|timestamps?|payroll)\b.*$/i, '').trim() || undefined;
+}
+
 function storeChatIntent(req: IncomingMessage, body: Record<string, unknown> | null): ChatStoreIntent | null {
   if (!isArosChatContext(req, body)) return null;
   const text = chatLatestText(body).toLowerCase().replace(/\s+/g, ' ').trim();
   if (!text) return null;
   const limit = chatLimit(text);
+  if (/\b(time\s*stamps?|timecards?|clock\s*(?:in|out)|employee\s+hours?|payroll)\b/.test(text)) {
+    return { kind: 'timecards', ...chatDateRange(text), limit, employee: employeeFromChat(text) };
+  }
   if (/\binvoices?\b/.test(text)) return { kind: 'invoices', ...chatDateRange(text), limit, invoiceNo: invoiceNumberFromChat(text) };
   if (/\b(price|retail)\b.*\b(change|changed|updated|recent)\b|\b(change|changed|updated|recent)\b.*\b(price|retail)\b/.test(text)) {
     return { kind: 'item_changes', mode: 'recent_price_changes', limit };
@@ -3639,7 +3650,7 @@ async function handleArosStoreDataChat(req: IncomingMessage, res: ServerResponse
         for (const [index, item] of (report?.items ?? []).entries()) {
           lines.push(`${index + 1}. ${item.name}${item.code ? ` (${item.code})` : ''} - ${item.changedAt.slice(0, 10)}; price ${money(item.price)}, cost ${money(item.cost)}`);
         }
-      } else {
+      } else if (intent.kind === 'invoices') {
         const report = await fetchStoreInvoices(record, vaultSecretFor(tenantId), intent.from, intent.to, intent.limit, intent.invoiceNo);
         toolsUsed.push('mib_invoices');
         lines.push(`**${row.name} invoices (${intent.from} to ${intent.to})**`);
@@ -3648,12 +3659,23 @@ async function handleArosStoreDataChat(req: IncomingMessage, res: ServerResponse
           const invoiceLabel = invoice.invoiceNo ? `Invoice ${invoice.invoiceNo}` : `Record ${invoice.recordId ?? 'unknown'}`;
           lines.push(`${index + 1}. ${invoiceLabel} - ${invoice.businessDate ?? 'unknown date'}, ${money(invoice.amount)}${invoice.isVoid ? ' (void)' : ''}`);
         }
+      } else {
+        const report = await fetchStoreTimecards(record, intent.from, intent.to, intent.employee);
+        toolsUsed.push('mib_timecards');
+        lines.push(`**${row.name} employee hours (${intent.from} to ${intent.to})**`);
+        if (!report?.employees.length) lines.push('- No time stamp rows were returned for that exact range/filter.');
+        if (report) {
+          lines.push(`- Total hours: ${report.totals.hours.toLocaleString('en-US')} across ${report.totals.punches.toLocaleString('en-US')} punches${report.totals.openPunches ? `; ${report.totals.openPunches} open punches` : ''}${report.totals.voidedPunches ? `; ${report.totals.voidedPunches} voided punches excluded` : ''}.`);
+        }
+        for (const [index, employee] of (report?.employees ?? []).slice(0, intent.limit).entries()) {
+          lines.push(`${index + 1}. ${employee.employeeName || employee.employeeId || 'Unknown employee'} - ${employee.totalHours.toLocaleString('en-US')}h, ${employee.punchCount} punches${employee.openPunches ? `, ${employee.openPunches} open` : ''}`);
+        }
       }
     }
 
     json(res, 200, {
       content: lines.length ? lines.join('\n') : 'No supported RapidRMS store data source is mapped to this workspace yet.',
-      _shre: { model: 'aros-store-data', toolsUsed, mode: 'aros-store-data-direct', tenantId, source: 'RapidRMS API' },
+      _shre: { model: 'aros-store-data', toolsUsed, mode: 'aros-store-data-direct', tenantId, source: toolsUsed.includes('mib_timecards') ? 'RapidRMS BOS' : 'RapidRMS API' },
     });
     return true;
   } catch (err) {
@@ -3982,6 +4004,82 @@ async function handleStoreInvoices(req: IncomingMessage, res: ServerResponse): P
   }
 }
 
+async function handleStoreTimecards(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const request = getRequestUrl(req);
+  const to = request.searchParams.get('to') || request.searchParams.get('endDate') || businessDate();
+  const from = request.searchParams.get('from') || request.searchParams.get('startDate') || to;
+  const limit = boundedLimit(request.searchParams.get('limit'), 25);
+  const employee = request.searchParams.get('employee') || request.searchParams.get('employeeId') || undefined;
+  if (validateStoreDateRange(res, from, to, 31, 'Time stamp') === null) return;
+
+  try {
+    const rows = await connectedConnectorRows(auth.tenantId);
+    const sources: ConnectorSourceStatus[] = [];
+    const employees = new Map<string, BosEmployeeHours & { stores: string[] }>();
+    let hours = 0;
+    let punches = 0;
+    let openPunches = 0;
+    let voidedPunches = 0;
+    let anyLive = false;
+    for (const row of rows) {
+      if (!hasSummaryMapper(row.type)) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false });
+        continue;
+      }
+      try {
+        const report = await fetchStoreTimecards(decryptedConnectorRecord(row), from, to, employee);
+        if (!report) { sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false }); continue; }
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: true });
+        anyLive = true;
+        hours += report.totals.hours;
+        punches += report.totals.punches;
+        openPunches += report.totals.openPunches;
+        voidedPunches += report.totals.voidedPunches;
+        for (const employeeRow of report.employees) {
+          const key = employeeRow.employeeId || employeeRow.employeeName || `${row.name}:unknown`;
+          const current = employees.get(key) || { ...employeeRow, totalHours: 0, punchCount: 0, openPunches: 0, voidedPunches: 0, stores: [] };
+          current.totalHours += employeeRow.totalHours;
+          current.punchCount += employeeRow.punchCount;
+          current.openPunches += employeeRow.openPunches;
+          current.voidedPunches += employeeRow.voidedPunches;
+          if (!current.stores.includes(row.name)) current.stores.push(row.name);
+          employees.set(key, current);
+        }
+      } catch (err) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: false, error: err instanceof Error ? err.message : 'unreachable' });
+      }
+    }
+    const employeeRows = [...employees.values()]
+      .map((row) => ({ ...row, totalHours: Math.round(row.totalHours * 1000) / 1000 }))
+      .sort((a, b) => b.totalHours - a.totalHours || String(a.employeeName || a.employeeId || '').localeCompare(String(b.employeeName || b.employeeId || '')))
+      .slice(0, limit);
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'store.timecards.read',
+      resource: `tenant:${auth.tenantId}`,
+      detail: { from, to, employeeFiltered: Boolean(employee), employees: employeeRows.length, punches },
+      ip: getClientIp(req),
+    });
+    json(res, 200, {
+      connected: anyLive,
+      from,
+      to,
+      employeeFilter: employee || null,
+      totals: { hours: Math.round(hours * 1000) / 1000, punches, openPunches, voidedPunches },
+      employees: employeeRows,
+      sources,
+      source: 'RapidRMS BOS',
+      fetchedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[store-timecards]', err instanceof Error ? err.message : err);
+    json(res, 502, { error: 'Time stamp data could not be retrieved' });
+  }
+}
+
 type AppSkillBundle = { name: string; capabilities: string[]; agent?: string };
 type AppAgentBundle = { name: string; capabilities: string[]; description?: string; skills?: string[] };
 type AppCapabilityBundle = {
@@ -4087,7 +4185,7 @@ const STOREPULSE_AGENTS: AppAgentBundle[] = STOREPULSE_AGENT_SKILLSETS.map((grou
 
 const APP_CAPABILITY_BUNDLES: Record<string, AppCapabilityBundle> = {
   storepulse: {
-    tools: ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_recent_items_added', 'mib_recent_items_edited', 'mib_recent_price_changes', 'mib_recent_cost_changes', 'mib_item_search', 'mib_low_inventory'],
+    tools: ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_recent_items_added', 'mib_recent_items_edited', 'mib_recent_price_changes', 'mib_recent_cost_changes', 'mib_item_search', 'mib_low_inventory', 'mib_timecards'],
     skills: STOREPULSE_SKILLS,
     agentSkillsets: STOREPULSE_AGENT_SKILLSETS,
     agents: STOREPULSE_AGENTS,
@@ -4097,7 +4195,7 @@ const APP_CAPABILITY_BUNDLES: Record<string, AppCapabilityBundle> = {
 };
 
 const CONNECTOR_CAPABILITY_TOOLS: Record<string, string[]> = {
-  'rapidrms-api': ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_recent_items_added', 'mib_recent_items_edited', 'mib_recent_price_changes', 'mib_recent_cost_changes', 'mib_store_list', 'mib_item_search', 'mib_low_inventory', 'mib_invoices', 'rapidrms_storepulse'],
+  'rapidrms-api': ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_recent_items_added', 'mib_recent_items_edited', 'mib_recent_price_changes', 'mib_recent_cost_changes', 'mib_store_list', 'mib_item_search', 'mib_low_inventory', 'mib_invoices', 'mib_timecards', 'rapidrms_storepulse'],
   'verifone-commander': ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_store_list', 'mib_item_search', 'mib_low_inventory', 'mib_invoices'],
 };
 
@@ -5497,6 +5595,10 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (pathname === '/api/store/invoices' && method === 'GET') {
     return handleStoreInvoices(req, res);
+  }
+
+  if (pathname === '/api/store/timecards' && method === 'GET') {
+    return handleStoreTimecards(req, res);
   }
 
   if (pathname === '/api/store/inventory-risks' && method === 'GET') {
