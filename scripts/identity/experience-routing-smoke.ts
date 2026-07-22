@@ -25,6 +25,11 @@ async function main() {
   const internalBuilderWithGrant = decideExperienceRoute({ ...base, sourceIntent: 'internal-builder' }, { experienceGrants: ['aros', 'mib'], mibEnabled: true });
   const handoff = new URL(mibEnabled.targetUrl).searchParams.get('handoff');
   const decoded = handoff ? verifyHandoff(secret, handoff) : null;
+  const redactDecision = (decision: typeof arosOnly) => {
+    const url = new URL(decision.targetUrl);
+    if (url.searchParams.has('handoff')) url.searchParams.set('handoff', '[redacted]');
+    return { ...decision, targetUrl: url.toString() };
+  };
   const report = {
     generatedAt: new Date().toISOString(),
     fixture: { workspaceId, email },
@@ -40,7 +45,14 @@ async function main() {
       developerDesktopWithoutMibGrantFallsBackToAros: developerDesktopWithoutGrant.experience === 'aros',
       internalBuilderWithMibGrantDefaultsToMib: internalBuilderWithGrant.experience === 'mib',
     },
-    decisions: { arosOnly, mibEnabled, standardDesktop, developerDesktopWithGrant, developerDesktopWithoutGrant, internalBuilderWithGrant },
+    decisions: {
+      arosOnly: redactDecision(arosOnly),
+      mibEnabled: redactDecision(mibEnabled),
+      standardDesktop: redactDecision(standardDesktop),
+      developerDesktopWithGrant: redactDecision(developerDesktopWithGrant),
+      developerDesktopWithoutGrant: redactDecision(developerDesktopWithoutGrant),
+      internalBuilderWithGrant: redactDecision(internalBuilderWithGrant),
+    },
   };
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, `${JSON.stringify(report, null, 2)}\n`);
