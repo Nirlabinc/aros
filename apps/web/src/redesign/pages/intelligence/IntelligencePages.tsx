@@ -30,7 +30,7 @@ export function IntelligencePage({ kind }: { kind: IntelligenceKind }) {
   }, [kind, credentials]);
   useEffect(() => { void load(); }, [load]);
 
-  const visible = items.filter(item => `${item.name} ${item.description} ${item.provider || ''} ${item.capabilities.join(' ')}`.toLowerCase().includes(query.toLowerCase()));
+  const visible = items.filter(item => `${item.name} ${item.description} ${item.provider || ''} ${item.capabilities.join(' ')} ${(item.skillsets || []).join(' ')}`.toLowerCase().includes(query.toLowerCase()));
   const toggle = async (item: IntelligenceResource) => {
     const paused = item.status !== 'paused'; setBusyId(item.id); setError('');
     try { await setAgentPaused(item, paused, credentials); await load(); }
@@ -42,15 +42,15 @@ export function IntelligencePage({ kind }: { kind: IntelligenceKind }) {
     <div className="rsx-panel__head"><div><div className="rsx-panel__eyebrow">{copy.eyebrow}</div><p className="rsx-panel__lead">{copy.lead}</p></div></div>
     {!loading && items.length > 0 && <label className="rsx-form__field"><span className="rsx-form__label">Search</span><input className="rsx-form__input" value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${kind}s`} /></label>}
     {error && <div className="rsx-note" role="alert"><div className="rsx-note__title">Needs attention</div><div className="rsx-note__body">{error}</div></div>}
-    {loading ? <StatePanel title="Loading…" detail={`Checking the live ${kind} service.`} />
+    {loading ? <StatePanel title="Loading..." detail={`Checking the live ${kind} service.`} />
       : error && items.length === 0 ? <StatePanel title={`Could not load ${kind}s`} detail={error} action={() => void load()} />
       : items.length === 0 ? <StatePanel title={`No ${kind}s yet`} detail={copy.empty} action={() => void load()} />
       : visible.length === 0 ? <StatePanel title="No matches" detail="Try a different search term." />
       : <div className="rsx-rows">{visible.map(item => <div className="rsx-row" key={item.id}>
           <div className="rsx-row__mark">{item.name.slice(0, 2).toUpperCase()}</div>
-          <div className="rsx-row__info"><div className="rsx-row__title">{item.name}</div><div className="rsx-row__sub">{item.description || item.provider || item.model || item.capabilities.join(' · ') || 'No description provided'}</div></div>
+          <div className="rsx-row__info"><div className="rsx-row__title">{item.name}</div><div className="rsx-row__sub">{item.description || item.provider || item.model || item.capabilities.join(' - ') || 'No description provided'}</div>{kind === 'agent' && item.skillsets && item.skillsets.length > 0 && <div className="rsx-row__sub">{item.skillsets.join(' - ')}</div>}</div>
           <span className={`rsx-pill rsx-pill--${['active', 'available', 'running'].includes(item.status) ? 'on' : item.status === 'paused' ? 'warn' : 'off'}`}>{item.status}</span>
-          {kind === 'agent' && item.source === 'workspace' && <button className="rsx-row__btn" type="button" disabled={busyId === item.id} onClick={() => void toggle(item)}>{busyId === item.id ? 'Saving…' : item.status === 'paused' ? 'Resume' : 'Pause'}</button>}
+          {kind === 'agent' && item.source === 'workspace' && <button className="rsx-row__btn" type="button" disabled={busyId === item.id} onClick={() => void toggle(item)}>{busyId === item.id ? 'Saving...' : item.status === 'paused' ? 'Resume' : 'Pause'}</button>}
         </div>)}</div>}
   </div>;
 }

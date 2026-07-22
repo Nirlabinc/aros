@@ -20,7 +20,7 @@ export function warmPalette(): ChatPalette {
 // messages, stream }, reply in data.response|message|content.
 const ROUTER_URL = (import.meta as any).env?.VITE_ROUTER_URL || '';
 const API_BASE = (window as any).__AROS_API_URL__ || (window.location.hostname === 'localhost' ? 'http://localhost:5457' : '');
-const FLEET_GUIDANCE = `AROS specialist fleet: Ana handles inventory and reorders; Sammy handles revenue, margin, and P&L; Victor handles fraud and loss prevention; Larry handles labor and scheduling; Rita handles reviews and reputation; Store Operations handles connected-store sales and health. External web, news, and weather require a Research & External Intelligence agent with web.search and weather.read capabilities.`;
+const FLEET_GUIDANCE = `AROS specialist fleet: Ana handles demand, inventory, item movement, fuel demand, hourly margin, item comparisons, and department comparisons; Victor handles shrink, exceptions, payouts, liability, and revenue integrity; Larry handles labor, cashier performance, shifts, and customer-account dayparts; Marco handles daily briefings, tender reports, tax breakdowns, hourly sales, report comparisons, store comparisons, and owner reports; Tessa handles supplier intelligence, cost changes, gift cards, promotions, vendor cost watch, and vendor comparisons. External web, news, and weather require a Research & External Intelligence agent with web.search and weather.read capabilities.`;
 const EXTERNAL_INTELLIGENCE_REQUEST = /\b(weather|forecast|temperature|news|headlines|search (?:the )?web|browse (?:the )?(?:web|internet)|look up online)\b/i;
 
 type ActiveAgent = { name: string; capabilities: string[] };

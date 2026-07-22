@@ -14,8 +14,9 @@ export type StoreConnector = {
 
 export type AppCapabilityBundle = {
   tools: string[];
-  skills: Array<{ name: string; capabilities: string[] }>;
-  agents: Array<{ name: string; capabilities: string[] }>;
+  skills: Array<{ name: string; capabilities: string[]; agent?: string }>;
+  agents: Array<{ name: string; capabilities: string[]; description?: string; skills?: string[] }>;
+  agentSkillsets?: Array<{ agent: string; role: string; skills: string[] }>;
 };
 
 export type PlatformApp = {
@@ -35,7 +36,14 @@ export type PlatformApp = {
 
 export type UnlockedDelta = { app?: string; skills: string[]; agents: string[]; tools: string[]; activationState?: string };
 
-export type CapabilityResource = { id: string; name: string; provider?: string | null; status?: string | null; capabilities?: string[] | null };
+export type CapabilityResource = {
+  id: string;
+  name: string;
+  provider?: string | null;
+  status?: string | null;
+  capabilities?: string[] | null;
+  config?: { description?: string; agent?: string; skills?: string[]; [key: string]: unknown } | null;
+};
 
 export type AppGrant = {
   app_key: string;

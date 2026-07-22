@@ -8,6 +8,7 @@ export interface IntelligenceResource {
   provider?: string;
   model?: string;
   capabilities: string[];
+  skillsets?: string[];
   source: 'catalog' | 'workspace' | 'gateway';
 }
 
@@ -48,6 +49,7 @@ function normalizeCatalog(item: any, source: IntelligenceResource['source']): In
     status: text(item?.status) || 'unknown', provider: text(item?.provider) || undefined,
     model: text(item?.model || item?.config?.model) || undefined,
     capabilities: list(item?.capabilities || item?.skills), source,
+    skillsets: list(item?.skillsets || item?.config?.skills),
   };
 }
 

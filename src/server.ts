@@ -2159,8 +2159,10 @@ async function handleTenantResources(req: IncomingMessage, res: ServerResponse, 
   if (!RESOURCE_KINDS.has(kind)) return json(res, 400, { error: 'Invalid resource kind' });
   const supabase = createSupabaseAdmin();
   if (req.method === 'GET') {
+    if (kind === 'agent' || kind === 'skill') await reconcileActivatedAppResources(supabase, auth.tenantId, auth.userId, kind);
     const { data, error } = await supabase.from('tenant_resources').select('*').eq('tenant_id', auth.tenantId).eq('kind', kind).order('name');
-    return error ? json(res, 500, { error: error.message }) : json(res, 200, { resources: data || [] });
+    const resources = (data || []).filter((row) => !(kind === 'agent' && row.provider === 'storepulse' && row.name === 'Retail Analyst Agent'));
+    return error ? json(res, 500, { error: error.message }) : json(res, 200, { resources });
   }
   if (!['owner', 'admin'].includes(auth.role)) return json(res, 403, { error: 'Workspace admin access required' });
   const body = await parseJsonBody(req);
@@ -2176,6 +2178,59 @@ async function handleTenantResources(req: IncomingMessage, res: ServerResponse, 
   if (error) return json(res, error.code === '23505' ? 409 : 500, { error: error.message });
   await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: id ? 'resource.updated' : 'resource.created', resource: `${kind}:${data.id}`, detail: { name, status: record.status }, ip: getClientIp(req) });
   json(res, id ? 200 : 201, { resource: data });
+}
+
+async function reconcileActivatedAppResources(
+  supabase: ReturnType<typeof createSupabaseAdmin>,
+  tenantId: string,
+  userId: string,
+  kind: 'agent' | 'skill',
+): Promise<void> {
+  const { data: grants } = await supabase
+    .from('marketplace_app_entitlements')
+    .select('app_key,service_config')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'active');
+  const rows: Array<Record<string, unknown>> = [];
+  for (const grant of grants || []) {
+    const appId = String(grant.app_key || '');
+    const bundle = APP_CAPABILITY_BUNDLES[appId];
+    if (!bundle) continue;
+    const serviceConfig = (grant.service_config || {}) as { storeIds?: string[]; activationState?: string };
+    const storeIds = Array.isArray(serviceConfig.storeIds) ? serviceConfig.storeIds.map(String) : [];
+    const activationState = serviceConfig.activationState || (storeIds.length ? 'ready' : 'needs_store');
+    const resources = kind === 'agent' ? bundle.agents : bundle.skills;
+    for (const resource of resources) {
+      rows.push({
+        tenant_id: tenantId,
+        kind,
+        provider: appId,
+        name: resource.name,
+        status: activationState === 'ready' ? 'active' : 'configuring',
+        capabilities: resource.capabilities,
+        config: {
+          appKey: appId,
+          managedByApp: true,
+          description: 'description' in resource ? resource.description : undefined,
+          agent: 'agent' in resource ? resource.agent : undefined,
+          skills: 'skills' in resource ? resource.skills : undefined,
+        },
+        store_ids: storeIds,
+        health: { state: activationState, checkedAt: new Date().toISOString(), detail: 'Synchronized from active app bundle' },
+        created_by: userId,
+      });
+    }
+    if (kind === 'agent' && appId === 'storepulse') {
+      await supabase
+        .from('tenant_resources')
+        .update({ status: 'inactive', health: { state: 'replaced', checkedAt: new Date().toISOString(), detail: 'Replaced by named AROS StorePulse agents' } })
+        .eq('tenant_id', tenantId)
+        .eq('kind', 'agent')
+        .eq('provider', 'storepulse')
+        .eq('name', 'Retail Analyst Agent');
+    }
+  }
+  if (rows.length) await supabase.from('tenant_resources').upsert(rows, { onConflict: 'tenant_id,kind,name' });
 }
 
 async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, appId?: string): Promise<void> {
@@ -2211,7 +2266,10 @@ async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, app
   // Auto-assign the per-tenant MIB Documents token on activation.
   if (appId === DOCUMENTS_APP_KEY) await provisionDocumentsAccess(supabase, auth.tenantId);
   const appCapabilities: Record<string, string[]> = {
-    storepulse: ['stores.read', 'pos.sales.read', 'pos.inventory.read', 'connection.health.read'],
+    storepulse: [
+      'stores.read', 'connection.health.read',
+      ...new Set(STOREPULSE_SKILLS.flatMap((skill) => skill.capabilities)),
+    ],
   };
   const capabilities = appCapabilities[appId] || requested;
   const { error: resourceError } = await supabase.from('tenant_resources').upsert({
@@ -2236,7 +2294,14 @@ async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, app
     const resourceRows = bundleResources.map(resource => ({
       tenant_id: auth.tenantId, kind: resource.kind, provider: appId, name: resource.name,
       status: activationState === 'ready' ? 'active' : 'configuring', capabilities: resource.capabilities,
-      config: { appKey: appId, managedByApp: true }, store_ids: storeIds,
+      config: {
+        appKey: appId,
+        managedByApp: true,
+        description: 'description' in resource ? resource.description : undefined,
+        agent: 'agent' in resource ? resource.agent : undefined,
+        skills: 'skills' in resource ? resource.skills : undefined,
+      },
+      store_ids: storeIds,
       health: { state: activationState, checkedAt: new Date().toISOString() }, created_by: auth.userId,
     }));
     const { error: bundleError } = await supabase.from('tenant_resources').upsert(resourceRows, { onConflict: 'tenant_id,kind,name' });
@@ -2292,19 +2357,24 @@ async function handleWorkspaceAgents(req: IncomingMessage, res: ServerResponse, 
   if (!auth) return json(res, 401, { error: 'Authentication required' });
   if (auth.tenantId !== workspaceId) return json(res, 403, { error: 'Workspace access denied' });
   try {
-    const { data, error } = await createSupabaseAdmin()
+    const supabase = createSupabaseAdmin();
+    await reconcileActivatedAppResources(supabase, workspaceId, auth.userId, 'agent');
+    const { data, error } = await supabase
       .from('tenant_resources')
       .select('id,name,provider,status,config,capabilities')
       .eq('tenant_id', workspaceId)
       .eq('kind', 'agent')
       .order('name');
     if (error) throw error;
-    json(res, 200, (data || []).map((r) => ({
+    json(res, 200, (data || []).filter((r) => !(r.provider === 'storepulse' && r.name === 'Retail Analyst Agent')).map((r) => ({
       id: r.id, name: r.name,
       description: String((r.config as Record<string, unknown> | null)?.description || ''),
       status: r.status || 'unknown', provider: r.provider || undefined,
       capabilities: Array.isArray(r.capabilities) ? r.capabilities : [],
       model: (r.config as Record<string, unknown> | null)?.model,
+      skillsets: Array.isArray((r.config as Record<string, unknown> | null)?.skills)
+        ? (r.config as { skills: string[] }).skills
+        : [],
     })));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to list workspace agents';
@@ -3908,17 +3978,93 @@ async function handleStoreInvoices(req: IncomingMessage, res: ServerResponse): P
   }
 }
 
-const APP_CAPABILITY_BUNDLES: Record<string, { tools: string[]; skills: Array<{ name: string; capabilities: string[] }>; agents: Array<{ name: string; capabilities: string[] }> }> = {
+type AppSkillBundle = { name: string; capabilities: string[]; agent?: string };
+type AppAgentBundle = { name: string; capabilities: string[]; description?: string; skills?: string[] };
+type AppCapabilityBundle = {
+  tools: string[];
+  skills: AppSkillBundle[];
+  agents: AppAgentBundle[];
+  agentSkillsets?: Array<{ agent: string; role: string; skills: string[] }>;
+};
+
+const STOREPULSE_AGENT_SKILLSETS: Array<{ agent: string; role: string; skills: string[] }> = [
+  {
+    agent: 'Marco',
+    role: 'Daily briefings and owner reports',
+    skills: ['Daily Sales Summary', 'Store Performance', 'Tender Reports', 'Tax Breakdown', 'Hourly Sales', 'Register Shift Close', 'Report Comparison', 'Store and Date Comparison'],
+  },
+  {
+    agent: 'Ana',
+    role: 'Demand, inventory, item movement, and fuel demand',
+    skills: ['Inventory Health', 'Top Sold Items', 'Recently Added Items', 'Recently Edited Items', 'Department and Category Sales', 'Fuel Pump Breakdown', 'Hourly Margin', 'Item Comparison', 'Department Comparison'],
+  },
+  {
+    agent: 'Victor',
+    role: 'Shrink, exceptions, and revenue integrity',
+    skills: ['Void Exceptions', 'Refund and No-Sale Exceptions', 'Payout and Drop Review', 'Liability Review', 'Price Change Review'],
+  },
+  {
+    agent: 'Larry',
+    role: 'Labor, cashier performance, and customer-account dayparts',
+    skills: ['Cashier Scorecard', 'Labor Cost Tracker', 'Hourly Customer Accounts', 'Shift Summary', 'House Charge Activity'],
+  },
+  {
+    agent: 'Tessa',
+    role: 'Supplier, cost, gift-card, and promotion intelligence',
+    skills: ['Supplier Intelligence', 'Cost Change Review', 'Gift Card Activity', 'Gift Card Liability', 'Promotion Performance', 'Vendor Cost Watch', 'Vendor Comparison'],
+  },
+];
+
+const STOREPULSE_SKILLS: AppSkillBundle[] = [
+  { name: 'Daily Sales Summary', agent: 'Marco', capabilities: ['pos.sales.read'] },
+  { name: 'Store Performance', agent: 'Marco', capabilities: ['stores.read', 'pos.sales.read', 'analytics.insights'] },
+  { name: 'Tender Reports', agent: 'Marco', capabilities: ['pos.tenders.read', 'pos.sales.read'] },
+  { name: 'Tax Breakdown', agent: 'Marco', capabilities: ['pos.taxes.read', 'pos.sales.read'] },
+  { name: 'Hourly Sales', agent: 'Marco', capabilities: ['pos.hourly_sales.read', 'pos.sales.read'] },
+  { name: 'Register Shift Close', agent: 'Marco', capabilities: ['pos.shift.read', 'pos.registers.read'] },
+  { name: 'Report Comparison', agent: 'Marco', capabilities: ['analytics.compare', 'pos.reports.read'] },
+  { name: 'Store and Date Comparison', agent: 'Marco', capabilities: ['analytics.compare', 'stores.read', 'pos.sales.read'] },
+  { name: 'Inventory Health', agent: 'Ana', capabilities: ['pos.inventory.read'] },
+  { name: 'Top Sold Items', agent: 'Ana', capabilities: ['pos.items.read', 'pos.sales.read'] },
+  { name: 'Recently Added Items', agent: 'Ana', capabilities: ['pos.items.read', 'pos.item_history.read'] },
+  { name: 'Recently Edited Items', agent: 'Ana', capabilities: ['pos.items.read', 'pos.item_history.read'] },
+  { name: 'Department and Category Sales', agent: 'Ana', capabilities: ['pos.department_sales.read', 'pos.category_sales.read'] },
+  { name: 'Fuel Pump Breakdown', agent: 'Ana', capabilities: ['pos.fuel.read', 'pos.pumps.read'] },
+  { name: 'Hourly Margin', agent: 'Ana', capabilities: ['pos.hourly_margin.read', 'pos.costs.read'] },
+  { name: 'Item Comparison', agent: 'Ana', capabilities: ['analytics.compare', 'pos.items.read', 'pos.sales.read', 'pos.costs.read'] },
+  { name: 'Department Comparison', agent: 'Ana', capabilities: ['analytics.compare', 'pos.department_sales.read', 'pos.category_sales.read'] },
+  { name: 'Void Exceptions', agent: 'Victor', capabilities: ['pos.exceptions.read', 'pos.voids.read'] },
+  { name: 'Refund and No-Sale Exceptions', agent: 'Victor', capabilities: ['pos.exceptions.read', 'pos.refunds.read', 'pos.no_sales.read'] },
+  { name: 'Payout and Drop Review', agent: 'Victor', capabilities: ['pos.cash_movement.read', 'pos.payouts.read', 'pos.drops.read'] },
+  { name: 'Liability Review', agent: 'Victor', capabilities: ['pos.liability.read', 'pos.house_charge.read', 'pos.gift_cards.read'] },
+  { name: 'Price Change Review', agent: 'Victor', capabilities: ['pos.price_changes.read', 'pos.items.read'] },
+  { name: 'Cashier Scorecard', agent: 'Larry', capabilities: ['pos.cashier.read', 'pos.exceptions.read'] },
+  { name: 'Labor Cost Tracker', agent: 'Larry', capabilities: ['labor.read', 'pos.sales.read'] },
+  { name: 'Hourly Customer Accounts', agent: 'Larry', capabilities: ['pos.customer_accounts.read', 'pos.hourly_sales.read'] },
+  { name: 'Shift Summary', agent: 'Larry', capabilities: ['pos.shift.read', 'labor.read'] },
+  { name: 'House Charge Activity', agent: 'Larry', capabilities: ['pos.house_charge.read', 'pos.customer_accounts.read'] },
+  { name: 'Supplier Intelligence', agent: 'Tessa', capabilities: ['pos.vendors.read', 'pos.purchasing.read'] },
+  { name: 'Cost Change Review', agent: 'Tessa', capabilities: ['pos.cost_changes.read', 'pos.items.read'] },
+  { name: 'Gift Card Activity', agent: 'Tessa', capabilities: ['pos.gift_cards.read', 'pos.tenders.read'] },
+  { name: 'Gift Card Liability', agent: 'Tessa', capabilities: ['pos.gift_cards.read', 'pos.liability.read'] },
+  { name: 'Promotion Performance', agent: 'Tessa', capabilities: ['pos.promotions.read', 'pos.discounts.read', 'pos.sales.read'] },
+  { name: 'Vendor Cost Watch', agent: 'Tessa', capabilities: ['pos.vendors.read', 'pos.costs.read'] },
+  { name: 'Vendor Comparison', agent: 'Tessa', capabilities: ['analytics.compare', 'pos.vendors.read', 'pos.costs.read', 'pos.purchasing.read'] },
+];
+
+const STOREPULSE_AGENTS: AppAgentBundle[] = STOREPULSE_AGENT_SKILLSETS.map((group) => ({
+  name: group.agent,
+  description: group.role,
+  skills: group.skills,
+  capabilities: [...new Set(STOREPULSE_SKILLS.filter((skill) => skill.agent === group.agent).flatMap((skill) => skill.capabilities))],
+}));
+
+const APP_CAPABILITY_BUNDLES: Record<string, AppCapabilityBundle> = {
   storepulse: {
     tools: ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_recent_items_added', 'mib_recent_items_edited', 'mib_recent_price_changes', 'mib_recent_cost_changes', 'mib_item_search', 'mib_low_inventory'],
-    skills: [
-      { name: 'Daily Sales Summary', capabilities: ['pos.sales.read'] },
-      { name: 'Inventory Health', capabilities: ['pos.inventory.read'] },
-      { name: 'Store Performance', capabilities: ['stores.read', 'pos.sales.read'] },
-    ],
-    // Agent names match the provisioning-manifest seeds so both systems
-    // converge on the same tenant_resources rows.
-    agents: [{ name: 'Retail Analyst Agent', capabilities: ['pos.sales.read', 'pos.inventory.read', 'analytics.insights'] }],
+    skills: STOREPULSE_SKILLS,
+    agentSkillsets: STOREPULSE_AGENT_SKILLSETS,
+    agents: STOREPULSE_AGENTS,
   },
   mib: { tools: ['mib_get_workspace', 'mib_list_agents', 'mib_list_tasks'], skills: [{ name: 'Workspace Operations', capabilities: ['workspace.admin'] }], agents: [] },
   centrix: { tools: ['centrix_search_contacts', 'centrix_list_contacts', 'centrix_list_tasks', 'centrix_list_deals'], skills: [{ name: 'Customer Operations', capabilities: ['crm.read', 'tasks.read'] }], agents: [{ name: 'Customer Operations Agent', capabilities: ['crm.read', 'tasks.read'] }] },
