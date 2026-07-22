@@ -38,6 +38,32 @@ Time-clock edits, additions, and voids are payroll-impacting staff/security writ
 5. Read back the changed time stamp.
 6. Audit without credentials or unnecessary employee PII.
 
+## BOS website fallback
+
+If a verified HTTP API route is unavailable, the RapidRMS BOS website can be
+evaluated as a read-only fallback source. The login page is
+`https://www.rapidrms.com/Account/Branchlogin` and posts to
+`/Account/CheckLogin` with the same `UserName` and `Password` values held by a
+connected `rapidrms-api` connector.
+
+Operator probe:
+
+```bash
+pnpm exec tsx scripts/rapidrms-bos-read-probe.ts
+```
+
+Optional environment:
+
+- `RAPIDRMS_BOS_PATH=/TimeStamp`
+- `RAPIDRMS_BOS_CONNECTOR_ID=<connector uuid>`
+- `RAPIDRMS_BOS_INCLUDE_TENANT=1`
+
+The probe keeps BOS cookies in memory, redacts credential material, and reports
+only page structure: login status, redirect location, form actions, input names,
+table headers, script URLs, and read-path hints. A BOS scraper must not become a
+production answer contract until selectors, date filters, pagination, empty
+states, tenant/store labels, and session expiry behavior are pinned by tests.
+
 ## Probe script
 
 Run from a deployed environment with normal AROS secrets loaded:
