@@ -37,6 +37,11 @@ describe('shell route core', () => {
     expect(routeState('/usage').section).toBe('usage');
   });
 
+  it('routes the developer portal (was a silent dead route)', () => {
+    expect(routeState('/developers')).toEqual({ mode: 'app', section: 'developers' });
+    expect(routeState('/submit-plugin').section).toBe('developers');
+  });
+
   it('falls back to home for unknown paths', () => {
     expect(routeState('/definitely-not-a-page')).toEqual({ mode: 'home', section: 'stores' });
   });
