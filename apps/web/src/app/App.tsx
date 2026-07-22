@@ -215,7 +215,10 @@ function AppContent() {
 
   // Connect store — the real "connect your store" step. Reachable both before
   // onboarding (from /start, full-screen) and after (from the sidebar/banner).
-  if (path.startsWith('/connect')) {
+  // Exact-or-subpath match ONLY: a bare startsWith('/connect') also swallowed
+  // /connection-health, so full page-loads of the health page rendered the
+  // connect wizard (validation-sweep flake, deterministic on hard loads).
+  if (path === '/connect' || path.startsWith('/connect/')) {
     return (
       <ProtectedRoute>
         <ConnectStorePage onboarded={onboarded} />
