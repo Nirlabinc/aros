@@ -227,7 +227,15 @@ for (let i = 0; i < 5; i++) {
     const day = bosDay();
     const from = process.env.RAPIDRMS_BOS_FROM || `${day} 12:00 AM`;
     const to = process.env.RAPIDRMS_BOS_TO || `${day} 11:59 PM`;
-    const local = new Date().toString();
+    const local = process.env.RAPIDRMS_BOS_LOCAL_DATETIME || new Intl.DateTimeFormat('en-US', {
+      month: 'numeric',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(new Date());
     smokeReads.push(await smokeReadEndpoint(jar, '/TimeStamp/GetEmployeeReportData', {
       TimeDuration: 'Custom',
       FromDate: from,
