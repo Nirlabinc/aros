@@ -113,26 +113,17 @@ jobs:
           pm2 save
           EOS
 
-      - name: Build and restart (staging)
+      - name: Restart legacy staging runtime
         if: steps.target.outputs.target_env == 'staging'
         run: |
           ssh -i ~/.ssh/deploy_key root@"${{ steps.hostnorm.outputs.host }}" 'bash -s' << 'EOS'
           set -euo pipefail
-          if [ ! -e /opt/shre-sdk ] && [ -d /opt/aros-platform/shre-sdk ]; then
-            ln -s /opt/aros-platform/shre-sdk /opt/shre-sdk
-          fi
           cd /opt/aros-platform
-          # Staging runtime currently serves from /opt/aros-platform/mib007-live
-          # and root workspace build depends on ../shre-sdk being present.
-          # Do not hard-fail staging deploys on root build until runtime source is unified.
-          if [ -d /opt/shre-sdk ]; then
-            pnpm install --frozen-lockfile
-            pnpm build
-          else
-            echo "Skipping root build on staging: /opt/shre-sdk not present"
-          fi
-
-          # Current staging runtime uses mib007-live under /opt/aros-platform.
+          # Current staging runtime uses the legacy mib007-live tree under
+          # /opt/aros-platform. That tree is intentionally excluded from this
+          # repo sync, so root pnpm install/build is not a valid deploy gate for
+          # staging until runtime source ownership is unified.
+          test -d /opt/aros-platform/mib007-live || { echo "Missing staging runtime: mib007-live"; exit 1; }
           pm2 describe aros-beta >/dev/null 2>&1 || { echo "Missing PM2 app: aros-beta"; exit 1; }
           pm2 describe aros-dev >/dev/null 2>&1 || { echo "Missing PM2 app: aros-dev"; exit 1; }
           pm2 restart aros-beta
