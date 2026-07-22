@@ -1,6 +1,6 @@
 # Claude Connector Submission Copy
 
-Status date: 2026-07-21
+Status date: 2026-07-22
 
 ## App Identity
 
@@ -75,7 +75,12 @@ through Regulars because the connector is read-only.
 ## Current External Blockers
 
 - Hosted Claude OAuth client is registered in shre-id.
-- Claude directory portal is blocked until the Claude account has Team/Enterprise organization settings access.
+- Claude Team access is active and the directory submission wizard opens.
+- Claude custom connector `AROS Retail Operations` is added with server URL
+  `https://mcp.shre.ai/aros/operator` and OAuth client ID
+  `382846025758408707`.
+- Claude connector authorization is blocked at the shre-id password screen for
+  `info@rapidinfosoft.com`; complete sign-in before final portal screenshots.
 - A real Claude marketplace access token must pass `pnpm --filter @aros/mcp-aros verify:oauth`.
 - Portal-required screenshots still need to be captured from the Claude submission UI.
 - Legal/counsel approval is required before public submission.

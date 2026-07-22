@@ -8,7 +8,7 @@ Status date: 2026-07-22
 | --- | --- | --- | --- |
 | Engineering | MCP deploy, live smoke, read-only Regulars enforcement | Legal, marketplace packet, demo data | Ready for portal token smoke |
 | Demo data | Reviewer tenant, Regulars profile, products, promotions, hours, links | Engineering, legal | Complete for reviewer demo |
-| OAuth | ChatGPT and Claude marketplace callback/client setup | Legal, screenshots after beta deploy | ChatGPT callback pending; Claude hosted client registered |
+| OAuth | ChatGPT and Claude marketplace callback/client setup | Legal, screenshots after beta deploy | ChatGPT identity/callback pending; Claude connector added, shre-id sign-in pending |
 | Legal/compliance | Privacy, terms, security, data access wording | Engineering, demo data | Pending counsel signoff |
 | Marketplace packet | Submission JSON, screenshots, prompts, reviewer instructions | Engineering after beta URL is stable | Packet complete; screenshots blocked by portals |
 | Review submission | Submit to OpenAI and Claude portals | None after all gates are green | Blocked until all gates pass |
@@ -47,7 +47,7 @@ Status date: 2026-07-22
 
 - [x] Confirm shre-id issuer metadata at `https://id.shre.ai`.
 - [x] Confirm MCP protected resource metadata at `https://mcp.shre.ai/.well-known/oauth-protected-resource`.
-- [ ] Register ChatGPT OAuth client after OpenAI provides the exact callback URI.
+- [ ] Complete OpenAI developer identity verification and register ChatGPT OAuth client after OpenAI provides the exact callback URI.
 - [x] Register Claude OAuth client with `https://claude.ai/api/mcp/auth_callback`.
 - [x] Store any client secrets only in shre-secrets vault.
 - [ ] Run production token verification with `AROS_MCP_VERIFY_TOKEN`.
@@ -171,12 +171,17 @@ Status date: 2026-07-22
   - Apex `https://aros.live/legal/...` still returns 404, but marketplace
     packet URLs intentionally use the verified `www.aros.live` legal URLs.
 - Reconfirmed current external gates:
-  - OpenAI Platform portal remains at login
-    `https://platform.openai.com/login?next=%2Fplugins`; ChatGPT OAuth callback
-    cannot be known until a signed-in org account with app/plugin management
-    access opens the app management page.
-  - Claude directory submission still requires a Claude Team/Enterprise org
-    settings account for `info@rapidinfosoft.com`.
+  - OpenAI Platform reaches plugin/app creation under org `SiyaInfo`, project
+    `Default project`, but creation is blocked by OpenAI's
+    `Complete identity verification` gate. ChatGPT OAuth callback discovery
+    remains pending until verification is completed.
+  - Claude Team access is active and the directory submission wizard opens at
+    `https://claude.ai/admin-settings/directory/submissions/new`.
+  - Claude custom connector `AROS Retail Operations` was added in Claude
+    settings with server URL `https://mcp.shre.ai/aros/operator`, OAuth client
+    ID `382846025758408707`, no client secret, and individual sign-in.
+  - Clicking Claude Connect starts the OAuth flow at `https://id.shre.ai`; it is
+    blocked at the password screen for `info@rapidinfosoft.com`.
   - Real marketplace-token verification remains pending until ChatGPT or Claude
     mints a token.
 

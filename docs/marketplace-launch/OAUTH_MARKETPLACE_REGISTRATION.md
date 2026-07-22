@@ -1,6 +1,6 @@
 # Marketplace OAuth Registration
 
-Status date: 2026-07-21
+Status date: 2026-07-22
 
 ## Fixed Values
 
@@ -18,7 +18,8 @@ Use these values for both ChatGPT and Claude marketplace registration unless a m
 
 ## ChatGPT
 
-Blocked until the ChatGPT app/plugin submission UI provides the exact OAuth callback URI.
+Blocked until OpenAI developer identity verification is completed and the
+ChatGPT app/plugin submission UI provides the exact OAuth callback URI.
 
 Expected callback pattern:
 
@@ -70,10 +71,18 @@ Created shre-id client:
 | Response type | `code` |
 | Access token type | `JWT` |
 
-Claude directory submission is blocked on account entitlement: the current
-`claude.ai` session for `info@rapidinfosoft.com` reports that organization
-settings are available only on Claude Team and Enterprise plans when opening
-`https://claude.ai/admin-settings/directory/submissions/new`.
+Claude directory submission entitlement is now available: the current
+`claude.ai` session has a Team plan and can open the directory submission flow.
+The custom connector `AROS Retail Operations` has been added in Claude settings
+with server URL `https://mcp.shre.ai/aros/operator` and OAuth client ID
+`382846025758408707`.
+
+Current Claude OAuth blocker: connecting the custom connector reaches
+`https://id.shre.ai` and prompts for `info@rapidinfosoft.com`'s password. Do
+not enter or automate that password outside an approved credential flow. After
+sign-in, resume the directory submission from
+`https://claude.ai/admin-settings/directory/submissions/new`, select the AROS
+connector, then verify a real Claude access token.
 
 ## Token Verification
 
