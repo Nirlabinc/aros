@@ -11,6 +11,8 @@ function boolEnv(name: string): boolean {
   return ['1', 'true', 'yes'].includes(String(process.env[name] || '').toLowerCase());
 }
 
+const SMOKE_READS = boolEnv('RAPIDRMS_BOS_SMOKE_READS');
+
 function updateCookies(jar: Map<string, string>, headers: Headers): void {
   const raw = typeof headers.getSetCookie === 'function' ? headers.getSetCookie() : [];
   const values = raw.length ? raw : headers.get('set-cookie') ? [String(headers.get('set-cookie'))] : [];
@@ -27,6 +29,11 @@ function cookieHeader(jar: Map<string, string>): string {
 
 function absolute(path: string): string {
   return new URL(path, `${BOS_BASE_URL}/`).toString();
+}
+
+function bosDay(): string {
+  const d = process.env.RAPIDRMS_BOS_DATE ? new Date(`${process.env.RAPIDRMS_BOS_DATE}T12:00:00`) : new Date(Date.now() - 86_400_000);
+  return new Intl.DateTimeFormat('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' }).format(d);
 }
 
 function hiddenInputs(html: string): Record<string, string> {
@@ -85,6 +92,49 @@ function endpointHints(text: string): string[] {
     .map((m) => m[1])
     .filter((value, idx, all) => value && all.indexOf(value) === idx)
     .slice(0, 120);
+}
+
+function parseRowsFromBosPayload(text: string): Array<Record<string, unknown>> {
+  let payload: unknown = text;
+  try { payload = JSON.parse(text); } catch {}
+  if (typeof payload === 'string') {
+    try { payload = JSON.parse(payload); } catch {}
+  }
+  if (Array.isArray(payload)) return payload as Array<Record<string, unknown>>;
+  if (payload && typeof payload === 'object') {
+    const obj = payload as Record<string, unknown>;
+    for (const key of ['data', 'Data', 'rows', 'Rows', 'result', 'Result']) {
+      const nested = obj[key];
+      if (Array.isArray(nested)) return nested as Array<Record<string, unknown>>;
+      if (typeof nested === 'string') {
+        try {
+          const parsed = JSON.parse(nested);
+          if (Array.isArray(parsed)) return parsed as Array<Record<string, unknown>>;
+        } catch {}
+      }
+    }
+  }
+  return [];
+}
+
+async function smokeReadEndpoint(
+  jar: Map<string, string>,
+  path: string,
+  params: Record<string, string>,
+): Promise<Record<string, unknown>> {
+  const url = new URL(path, `${BOS_BASE_URL}/`);
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  const res = await fetchWithCookies(jar, url.toString(), { headers: { Referer: absolute(TARGET_PATH) } });
+  const text = await res.text();
+  const rows = parseRowsFromBosPayload(text);
+  return {
+    path,
+    status: res.status,
+    bytes: text.length,
+    rowCount: rows.length,
+    keys: rows[0] ? Object.keys(rows[0]).slice(0, 40) : [],
+    preview: text.replace(/\s+/g, ' ').slice(0, 220),
+  };
 }
 
 async function fetchWithCookies(jar: Map<string, string>, url: string, init: RequestInit = {}) {
@@ -172,6 +222,27 @@ for (let i = 0; i < 5; i++) {
       preview: scriptText.replace(/\s+/g, ' ').slice(0, 260),
     });
   }
+  const smokeReads = [];
+  if (loggedIn && SMOKE_READS) {
+    const day = bosDay();
+    const from = process.env.RAPIDRMS_BOS_FROM || `${day} 12:00 AM`;
+    const to = process.env.RAPIDRMS_BOS_TO || `${day} 11:59 PM`;
+    const local = new Date().toString();
+    smokeReads.push(await smokeReadEndpoint(jar, '/TimeStamp/GetEmployeeReportData', {
+      TimeDuration: 'Custom',
+      FromDate: from,
+      ToDate: to,
+      LocalDateTime: local,
+      SelectedEmp: '',
+    }));
+    smokeReads.push(await smokeReadEndpoint(jar, '/ClockInOut/ClockInOutSummaryReportData', {
+      TimeDuration: 'Custom',
+      FromDate: from,
+      ToDate: to,
+      LocalDateTime: local,
+      SelectedEmp: '',
+    }));
+  }
   console.log(JSON.stringify({
     store: row.name,
     tenant: boolEnv('RAPIDRMS_BOS_INCLUDE_TENANT') ? row.tenant_id : 'redacted',
@@ -192,6 +263,7 @@ for (let i = 0; i < 5; i++) {
       location: targetRes.headers.get('location') || '',
       summary: targetSummary,
       scriptDetails,
+      smokeReads,
     } : null,
   }, null, 2));
   process.exit(0);
