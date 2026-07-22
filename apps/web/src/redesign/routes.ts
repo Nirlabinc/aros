@@ -11,6 +11,7 @@ export const PATH_TO_SECTION: Record<string, ShellSection> = {
   '/models': 'models', '/computers': 'devices', '/connection-health': 'health', '/settings': 'settings',
   '/permissions': 'permissions', '/documents': 'documents',
   '/edi-invoices': 'edi-invoices',
+  '/developers': 'developers', '/submit-plugin': 'developers',
   '/profile': 'profile', '/billing': 'billing', '/costs': 'usage', '/users': 'team',
   // Natural-name aliases — typing /team or /usage previously fell through to
   // Home, which read as "this feature is missing" (validation sweep finding).
@@ -22,7 +23,7 @@ export const PATH_TO_SECTION: Record<string, ShellSection> = {
 export const SECTION_TO_PATH: Partial<Record<SectionKey, string>> = {
   stores: '/stores', marketplace: '/marketplace', apps: '/apps', connectors: '/connectors', plugins: '/plugins',
   skills: '/skills', agents: '/agents',
-  models: '/models', devices: '/computers', health: '/connection-health', settings: '/settings', profile: '/profile',
+  models: '/models', devices: '/computers', health: '/connection-health', settings: '/settings', profile: '/profile', developers: '/developers',
   billing: '/billing', usage: '/costs', team: '/users', permissions: '/permissions', documents: '/documents',
   notifications: '/notifications',
   'edi-invoices': '/edi-invoices',

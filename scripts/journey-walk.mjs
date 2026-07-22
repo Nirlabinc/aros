@@ -188,6 +188,7 @@ const JOURNEYS = [
     title: 'J7 Install an app (Documents / EDI Invoices) from the Marketplace',
     steps: [
       ['/marketplace page', page('/marketplace')],
+      ['/developers page (dead-route regression guard)', page('/developers')],
       ['/connectors page', page('/connectors')],
       ['/plugins page', page('/plugins')],
       ['/documents page', page('/documents')],
