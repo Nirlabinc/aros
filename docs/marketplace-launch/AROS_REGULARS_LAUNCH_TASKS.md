@@ -47,8 +47,8 @@ Status date: 2026-07-21
 - [ ] Confirm shre-id issuer metadata at `https://id.shre.ai`.
 - [ ] Confirm MCP protected resource metadata at `https://mcp.shre.ai/.well-known/oauth-protected-resource`.
 - [ ] Register ChatGPT OAuth client after OpenAI provides the exact callback URI.
-- [ ] Register Claude OAuth client with `https://claude.ai/api/mcp/auth_callback`.
-- [ ] Store any client secrets only in shre-secrets vault.
+- [x] Register Claude OAuth client with `https://claude.ai/api/mcp/auth_callback`.
+- [x] Store any client secrets only in shre-secrets vault.
 - [ ] Run production token verification with `AROS_MCP_VERIFY_TOKEN`.
 - [x] Confirm production `AROS_MCP_DEMO_MODE=false`.
 
@@ -111,6 +111,10 @@ Status date: 2026-07-21
 - Merged final marketplace packet in PR `https://github.com/Nirlabinc/aros/pull/149`.
 - Production `https://mcp.shre.ai/health` reports `demoMode: false`; unauthenticated operator calls return 401 with `WWW-Authenticate`.
 - Claude hosted callback is known from Claude connector docs: `https://claude.ai/api/mcp/auth_callback`.
+- Merged and deployed PR `https://github.com/Nirlabinc/aros/pull/150`; live Regulars tools now advertise `securitySchemes: [{ type: "noauth" }]` and the running container contains operator OAuth `securitySchemes`.
+- Created hosted Claude shre-id client `382846025758408707` (`AROS Retail Operations - Claude Hosted`) with callback `https://claude.ai/api/mcp/auth_callback`, PKCE/no-secret, authorization-code + refresh-token grants, and JWT access tokens.
+- OpenAI plugin portal opened to `https://platform.openai.com/login?next=%2Fplugins`; ChatGPT callback remains blocked until a signed-in account with `api.apps.write` opens the app management page.
+- Claude directory submission portal opened to `https://claude.ai/admin-settings/directory/submissions/new`; current `info@rapidinfosoft.com` session is blocked because organization settings require a Claude Team/Enterprise plan.
 
 ## Gate 6 - Submit
 

@@ -48,13 +48,32 @@ client.
 
 Registration tasks:
 
-- [ ] Create a Claude marketplace OAuth client in shre-id.
-- [ ] Add `https://claude.ai/api/mcp/auth_callback`.
+- [x] Create a Claude marketplace OAuth client in shre-id.
+- [x] Add `https://claude.ai/api/mcp/auth_callback`.
 - [ ] Keep the existing Claude Code local callback separate if used for local testing.
-- [ ] Prefer Authorization Code + PKCE/public client if supported.
-- [ ] If a client secret is required, store it only in the shre-secrets vault.
+- [x] Prefer Authorization Code + PKCE/public client if supported.
+- [x] If a client secret is required, store it only in the shre-secrets vault.
 - [ ] Grant marketplace client audience `https://mcp.shre.ai/aros`.
 - [ ] Verify a real Claude token against `https://mcp.shre.ai/aros/operator`.
+
+Created shre-id client:
+
+| Field | Value |
+| --- | --- |
+| App name | `AROS Retail Operations - Claude Hosted` |
+| App ID | `382846025724854275` |
+| Client ID | `382846025758408707` |
+| App type | `OIDC_APP_TYPE_USER_AGENT` |
+| Auth method | `OIDC_AUTH_METHOD_TYPE_NONE` |
+| Redirect URI | `https://claude.ai/api/mcp/auth_callback` |
+| Grant types | `authorization_code`, `refresh_token` |
+| Response type | `code` |
+| Access token type | `JWT` |
+
+Claude directory submission is blocked on account entitlement: the current
+`claude.ai` session for `info@rapidinfosoft.com` reports that organization
+settings are available only on Claude Team and Enterprise plans when opening
+`https://claude.ai/admin-settings/directory/submissions/new`.
 
 ## Token Verification
 

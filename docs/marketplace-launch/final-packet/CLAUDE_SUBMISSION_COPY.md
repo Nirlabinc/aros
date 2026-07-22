@@ -36,6 +36,8 @@ OAuth resource/audience: https://mcp.shre.ai/aros
 
 Hosted Claude callback URI: https://claude.ai/api/mcp/auth_callback
 
+Hosted Claude OAuth client ID: 382846025758408707
+
 ## Short Description
 
 AROS lets retail business owners query connected operations data across stores,
@@ -72,7 +74,8 @@ through Regulars because the connector is read-only.
 
 ## Current External Blockers
 
-- Register `https://claude.ai/api/mcp/auth_callback` as the hosted Claude OAuth callback in shre-id.
+- Hosted Claude OAuth client is registered in shre-id.
+- Claude directory portal is blocked until the Claude account has Team/Enterprise organization settings access.
 - A real Claude marketplace access token must pass `pnpm --filter @aros/mcp-aros verify:oauth`.
 - Portal-required screenshots still need to be captured from the Claude submission UI.
 - Legal/counsel approval is required before public submission.
