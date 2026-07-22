@@ -32,6 +32,24 @@ describe('experience routing', () => {
     expect(decideExperienceRoute({ ...base, sourceIntent: 'developer-desktop' }, { experienceGrants: ['aros', 'mib'], mibEnabled: true }).experience).toBe('mib');
   });
 
+  it('keeps standard desktop on AROS even when MIB is available', () => {
+    const decision = decideExperienceRoute(
+      { ...base, sourceIntent: 'standard-desktop' },
+      { experienceGrants: ['aros', 'mib'], mibEnabled: true },
+    );
+    expect(decision.experience).toBe('aros');
+    expect(decision.reason).toBe('source-intent');
+  });
+
+  it('uses internal-builder intent as a developer-class MIB default when available', () => {
+    const decision = decideExperienceRoute(
+      { ...base, sourceIntent: 'internal-builder' },
+      { experienceGrants: ['aros', 'mib'], mibEnabled: true },
+    );
+    expect(decision.experience).toBe('mib');
+    expect(decision.reason).toBe('source-intent');
+  });
+
   it('rejects external return targets', () => {
     const decision = decideExperienceRoute({ ...base, returnTo: '//evil.example' }, { experienceGrants: ['aros'] });
     expect(decision.targetUrl).toBe('https://app.aros.live/dashboard');

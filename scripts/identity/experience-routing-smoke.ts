@@ -19,6 +19,10 @@ async function main() {
   const base = { userId: 'local-user', subject: 'shre-id-subject', email, workspaceId, role: 'owner' };
   const arosOnly = decideExperienceRoute(base, { experienceGrants: ['aros'], mibEnabled: false });
   const mibEnabled = decideExperienceRoute(base, { preferredExperience: 'mib', experienceGrants: ['aros', 'mib'], mibEnabled: true });
+  const standardDesktop = decideExperienceRoute({ ...base, sourceIntent: 'standard-desktop' }, { experienceGrants: ['aros', 'mib'], mibEnabled: true });
+  const developerDesktopWithGrant = decideExperienceRoute({ ...base, sourceIntent: 'developer-desktop' }, { experienceGrants: ['aros', 'mib'], mibEnabled: true });
+  const developerDesktopWithoutGrant = decideExperienceRoute({ ...base, sourceIntent: 'developer-desktop' }, { experienceGrants: ['aros'], mibEnabled: true });
+  const internalBuilderWithGrant = decideExperienceRoute({ ...base, sourceIntent: 'internal-builder' }, { experienceGrants: ['aros', 'mib'], mibEnabled: true });
   const handoff = new URL(mibEnabled.targetUrl).searchParams.get('handoff');
   const decoded = handoff ? verifyHandoff(secret, handoff) : null;
   const report = {
@@ -31,8 +35,12 @@ async function main() {
       handoffPresent: Boolean(handoff),
       handoffWorkspaceMatches: decoded?.workspaceId === workspaceId,
       handoffEmailMatches: decoded?.email === email,
+      standardDesktopDefaultsToAros: standardDesktop.experience === 'aros',
+      developerDesktopWithMibGrantDefaultsToMib: developerDesktopWithGrant.experience === 'mib',
+      developerDesktopWithoutMibGrantFallsBackToAros: developerDesktopWithoutGrant.experience === 'aros',
+      internalBuilderWithMibGrantDefaultsToMib: internalBuilderWithGrant.experience === 'mib',
     },
-    decisions: { arosOnly, mibEnabled },
+    decisions: { arosOnly, mibEnabled, standardDesktop, developerDesktopWithGrant, developerDesktopWithoutGrant, internalBuilderWithGrant },
   };
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, `${JSON.stringify(report, null, 2)}\n`);
