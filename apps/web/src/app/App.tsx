@@ -2,34 +2,21 @@ import { useEffect } from 'react';
 import { WhitelabelProvider } from '../whitelabel/WhitelabelProvider';
 import { AuthProvider, useAuth as useSupabaseAuth, type Tenant } from '../contexts/AuthContext';
 import { CanvasProvider } from '../aros-ai/CanvasContext';
-import { Shell } from '../components/Shell';
-import { Dashboard } from '../components/Dashboard';
 import { ProtectedRoute } from '../components/ProtectedRoute';
 import { OnboardingPage } from '../pages/onboarding/OnboardingPage';
 import { JourneyPage } from '../pages/onboarding/JourneyPage';
-import { MarketplacePage } from '../pages/marketplace/MarketplacePage';
-import { DeveloperPortal } from '../pages/developers/DeveloperPortal';
 import { LandingPage } from '../pages/landing/LandingPage';
 import { SocialTemplates } from '../pages/social/SocialTemplates';
 import { ContactPage } from '../pages/contact/ContactPage';
-import { CostsPage } from '../pages/costs/CostsPage';
-import { BillingPage } from '../pages/billing/BillingPage';
 import { ChatWidget } from '../components/ChatWidget';
 import { Login } from '../pages/Login';
 import { Signup } from '../pages/Signup';
 import { StartChat } from '../pages/start/StartChat';
 import { ConnectStorePage } from '../pages/connect/ConnectStorePage';
-import { ConnectStoreBanner } from '../components/ConnectStoreBanner';
 import { ResetPassword } from '../pages/ResetPassword';
 import { AcceptInvite } from '../pages/AcceptInvite';
 import { PlatformConsole } from '../pages/PlatformConsole';
 import { VerifyEmail } from '../pages/VerifyEmail';
-import { ConnectionsHub } from '../pages/settings/ConnectionsHub';
-import { AdministrationPage } from '../pages/settings/AdministrationPage';
-import AIModelsSettings from '../pages/settings/AIModels';
-import { CapabilityCatalog } from '../pages/settings/CapabilityCatalog';
-import { ConnectionHealth } from '../pages/settings/ConnectionHealth';
-import { DevicesPage } from '../redesign/pages/admin';
 import { centralIdentityOnly } from '../lib/supabase';
 import { AppShell } from '../redesign/AppShell';
 import { LegalPage } from '../pages/legal/LegalPage';
@@ -105,12 +92,6 @@ function AppContent() {
   if (path.startsWith('/preview/app')) {
     return <AppShell />;
   }
-
-  // The chat-first shell is now the authenticated default. Keep a reversible
-  // per-browser escape hatch while the legacy shell is still in the bundle.
-  const redesignParam = new URLSearchParams(window.location.search).get('redesign');
-  if (redesignParam === '1') { try { localStorage.removeItem('aros-shell-legacy'); } catch { /* ignore */ } }
-  else if (redesignParam === '0') { try { localStorage.setItem('aros-shell-legacy', '1'); } catch { /* ignore */ } }
 
   if (centralIdentityOnly && !loading && !session && path !== '/login' && path !== '/signup') {
     const authorize = path === '/oauth/authorize' ? `${path}${window.location.search}` : null;
@@ -260,70 +241,17 @@ function AuthenticatedRoutes({ path, isAdmin, onboarded, landing }: { path: stri
     return null;
   }
 
-  // New themed shell is the default for every onboarded authenticated route.
-  // `?redesign=0` temporarily restores the legacy UI on this browser.
-  let legacyShell = false;
-  try { legacyShell = localStorage.getItem('aros-shell-legacy') === '1'; } catch { /* ignore */ }
-  // Routes the new shell has no pane for must be matched BEFORE the shell
-  // catch-all — /developers previously fell through and silently rendered
-  // Home (validation sweep finding).
-  if (!legacyShell && (path.startsWith('/developers') || path.startsWith('/submit-plugin'))) {
-    return <Shell><DeveloperPortal /></Shell>;
-  }
-  if (!legacyShell) return <AppShell />;
-
-  // Admin panel -> marketplace admin
+  // Admin panel -> marketplace admin (independent of the shell)
   if (path.startsWith('/admin') && isAdmin) {
     window.location.href = MARKETPLACE_ADMIN_URL;
     return null;
   }
 
-  // Developers portal
-  if (path.startsWith('/developers') || path.startsWith('/submit-plugin')) {
-    return <Shell><DeveloperPortal /></Shell>;
-  }
-
-  // Billing
-  if (path.startsWith('/billing')) {
-    return <Shell><BillingPage /></Shell>;
-  }
-
-  // Costs
-  if (path.startsWith('/costs')) {
-    return <Shell><CostsPage /></Shell>;
-  }
-
-  const setupRoute = path.startsWith('/stores') ? <ConnectionsHub kind="pos" />
-    : path.startsWith('/apps') ? <ConnectionsHub kind="app" />
-    : path.startsWith('/channels') ? <CapabilityCatalog kind="channels" />
-    : path.startsWith('/agents') ? <CapabilityCatalog kind="agents" />
-    : path.startsWith('/skills') ? <CapabilityCatalog kind="skills" />
-    : path.startsWith('/models') ? <AIModelsSettings />
-    : path.startsWith('/computers') ? <DevicesPage />
-    : path.startsWith('/connection-health') ? <ConnectionHealth />
-    : path.startsWith('/settings') ? <AdministrationPage section="settings" />
-    : path.startsWith('/profile') ? <AdministrationPage section="profile" />
-    : path.startsWith('/users') ? <AdministrationPage section="users" />
-    : path.startsWith('/workspace') ? <AdministrationPage section="workspace" />
-    : null;
-  if (setupRoute) return <Shell>{setupRoute}</Shell>;
-
-  // Marketplace
-  if (path.startsWith('/marketplace')) {
-    return <Shell><MarketplacePage /></Shell>;
-  }
-
-  // Dashboard (default for logged-in users)
-  if (path.startsWith('/human')) {
-    return <Shell><Dashboard /></Shell>;
-  }
-
-  return (
-    <Shell>
-      <ConnectStoreBanner />
-      <Dashboard />
-    </Shell>
-  );
+  // The chat-first shell owns every onboarded authenticated route — including
+  // /developers and /submit-plugin (its 'developers' section). The legacy
+  // Shell and its `?redesign=0` escape hatch were removed 2026-07-22 once the
+  // legacy shell had no unique routes left.
+  return <AppShell />;
 }
 
 export function App() {
