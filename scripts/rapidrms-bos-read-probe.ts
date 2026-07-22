@@ -80,6 +80,13 @@ function pageSummary(html: string): Record<string, unknown> {
   };
 }
 
+function endpointHints(text: string): string[] {
+  return [...text.matchAll(/(?:(?:url|href|action)\s*:\s*)?["']([^"']*(?:TimeStamp|Timestamp|TimeClock|ClockIn|ClockOut|Shift|Hourly|Tender|Report|DropAmount|GiftCard)[^"']*)["']/gi)]
+    .map((m) => m[1])
+    .filter((value, idx, all) => value && all.indexOf(value) === idx)
+    .slice(0, 120);
+}
+
 async function fetchWithCookies(jar: Map<string, string>, url: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   if (jar.size) headers.set('Cookie', cookieHeader(jar));
@@ -152,6 +159,19 @@ for (let i = 0; i < 5; i++) {
     ? await fetchWithCookies(jar, absolute(TARGET_PATH), { headers: { Referer: landingUrl } })
     : null;
   const targetHtml = targetRes ? await targetRes.text() : '';
+  const targetSummary = pageSummary(targetHtml);
+  const scriptDetails = [];
+  for (const src of ((targetSummary.scripts as string[]) || []).filter((script) => /TimeStamp|ClockInOut/i.test(script)).slice(0, 8)) {
+    const scriptRes = await fetchWithCookies(jar, absolute(src), { headers: { Referer: absolute(TARGET_PATH) } });
+    const scriptText = await scriptRes.text();
+    scriptDetails.push({
+      src,
+      status: scriptRes.status,
+      bytes: scriptText.length,
+      endpointHints: endpointHints(scriptText),
+      preview: scriptText.replace(/\s+/g, ' ').slice(0, 260),
+    });
+  }
   console.log(JSON.stringify({
     store: row.name,
     tenant: boolEnv('RAPIDRMS_BOS_INCLUDE_TENANT') ? row.tenant_id : 'redacted',
@@ -170,7 +190,8 @@ for (let i = 0; i < 5; i++) {
       path: TARGET_PATH,
       status: targetRes.status,
       location: targetRes.headers.get('location') || '',
-      summary: pageSummary(targetHtml),
+      summary: targetSummary,
+      scriptDetails,
     } : null,
   }, null, 2));
   process.exit(0);
