@@ -3454,6 +3454,7 @@ function isArosHealthPing(req: IncomingMessage, body: Record<string, unknown> | 
   return (
     /^say online\b/.test(text) ||
     /\bonline\b.*\bone word\b/.test(text) ||
+    (/\bconnected\b/.test(text) && /\bmodel\b/.test(text)) ||
     (/\b(connection|connected|health|model)\b/.test(text) && /\b(status|check|working|available|online|up)\b/.test(text))
   );
 }
