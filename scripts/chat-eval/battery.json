@@ -60,6 +60,18 @@
       "domain": "off-scope",
       "question": "What's the weather in Miami right now?",
       "checks": { "expectSubstance": true, "allowSalesTemplate": true }
+    },
+    {
+      "id": "llm-canary",
+      "domain": "meta",
+      "question": "Reply with exactly one word: pong",
+      "checks": { "expectSubstance": true, "allowSalesTemplate": true }
+    },
+    {
+      "id": "heartbeat",
+      "domain": "meta",
+      "question": "connection status check please",
+      "checks": { "expectSubstance": true, "allowSalesTemplate": true, "mustNotContain": ["degraded"] }
     }
   ]
 }

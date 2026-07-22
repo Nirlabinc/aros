@@ -85,12 +85,20 @@ export function scoreReply(question, reply, groundTruth, opts = {}) {
     }
   }
 
+  if (Array.isArray(checks.mustNotContain)) {
+    for (const s of checks.mustNotContain) {
+      if (text.toLowerCase().includes(String(s).toLowerCase())) {
+        reasons.push(`must-not-contain: reply contains "${s}"`);
+      }
+    }
+  }
+
   if (checks.expectComparison) {
     const comparative = /\b(last week|previous|vs\.?|compared|up|down|higher|lower|increase|decrease|change)\b/i;
     if (!comparative.test(text)) reasons.push('no-comparison: reply contains no week-over-week comparison');
   }
 
-  const hardFail = reasons.some((r) => r.startsWith('misroute') || r.startsWith('ground-truth-mismatch') || r.startsWith('no-comparison'));
+  const hardFail = reasons.some((r) => r.startsWith('misroute') || r.startsWith('ground-truth-mismatch') || r.startsWith('no-comparison') || r.startsWith('must-not-contain'));
   let verdict = hardFail ? 'fail' : reasons.length > 0 ? 'warn' : 'pass';
 
   if (verdict === 'pass' && opts.latencyMs != null && opts.latencyMs > latencyBudgetMs) {

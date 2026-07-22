@@ -74,3 +74,9 @@ test('aggregate counts by reason family', () => {
   assert.equal(agg.fail, 2);
   assert.equal(agg.byReason['misroute-sales-template'], 1);
 });
+
+test('mustNotContain fails on forbidden phrase', () => {
+  const q = { id: 'heartbeat', domain: 'meta', checks: { mustNotContain: ['degraded'] } };
+  assert.equal(scoreReply(q, 'degraded — model lane timed out', GT).verdict, 'fail');
+  assert.equal(scoreReply(q, 'online (model lane verified, 900ms)', GT).verdict, 'pass');
+});
