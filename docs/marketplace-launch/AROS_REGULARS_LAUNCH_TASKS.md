@@ -1,16 +1,16 @@
 # AROS + Regulars Marketplace Launch Tasks
 
-Status date: 2026-07-21
+Status date: 2026-07-22
 
 ## Parallel Lanes
 
 | Lane | Scope | Can run in parallel with | Status |
 | --- | --- | --- | --- |
-| Engineering | MCP deploy, live smoke, read-only Regulars enforcement | Legal, marketplace packet, demo data | In progress |
-| Demo data | Reviewer tenant, Regulars profile, products, promotions, hours, links | Engineering, legal | Pending |
-| OAuth | ChatGPT and Claude marketplace callback/client setup | Legal, screenshots after beta deploy | ChatGPT callback pending; Claude hosted callback known |
+| Engineering | MCP deploy, live smoke, read-only Regulars enforcement | Legal, marketplace packet, demo data | Ready for portal token smoke |
+| Demo data | Reviewer tenant, Regulars profile, products, promotions, hours, links | Engineering, legal | Complete for reviewer demo |
+| OAuth | ChatGPT and Claude marketplace callback/client setup | Legal, screenshots after beta deploy | ChatGPT callback pending; Claude hosted client registered |
 | Legal/compliance | Privacy, terms, security, data access wording | Engineering, demo data | Pending counsel signoff |
-| Marketplace packet | Submission JSON, screenshots, prompts, reviewer instructions | Engineering after beta URL is stable | In progress |
+| Marketplace packet | Submission JSON, screenshots, prompts, reviewer instructions | Engineering after beta URL is stable | Packet complete; screenshots blocked by portals |
 | Review submission | Submit to OpenAI and Claude portals | None after all gates are green | Blocked until all gates pass |
 | Phase 2 white-label | RapidRMS/private-label listings and tenant branding | Starts after Phase 1 submission | Deferred |
 
@@ -44,8 +44,8 @@ Status date: 2026-07-21
 
 ## Gate 3 - OAuth
 
-- [ ] Confirm shre-id issuer metadata at `https://id.shre.ai`.
-- [ ] Confirm MCP protected resource metadata at `https://mcp.shre.ai/.well-known/oauth-protected-resource`.
+- [x] Confirm shre-id issuer metadata at `https://id.shre.ai`.
+- [x] Confirm MCP protected resource metadata at `https://mcp.shre.ai/.well-known/oauth-protected-resource`.
 - [ ] Register ChatGPT OAuth client after OpenAI provides the exact callback URI.
 - [x] Register Claude OAuth client with `https://claude.ai/api/mcp/auth_callback`.
 - [x] Store any client secrets only in shre-secrets vault.
@@ -58,8 +58,8 @@ Status date: 2026-07-21
 - [x] Verify public terms URL returns 200: `https://www.aros.live/legal/terms/`.
 - [x] Verify security/support contact is `info@rapidinfosoft.com` for review.
 - [ ] Counsel signoff for AROS and Regulars public marketplace wording.
-- [ ] Confirm Regulars read-only claim is present in reviewer notes.
-- [ ] Confirm no restricted financial transaction flow is submitted for Regulars.
+- [x] Confirm Regulars read-only claim is present in reviewer notes.
+- [x] Confirm no restricted financial transaction flow is submitted for Regulars.
 
 ## Gate 5 - Marketplace Packet
 
@@ -115,6 +115,34 @@ Status date: 2026-07-21
 - Created hosted Claude shre-id client `382846025758408707` (`AROS Retail Operations - Claude Hosted`) with callback `https://claude.ai/api/mcp/auth_callback`, PKCE/no-secret, authorization-code + refresh-token grants, and JWT access tokens.
 - OpenAI plugin portal opened to `https://platform.openai.com/login?next=%2Fplugins`; ChatGPT callback remains blocked until a signed-in account with `api.apps.write` opens the app management page.
 - Claude directory submission portal opened to `https://claude.ai/admin-settings/directory/submissions/new`; current `info@rapidinfosoft.com` session is blocked because organization settings require a Claude Team/Enterprise plan.
+
+2026-07-22:
+
+- Passed focused marketplace regression suite:
+  `pnpm exec vitest run src/__tests__/mcp-aros-tools.test.ts src/__tests__/public-customer-api.test.ts src/__tests__/store-risk-exception-data.test.ts`
+  (47 tests).
+- Passed `pnpm --filter @aros/mcp-aros typecheck`.
+- Live production smoke:
+  - `https://mcp.shre.ai/health` returned OK with `demoMode: false` and
+    resource `https://mcp.shre.ai/aros`.
+  - `https://mcp.shre.ai/.well-known/mcp/operator` reports endpoint
+    `https://mcp.shre.ai/aros/operator`.
+  - `https://mcp.shre.ai/.well-known/mcp/customer` reports endpoint
+    `https://mcp.shre.ai/regulars`.
+  - `POST https://mcp.shre.ai/regulars` lists 5 Regulars read-only tools.
+  - Unauthenticated `POST https://mcp.shre.ai/aros/operator` returns 401,
+    which is expected until a marketplace OAuth token is minted.
+- Reconfirmed OpenAI portal blocker in Chrome:
+  `https://platform.openai.com/login?next=%2Fplugins` is still at Platform
+  login. Need a signed-in OpenAI org account with app/plugin management access
+  to reveal the exact ChatGPT callback URI.
+- Reconfirmed Claude portal blocker in Chrome:
+  `https://claude.ai/admin-settings/directory/submissions/new` says
+  organization settings require a Claude Team/Enterprise plan for
+  `info@rapidinfosoft.com`'s organization.
+- GitHub deploy workflow runs `29859156916` and `29860502448` remain queued.
+  Production is already manually deployed and healthy; this remains a CI/org
+  scheduling gate, not a current MCP readiness blocker.
 
 ## Gate 6 - Submit
 

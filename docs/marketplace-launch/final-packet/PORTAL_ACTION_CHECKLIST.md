@@ -1,6 +1,6 @@
 # Portal Action Checklist
 
-Status date: 2026-07-21
+Status date: 2026-07-22
 
 ## Already Ready
 
@@ -12,6 +12,11 @@ Status date: 2026-07-21
 - Regulars live smoke for `demo-market` returns HTTP 200 for profile, links,
   product search, promotions, and hours.
 - Regulars advertises only read-only tools.
+- Focused marketplace regression suite passes: MCP tool contract, public
+  Regulars API, and store risk/exception data.
+- Production health reports `demoMode: false`.
+- Unauthenticated operator calls return HTTP 401 with a bearer challenge, as
+  expected for the protected AROS operator surface.
 
 ## ChatGPT Portal
 
@@ -26,6 +31,11 @@ Status date: 2026-07-21
 - [ ] Capture portal-required screenshots.
 - [ ] Submit after legal approval.
 
+Current blocker: Chrome is open at
+`https://platform.openai.com/login?next=%2Fplugins`. Sign in with an OpenAI
+Platform organization account that can manage apps/plugins, then copy the exact
+ChatGPT callback URI from the app management page.
+
 ## Claude Portal
 
 - [ ] Create the AROS Retail Operations connector entry.
@@ -38,6 +48,12 @@ Status date: 2026-07-21
 - [ ] Verify a real Claude marketplace token with `verify:oauth`.
 - [ ] Capture portal-required screenshots.
 - [ ] Submit after legal approval.
+
+Current blocker: Chrome is open at
+`https://claude.ai/admin-settings/directory/submissions/new`. The current
+`info@rapidinfosoft.com` session shows that organization settings require a
+Claude Team/Enterprise plan, so directory submission and screenshots cannot
+continue until that org access exists.
 
 ## Token Verification Command
 
