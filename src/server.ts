@@ -322,6 +322,7 @@ import {
   type VoidExceptionBucket,
 } from '../connectors/data-service.js';
 import type { BosEmployeeHours, BosTimecardCorrectionDraft } from '../connectors/rapidrms-bos.js';
+import { normalizeBosTimecardCorrectionRequest } from '../connectors/rapidrms-bos.js';
 import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
 import { proxyToMib } from '../connectors/mib-documents.js';
 import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
@@ -4180,6 +4181,97 @@ async function handleStoreTimecardCorrections(req: IncomingMessage, res: ServerR
   }
 }
 
+async function handleStoreTimecardCorrectionRequests(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const supabase = createSupabaseAdmin();
+
+  if (req.method === 'GET') {
+    const request = getRequestUrl(req);
+    const limit = boundedLimit(request.searchParams.get('limit'), 25);
+    const status = request.searchParams.get('status') || 'pending';
+    if (!['pending', 'approved', 'rejected', 'cancelled', 'expired'].includes(status)) {
+      return json(res, 400, { error: 'Invalid correction request status' });
+    }
+    const { data, error } = await supabase
+      .from('store_timecard_correction_requests')
+      .select('id,status,source,draft_id,correction_type,severity,proposed_action,employee_id,employee_name,clock_id,clock_date,clock_in,clock_out,current_hours,proposed_change,reason,write_enabled,created_at,updated_at')
+      .eq('tenant_id', auth.tenantId)
+      .eq('status', status)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) return json(res, 500, { error: 'Time stamp correction requests could not be listed' });
+    return json(res, 200, {
+      requests: data || [],
+      status,
+      writeEnabled: false,
+      source: 'RapidRMS BOS',
+      fetchedAt: new Date().toISOString(),
+    });
+  }
+
+  if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
+  if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin approval is required to request time stamp corrections' });
+  const body = await parseJsonBody(req);
+  if (!body) return json(res, 400, { error: 'Invalid JSON' });
+  const normalized = normalizeBosTimecardCorrectionRequest(body);
+  if (!normalized.ok) return json(res, 400, { error: normalized.error });
+  const request = normalized.value;
+
+  const { data, error } = await supabase
+    .from('store_timecard_correction_requests')
+    .insert({
+      tenant_id: auth.tenantId,
+      created_by: auth.userId,
+      status: 'pending',
+      source: 'RapidRMS BOS',
+      draft_id: request.draftId,
+      correction_type: request.type,
+      severity: request.severity,
+      proposed_action: request.proposedAction,
+      employee_id: request.employeeId,
+      employee_name: request.employeeName,
+      clock_id: request.clockId,
+      clock_date: request.clockDate,
+      clock_in: request.clockIn,
+      clock_out: request.clockOut,
+      current_hours: request.currentHours,
+      proposed_change: request.proposedChange,
+      reason: request.proposedChange.reason,
+      write_enabled: false,
+    })
+    .select('id,status,source,draft_id,correction_type,severity,proposed_action,employee_id,employee_name,clock_id,clock_date,clock_in,clock_out,current_hours,proposed_change,reason,write_enabled,created_at')
+    .single();
+  if (error) {
+    console.error('[store-timecard-correction-requests]', error.message);
+    return json(res, 500, { error: 'Time stamp correction request could not be created' });
+  }
+
+  await auditLog({
+    tenantId: auth.tenantId,
+    userId: auth.userId,
+    action: 'store.timecard_corrections.requested',
+    resource: `timecard_correction_request:${data.id}`,
+    detail: {
+      type: request.type,
+      proposedAction: request.proposedAction,
+      severity: request.severity,
+      hasClockId: Boolean(request.clockId),
+      writeEnabled: false,
+    },
+    ip: getClientIp(req),
+  });
+
+  json(res, 201, {
+    request: data,
+    status: 'pending',
+    requiresApproval: true,
+    writeEnabled: false,
+    executable: false,
+    nextStep: 'Review and approve the request before any separate payroll write gate is allowed.',
+  });
+}
+
 type AppSkillBundle = { name: string; capabilities: string[]; agent?: string };
 type AppAgentBundle = { name: string; capabilities: string[]; description?: string; skills?: string[] };
 type AppCapabilityBundle = {
@@ -5707,6 +5799,10 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (pathname === '/api/store/timecard-corrections' && method === 'GET') {
     return handleStoreTimecardCorrections(req, res);
+  }
+
+  if (pathname === '/api/store/timecard-correction-requests' && (method === 'GET' || method === 'POST')) {
+    return handleStoreTimecardCorrectionRequests(req, res);
   }
 
   if (pathname === '/api/store/inventory-risks' && method === 'GET') {
