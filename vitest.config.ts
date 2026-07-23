@@ -10,6 +10,9 @@ export default defineConfig({
       // Pure shell logic (framework-free, no DOM/JSX imports). Add ONLY
       // framework-free *.test.ts here — DOM/JSX tests belong to Playwright.
       'apps/web/src/redesign/routes.test.ts',
+      // Pure rich-attachment logic (caps, downscale math, UPC validation,
+      // catalog-state resolution) — framework-free, no DOM/JSX imports.
+      'apps/web/src/redesign/attach/attachments.test.ts',
       'apps/web/src/redesign/pages/connections/appsLogic.test.ts',
       'apps/web/src/redesign/pages/admin/profileLogic.test.ts',
     ],
