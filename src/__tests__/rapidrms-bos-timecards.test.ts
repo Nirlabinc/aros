@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   bosDateTime,
   buildBosTimecardReport,
+  draftBosTimecardCorrections,
   normalizeBosTimecardRow,
   parseRowsFromBosPayload,
   summarizeBosTimecards,
@@ -81,5 +82,31 @@ describe('RapidRMS BOS timecard adapter', () => {
     expect(report.employeeFilter).toBe('larry');
     expect(report.totals).toMatchObject({ hours: 8, punches: 1 });
     expect(report.employees.map((employee) => employee.employeeName)).toEqual(['Larry Patel']);
+  });
+
+  it('drafts read-only correction candidates without enabling payroll writes', () => {
+    const rows = [
+      normalizeBosTimecardRow({ EmployeeId: 'e1', EmployeeName: 'Open', ClockIn: '2026-07-21T08:00:00', ClockOut: '', WorkingHours: 4 }),
+      normalizeBosTimecardRow({ EmployeeId: 'e2', EmployeeName: 'Voided', ClockIn: '2026-07-21T08:00:00', ClockOut: '2026-07-21T09:00:00', WorkingHours: 1, Status: 'Void' }),
+      normalizeBosTimecardRow({ EmployeeId: 'e3', EmployeeName: 'Zero', ClockIn: '2026-07-21T08:00:00', ClockOut: '2026-07-21T09:00:00', WorkingHours: 0 }),
+      normalizeBosTimecardRow({ EmployeeId: 'e4', EmployeeName: 'Long', ClockIn: '2026-07-21T06:00:00', ClockOut: '2026-07-21T20:30:00', WorkingHours: 14.5 }),
+      normalizeBosTimecardRow({ EmployeeId: 'e5', EmployeeName: 'Clean', ClockIn: '2026-07-21T08:00:00', ClockOut: '2026-07-21T16:00:00', WorkingHours: 8 }),
+    ];
+
+    const drafts = draftBosTimecardCorrections(rows);
+    expect(drafts.map((draft) => draft.type)).toEqual(['missing_clock_out', 'voided_punch_review', 'zero_hour_punch', 'long_shift_review']);
+    expect(drafts.map((draft) => draft.writeEnabled)).toEqual([false, false, false, false]);
+    expect(drafts.every((draft) => draft.requiresApproval)).toBe(true);
+    expect(drafts[0]).toMatchObject({ severity: 'critical', proposedAction: 'edit' });
+  });
+
+  it('includes correction drafts in built reports after employee filtering', () => {
+    const report = buildBosTimecardReport([
+      { EmployeeId: 'e1', EmployeeName: 'Larry Patel', ClockIn: '2026-07-21T08:00:00', ClockOut: '', WorkingHours: 4 },
+      { EmployeeId: 'e2', EmployeeName: 'Ana Shah', ClockIn: '2026-07-21T08:00:00', ClockOut: '', WorkingHours: 4 },
+    ], '2026-07-21', '2026-07-21', 'larry');
+
+    expect(report.correctionDrafts).toHaveLength(1);
+    expect(report.correctionDrafts[0]).toMatchObject({ employeeName: 'Larry Patel', writeEnabled: false });
   });
 });

@@ -68,9 +68,12 @@ Promoted read adapter:
 
 - Connector: `connectors/rapidrms-bos.ts`
 - Authenticated API: `GET /api/store/timecards?from=YYYY-MM-DD&to=YYYY-MM-DD&employee=<optional>&limit=25`
+- Authenticated correction drafts: `GET /api/store/timecard-corrections?from=YYYY-MM-DD&to=YYYY-MM-DD&employee=<optional>&limit=25`
 - Chat intent: Larry answers time stamp, timecard, clock in/out, employee hours, and payroll-period summary reads.
+- Correction chat intent: Larry answers fix/correct/edit/add/void time stamp requests with non-executable correction drafts only.
 - Source: RapidRMS BOS read endpoints, not the public RapidRMS API.
 - Audit action: `store.timecards.read`; detail records the date range, row counts, and whether an employee filter was used, not employee names or raw punch data.
+- Correction audit action: `store.timecard_corrections.draft`; detail records date range, draft count, employee-filter flag, and `writeEnabled: false`.
 - Writes remain disabled: edit/add/void routes are known to exist but are not implemented as executable tools without the payroll write gate.
 
 ## Probe script
