@@ -35,6 +35,12 @@ describe('composeFromResults', () => {
     expect(out.send).toBe('please check inventory');
   });
 
+  it('joins multiple final segments in one event into a single send (no drops)', () => {
+    const out = composeFromResults('', [r('reorder', true), r('milk today', true)], true);
+    expect(out.send).toBe('reorder milk today');
+    expect(out.nextBase).toBe('');
+  });
+
   it('ignores empty transcripts', () => {
     const out = composeFromResults('', [r('   ', false), r('', true)], false);
     expect(out.value).toBe('');

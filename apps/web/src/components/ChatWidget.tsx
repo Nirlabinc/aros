@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, FormEvent } from 'react';
+import { useVoice, cancelSpeech, type VoiceApi } from '../aros-ai/voice';
 
 // Chat API — local dev only; production uses offline knowledge base
 const CHAT_API = (window as any).__CHAT_API_URL__
@@ -22,8 +23,15 @@ export function ChatWidget() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [voiceConvo, setVoiceConvo] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const loadingRef = useRef(false);
+  const voiceConvoRef = useRef(voiceConvo);
+  const openRef = useRef(open);
+  const voiceRef = useRef<VoiceApi | null>(null);
+  useEffect(() => { voiceConvoRef.current = voiceConvo; }, [voiceConvo]);
+  useEffect(() => { openRef.current = open; }, [open]);
 
   useEffect(() => {
     if (open && scrollRef.current) {
@@ -37,12 +45,15 @@ export function ChatWidget() {
     }
   }, [open]);
 
-  async function sendMessage(text: string) {
+  async function sendMessage(text: string): Promise<boolean> {
+    if (!text.trim() || loadingRef.current) return false;
+    loadingRef.current = true;
     const userMsg: Message = { role: 'user', content: text, ts: Date.now() };
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setLoading(true);
 
+    let reply: string;
     try {
       if (!CHAT_API) throw new Error('offline');
 
@@ -58,31 +69,44 @@ export function ChatWidget() {
 
       if (res.ok) {
         const data = await res.json();
-        const reply = data.reply || data.message || data.content || 'I can help with that! Please visit our contact page for detailed assistance.';
-        setMessages(prev => [...prev, { role: 'assistant', content: reply, ts: Date.now() }]);
+        reply = data.reply || data.message || data.content || 'I can help with that! Please visit our contact page for detailed assistance.';
       } else {
-        setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: getOfflineResponse(text),
-          ts: Date.now(),
-        }]);
+        reply = getOfflineResponse(text);
       }
     } catch {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: getOfflineResponse(text),
-        ts: Date.now(),
-      }]);
+      reply = getOfflineResponse(text);
     } finally {
+      loadingRef.current = false;
       setLoading(false);
     }
+    setMessages(prev => [...prev, { role: 'assistant', content: reply, ts: Date.now() }]);
+    if (voiceConvoRef.current && openRef.current) voiceRef.current?.speak(reply);
+    return true;
   }
+
+  const voice = useVoice({
+    handsFree: voiceConvo,
+    getInput: () => input,
+    setInput,
+    onSend: (text) => { if (loadingRef.current) return false; void sendMessage(text); return true; },
+  });
+  voiceRef.current = voice;
+
+  const toggleVoiceConvo = () => {
+    setVoiceConvo(on => {
+      const next = !on;
+      if (!next) cancelSpeech();
+      if (next && voice.supported && !voice.listening) voice.toggleMic();
+      return next;
+    });
+  };
+  useEffect(() => { if (!open) { voice.stop(); cancelSpeech(); } }, [open, voice]);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const text = input.trim();
     if (!text || loading) return;
-    sendMessage(text);
+    void sendMessage(text);
   }
 
   function handleQuickAction(action: typeof QUICK_ACTIONS[0]) {
@@ -163,15 +187,42 @@ export function ChatWidget() {
 
           {/* Input */}
           <form onSubmit={handleSubmit} style={s.inputBar}>
+            {voice.supported && (
+              <button
+                type="button"
+                onClick={toggleVoiceConvo}
+                aria-pressed={voiceConvo}
+                title={voiceConvo ? 'Voice conversation on — replies are read aloud' : 'Start a voice conversation'}
+                style={{ ...s.voiceBtn, ...(voiceConvo ? s.voiceBtnOn : null) }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                  {voiceConvo ? <><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /></> : <><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></>}
+                </svg>
+              </button>
+            )}
             <input
               ref={inputRef}
               type="text"
               value={input}
               onChange={e => setInput(e.target.value)}
-              placeholder="Ask anything..."
+              placeholder={voice.listening ? 'Listening…' : 'Ask anything...'}
               style={s.input}
               disabled={loading}
+              enterKeyHint="send"
             />
+            {voice.supported && (
+              <button
+                type="button"
+                onClick={voice.toggleMic}
+                aria-pressed={voice.listening}
+                aria-label={voice.listening ? 'Stop dictation' : 'Dictate a message'}
+                title={voice.listening ? 'Stop dictation' : 'Dictate a message'}
+                style={{ ...s.voiceBtn, color: voice.listening ? '#ef4444' : '#6b7280' }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" /></svg>
+              </button>
+            )}
             <button
               type="submit"
               disabled={loading || !input.trim()}
@@ -288,6 +339,14 @@ const s: Record<string, React.CSSProperties> = {
     width: 40, height: 40, borderRadius: 10, border: 'none',
     background: '#3b5bdb', color: '#fff', cursor: 'pointer',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  voiceBtn: {
+    width: 40, height: 40, borderRadius: 10, flexShrink: 0,
+    border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', cursor: 'pointer',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  voiceBtnOn: {
+    background: '#3b5bdb', color: '#fff', border: '1px solid #3b5bdb',
   },
   footerBar: {
     display: 'flex', justifyContent: 'center', gap: 8, padding: '8px 12px',

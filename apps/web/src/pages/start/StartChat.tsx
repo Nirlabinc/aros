@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { chatReplyText } from '../../lib/chatReply';
+import { useVoice, cancelSpeech, type VoiceApi } from '../../aros-ai/voice';
 import { AiDisclosureModal, AiDisclosureNotice, useAiDisclosure } from '../../components/AiDisclosure';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -65,7 +66,13 @@ export function StartChat() {
   const [checkingStore, setCheckingStore] = useState(true);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [voiceConvo, setVoiceConvo] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
+  const sendingRef = useRef(false);
+  const voiceConvoRef = useRef(voiceConvo);
+  const voiceRef = useRef<VoiceApi | null>(null);
+  useEffect(() => { voiceConvoRef.current = voiceConvo; }, [voiceConvo]);
+  useEffect(() => () => cancelSpeech(), []);
 
   // Honesty gate, then demo bootstrap. A tenant that already has a connected
   // store must never land on the sample-store surface (journey contract:
@@ -109,12 +116,14 @@ export function StartChat() {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, sending]);
 
-  const sendMessage = async (text: string) => {
+  const sendMessage = async (text: string): Promise<boolean> => {
     const t = text.trim();
-    if (!t || sending) return;
+    if (!t || sendingRef.current) return false;
+    sendingRef.current = true;
     setMessages((prev) => [...prev, { role: 'user', content: t }]);
     setInput('');
     setSending(true);
+    let reply = 'Something went wrong reaching your agent. Please try again.';
     try {
       const res = await fetch(`${ROUTER_URL}/v1/chat`, {
         method: 'POST',
@@ -132,13 +141,34 @@ export function StartChat() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const reply = chatReplyText(data);
+      reply = chatReplyText(data);
       setMessages((prev) => [...prev, { role: 'agent', content: reply }]);
+      if (voiceConvoRef.current) voiceRef.current?.speak(reply);
+      return true;
     } catch {
-      setMessages((prev) => [...prev, { role: 'agent', content: 'Something went wrong reaching your agent. Please try again.' }]);
+      setMessages((prev) => [...prev, { role: 'agent', content: reply }]);
+      return true;
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
+  };
+
+  const voice = useVoice({
+    handsFree: voiceConvo,
+    getInput: () => input,
+    setInput,
+    onSend: (text) => { if (sendingRef.current) return false; void sendMessage(text); return true; },
+  });
+  voiceRef.current = voice;
+
+  const toggleVoiceConvo = () => {
+    setVoiceConvo((on) => {
+      const next = !on;
+      if (!next) cancelSpeech();
+      if (next && voice.supported && !voice.listening) voice.toggleMic();
+      return next;
+    });
   };
 
   const onSubmit = (e: FormEvent) => { e.preventDefault(); void sendMessage(input); };
@@ -210,13 +240,40 @@ export function StartChat() {
             </div>
           )}
           <form onSubmit={onSubmit} style={s.inputBar}>
+            {voice.supported && (
+              <button
+                type="button"
+                onClick={toggleVoiceConvo}
+                aria-pressed={voiceConvo}
+                title={voiceConvo ? 'Voice conversation on — replies are read aloud' : 'Start a voice conversation'}
+                style={{ ...s.voiceBtn, ...(voiceConvo ? { background: ACCENT, color: '#fff', borderColor: ACCENT } : null) }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                  {voiceConvo ? <><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /></> : <><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></>}
+                </svg>
+              </button>
+            )}
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask about your store…"
+              placeholder={voice.listening ? 'Listening…' : 'Ask about your store…'}
               autoFocus
+              enterKeyHint="send"
               style={s.input}
             />
+            {voice.supported && (
+              <button
+                type="button"
+                onClick={voice.toggleMic}
+                aria-pressed={voice.listening}
+                aria-label={voice.listening ? 'Stop dictation' : 'Dictate a message'}
+                title={voice.listening ? 'Stop dictation' : 'Dictate a message'}
+                style={{ ...s.voiceBtn, color: voice.listening ? '#ef4444' : '#6b7280' }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" /></svg>
+              </button>
+            )}
             <button type="submit" disabled={!input.trim() || sending} style={{ ...s.send, opacity: !input.trim() || sending ? 0.5 : 1 }}>
               Send
             </button>
@@ -254,4 +311,5 @@ const s: Record<string, React.CSSProperties> = {
   inputBar: { display: 'flex', gap: 8, background: '#fff', border: '1px solid #d1d5db', borderRadius: 12, padding: 6 },
   input: { flex: 1, border: 'none', outline: 'none', padding: '10px 12px', fontSize: 14, fontFamily: 'inherit', background: 'transparent' },
   send: { background: ACCENT, color: '#fff', border: 'none', borderRadius: 8, padding: '0 20px', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' },
+  voiceBtn: { width: 40, alignSelf: 'stretch', border: 'none', background: 'transparent', color: '#6b7280', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
 };

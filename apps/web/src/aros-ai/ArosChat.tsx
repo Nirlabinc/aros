@@ -5,7 +5,7 @@ import { ChatMessageRenderer } from './ChatMessageRenderer';
 import { useCanvas } from './CanvasContext';
 import { itemsFromMessages } from './canvas';
 import { chatReplyText } from '../lib/chatReply';
-import { useVoice, speak, cancelSpeech } from './voice';
+import { useVoice, cancelSpeech, type VoiceApi } from './voice';
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -99,8 +99,17 @@ export function ArosChat() {
     setUserNearBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 200);
   };
 
-  const sendMessage = async (text: string) => {
-    if (!text.trim() || sending) return;
+  // Synchronous guards/mirrors so hands-free callbacks see live state (React state lags a render).
+  const sendingRef = useRef(false);
+  const voiceConvoRef = useRef(voiceConvo);
+  const openRef = useRef(open);
+  const voiceRef = useRef<VoiceApi | null>(null);
+  useEffect(() => { voiceConvoRef.current = voiceConvo; }, [voiceConvo]);
+  useEffect(() => { openRef.current = open; }, [open]);
+
+  const sendMessage = async (text: string): Promise<boolean> => {
+    if (!text.trim() || sendingRef.current) return false;
+    sendingRef.current = true;
     const userMsg: Message = { role: 'user', content: text.trim(), timestamp: Date.now() };
     setSending(true);
     setMessages((prev) => [...prev, userMsg]);
@@ -121,20 +130,25 @@ export function ArosChat() {
       const data = await res.json();
       const reply = chatReplyText(data);
       setMessages((prev) => [...prev, { role: 'agent', content: reply, timestamp: Date.now() }]);
-      if (voiceConvo) speak(reply);
+      // speak only if voice-conversation is still on and the panel is still open (checked live)
+      if (voiceConvoRef.current && openRef.current) voiceRef.current?.speak(reply);
     } catch {
       setMessages((prev) => [...prev, { role: 'agent', content: 'Something went wrong. Please try again.', timestamp: Date.now() }]);
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
+    return true;
   };
 
   const voice = useVoice({
     handsFree: voiceConvo,
     getInput: () => input,
     setInput,
-    onSend: (text) => { void sendMessage(text); },
+    // return false when busy so the hook keeps the utterance instead of dropping it
+    onSend: (text) => { if (sendingRef.current) return false; void sendMessage(text); return true; },
   });
+  voiceRef.current = voice;
 
   // Leaving conversation mode (or closing the panel) silences any in-flight speech.
   const toggleVoiceConvo = () => {
