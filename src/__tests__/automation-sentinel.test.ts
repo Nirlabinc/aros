@@ -8,15 +8,18 @@ import {
   AUTOMATION_MAX_FIRES_PER_HOUR,
   AUTOMATION_MAX_FIRES_PER_TENANT_DAY,
   applyPerRuleRateLimit,
+  automationFireClaim,
   coalesceFires,
   decideActivation,
   fireDedupeKey,
   isAfterWatermark,
+  isBusinessDayAfterWatermark,
   newVoidsForRule,
   ruleSuspendedMessage,
   tenantDailyCapReached,
   testFireMessage,
   voidAlertMessage,
+  voidIsAfterWatermark,
   type InvoiceLike,
 } from '../automation/rules';
 
@@ -59,6 +62,30 @@ describe('isAfterWatermark (backlog guard, fail-closed)', () => {
   });
 });
 
+describe('isBusinessDayAfterWatermark (fail-closed calendar-day guard, M1)', () => {
+  it('true only for a strictly later calendar day', () => {
+    expect(isBusinessDayAfterWatermark('2026-07-23', WM)).toBe(true);
+    expect(isBusinessDayAfterWatermark('2026-07-22', WM)).toBe(false); // same day as activation = suppress
+    expect(isBusinessDayAfterWatermark('2026-07-21', WM)).toBe(false);
+  });
+  it('fails closed on missing/garbage inputs', () => {
+    expect(isBusinessDayAfterWatermark(null, WM)).toBe(false);
+    expect(isBusinessDayAfterWatermark('2026-07-23', null)).toBe(false);
+    expect(isBusinessDayAfterWatermark('not-a-date', WM)).toBe(false);
+  });
+});
+
+describe('voidIsAfterWatermark (timestamp precise, else fail-closed day)', () => {
+  it('uses the timestamp when present', () => {
+    expect(voidIsAfterWatermark({ timestamp: '2026-07-22T12:00:01Z', businessDate: '2026-07-22' }, WM)).toBe(true);
+    expect(voidIsAfterWatermark({ timestamp: '2026-07-22T11:59:59Z', businessDate: '2026-07-23' }, WM)).toBe(false);
+  });
+  it('falls back to the calendar-day rule when there is no timestamp', () => {
+    expect(voidIsAfterWatermark({ timestamp: null, businessDate: '2026-07-23' }, WM)).toBe(true);
+    expect(voidIsAfterWatermark({ timestamp: null, businessDate: '2026-07-22' }, WM)).toBe(false); // activation-day hole closed
+  });
+});
+
 describe('newVoidsForRule (void-diff)', () => {
   const base = { watermark: WM, alreadyFired: new Set<string>(), channel: 'sms', destination: '+15550100' };
 
@@ -75,6 +102,14 @@ describe('newVoidsForRule (void-diff)', () => {
   });
   it('a void with only a pre-watermark business date (no timestamp) never fires', () => {
     expect(newVoidsForRule([inv({ timestamp: null, businessDate: '2026-07-21' })], base)).toHaveLength(0);
+  });
+  it('M1: a timestamp-less void on the ACTIVATION DAY never fires (cannot prove it post-dates activation)', () => {
+    // watermark = 2026-07-22T12:00:00Z; a void dated the same calendar day with
+    // no per-row timestamp must be SUPPRESSED, not stamped end-of-day.
+    expect(newVoidsForRule([inv({ timestamp: null, businessDate: '2026-07-22' })], base)).toHaveLength(0);
+  });
+  it('M1: a timestamp-less void on the day AFTER activation does fire', () => {
+    expect(newVoidsForRule([inv({ timestamp: null, businessDate: '2026-07-23' })], base)).toHaveLength(1);
   });
   it('an already-fired void does not re-fire', () => {
     const alreadyFired = new Set<string>([fireDedupeKey('INV-1', 'sms', '+15550100')]);
@@ -104,6 +139,20 @@ describe('coalesceFires (one message per invoice/channel/destination)', () => {
       mk('INV-2', 'sms', '+15550100', 'c'),
     ]);
     expect(out).toHaveLength(3);
+  });
+});
+
+describe('automationFireClaim (H1/H2 — claim key MUST equal the dedupe key)', () => {
+  it('maps the candidate onto the ledger unique columns', () => {
+    const claim = automationFireClaim('t1', { rule_id: 'r1', invoiceNo: 'INV-1', channel: 'sms', destination: '+15550100' });
+    expect(claim).toEqual({ tenant_id: 't1', rule_id: 'r1', invoice_no: 'INV-1', channel: 'sms', destination: '+15550100' });
+  });
+  it('its key columns reconstruct exactly the coalesce/dedupe key', () => {
+    const claim = automationFireClaim('t1', { invoiceNo: 'INV-9', channel: 'email', destination: 'o@s.com' });
+    // The DB UNIQUE(tenant_id, invoice_no, channel, destination) is the send
+    // authority; the same tuple keys coalesceFires + newVoidsForRule dedupe.
+    expect(fireDedupeKey(claim.invoice_no, claim.channel, claim.destination)).toBe(fireDedupeKey('INV-9', 'email', 'o@s.com'));
+    expect(claim.rule_id).toBeNull();
   });
 });
 

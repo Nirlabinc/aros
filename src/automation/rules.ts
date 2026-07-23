@@ -417,6 +417,29 @@ export function isAfterWatermark(eventTime: string | null | undefined, watermark
   return et > wm;
 }
 
+/** Fail-closed CALENDAR-DAY comparison for timestamp-less rows. A void with
+ * only a business date can only be placed to the day, so it fires ONLY when its
+ * day is strictly after the watermark's day — a SAME-day void (which may
+ * predate a same-day activation) is suppressed. This closes the activation-day
+ * backlog hole an end-of-day timestamp fallback would open. */
+export function isBusinessDayAfterWatermark(businessDate: string | null | undefined, watermark: string | null | undefined): boolean {
+  if (!businessDate || !watermark) return false;
+  const day = businessDate.slice(0, 10);
+  const wmDay = watermark.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !/^\d{4}-\d{2}-\d{2}$/.test(wmDay)) return false;
+  return day > wmDay;
+}
+
+/** PURE: does this voided invoice PROVABLY post-date the activation watermark?
+ * Precise when the row carries a timestamp (strictly after); otherwise it falls
+ * back to the fail-closed calendar-day rule above — never an end-of-day stamp
+ * that could jump a same-day backlog void past a same-day activation. */
+export function voidIsAfterWatermark(inv: { timestamp: string | null; businessDate: string | null }, watermark: string | null | undefined): boolean {
+  if (!watermark) return false;
+  if (inv.timestamp) return isAfterWatermark(inv.timestamp, watermark);
+  return isBusinessDayAfterWatermark(inv.businessDate, watermark);
+}
+
 export interface InvoiceLike {
   invoiceNo: string | null;
   recordId: string | null;
@@ -440,12 +463,37 @@ export function fireDedupeKey(invoiceNo: string, channel: string, destination: s
   return `${invoiceNo}|${channel}|${destination ?? ''}`;
 }
 
+export interface AutomationFireClaimRow {
+  tenant_id: string;
+  rule_id: string | null;
+  invoice_no: string;
+  channel: string;
+  destination: string;
+}
+
 /**
- * PURE: which voided invoices are NEW for one rule this pass — voided, occurred
- * strictly after the rule's activation watermark (backlog guard), and not in
+ * PURE: the automation_fires CLAIM row. Its key columns (tenant_id, invoice_no,
+ * channel, destination) MUST equal the coalesce/dedupe key so the DB UNIQUE
+ * constraint is the single at-most-once send authority (claim-before-send). The
+ * shell inserts this with ON CONFLICT DO NOTHING; a returned id = claimed (send
+ * now), no row = already sent by a prior pass or another replica (skip).
+ */
+export function automationFireClaim(tenantId: string, candidate: { rule_id?: string | null; invoiceNo: string; channel: string; destination: string }): AutomationFireClaimRow {
+  return {
+    tenant_id: tenantId,
+    rule_id: candidate.rule_id ?? null,
+    invoice_no: candidate.invoiceNo,
+    channel: candidate.channel,
+    destination: candidate.destination,
+  };
+}
+
+/**
+ * PURE: which voided invoices are NEW for one rule this pass — voided, provably
+ * after the rule's activation watermark (backlog guard via voidIsAfterWatermark
+ * — timestamp when present, else a fail-closed calendar-day rule), and not in
  * the already-fired set (cross-pass dedupe). No watermark ⇒ not activated ⇒
- * never fires. The event time is the invoice timestamp, falling back to the
- * business date's end-of-day when no per-row timestamp exists.
+ * never fires.
  */
 export function newVoidsForRule(
   invoices: InvoiceLike[],
@@ -457,8 +505,7 @@ export function newVoidsForRule(
     if (!inv.isVoid) continue;
     const id = inv.invoiceNo ?? inv.recordId;
     if (!id) continue;
-    const eventTime = inv.timestamp ?? (inv.businessDate ? `${inv.businessDate}T23:59:59Z` : null);
-    if (!isAfterWatermark(eventTime, opts.watermark)) continue;
+    if (!voidIsAfterWatermark(inv, opts.watermark)) continue;
     if (opts.alreadyFired.has(fireDedupeKey(id, opts.channel, opts.destination))) continue;
     out.push({ invoiceNo: id, recordId: inv.recordId, businessDate: inv.businessDate, timestamp: inv.timestamp, amount: inv.amount });
   }

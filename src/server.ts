@@ -28,6 +28,7 @@ import { NOTIFICATION_CATALOG, NOTIFICATION_CHANNELS, mergePreferences, validate
 import { parseAutomationSentence, type ParsedAutomation } from './automation/parse.js';
 import {
   applyPerRuleRateLimit,
+  automationFireClaim,
   AUTOMATION_MAX_FIRES_PER_HOUR,
   AUTOMATION_MAX_FIRES_PER_TENANT_DAY,
   AUTOMATION_SENTINEL_WINDOW_DAYS,
@@ -288,14 +289,22 @@ const AUTOMATION_SENTINEL_COLUMNS = 'id,tenant_id,trigger_type,channel,destinati
 
 /** DB-level global pause (contract "Pause rails"): an operator sets the
  * platform_settings 'automation_paused' row to halt all fires WITHOUT a deploy
- * or restart. Returns true = paused (fail-safe: on read error, do NOT pause —
- * the AUTOMATION_RULES env switch remains the hard backstop). */
+ * or restart. FAIL-SAFE: on a read error we treat the platform as PAUSED and
+ * log loudly — a send path must not fire blind when its kill-switch is
+ * unreadable. It is re-evaluated each pass, so a transient blip just skips one
+ * pass; a persistent fault halts sends (safe) and is visible in logs. The
+ * AUTOMATION_RULES env switch remains the coarse hard backstop. */
 async function automationGloballyPaused(supabase: ReturnType<typeof createSupabaseAdmin>): Promise<boolean> {
   try {
-    const { data } = await supabase.from('platform_settings').select('value').eq('key', 'automation_paused').maybeSingle();
+    const { data, error } = await supabase.from('platform_settings').select('value').eq('key', 'automation_paused').maybeSingle();
+    if (error) {
+      console.error('[automation-sentinel] pause-flag read failed — treating as PAUSED (skipping fires this pass):', error.message);
+      return true;
+    }
     return Boolean((data?.value as { paused?: boolean } | null)?.paused);
-  } catch {
-    return false;
+  } catch (err) {
+    console.error('[automation-sentinel] pause-flag read threw — treating as PAUSED (skipping fires this pass):', err instanceof Error ? err.message : err);
+    return true;
   }
 }
 
@@ -320,13 +329,23 @@ function resolveRuleDelivery(rule: SentinelRule, prefRows: SentinelPref[]): { de
   return { deliverable: true, destination: destination ?? rule.destination_ref };
 }
 
+// Single-instance re-entrancy guard (H2): a slow pass must never overlap the
+// next tick on this process and double-send. The automation_fires unique ledger
+// covers the multi-replica case; this covers overlap on one instance cheaply.
+let automationSentinelRunning = false;
+
 async function runAutomationSentinel(): Promise<void> {
   if (process.env.AUTOMATION_RULES === '0') return;
   if (!emailConfigured()) return; // email lane is the always-live floor; nothing can deliver without it
+  if (automationSentinelRunning) {
+    console.warn('[automation-sentinel] previous pass still running — skipping this tick');
+    return;
+  }
+  automationSentinelRunning = true;
   try {
     const supabase = createSupabaseAdmin();
     if (await automationGloballyPaused(supabase)) {
-      console.log('[automation-sentinel] globally paused (platform_settings.automation_paused) — skipping this pass');
+      console.log('[automation-sentinel] globally paused (platform_settings.automation_paused or unreadable pause flag) — skipping this pass');
       return;
     }
     // Load rules the sentinel acts on: active (evaluate + fire) and
@@ -364,6 +383,8 @@ async function runAutomationSentinel(): Promise<void> {
     }
   } catch (err) {
     console.error('[automation-sentinel]', err instanceof Error ? err.message : err);
+  } finally {
+    automationSentinelRunning = false;
   }
 }
 
@@ -426,20 +447,21 @@ async function runTenantVoidSentinel(
   const invoices: InvoiceLike[] = (report?.invoices ?? []).map((i) => ({ invoiceNo: i.invoiceNo, recordId: i.recordId, businessDate: i.businessDate, timestamp: i.timestamp, amount: i.amount, isVoid: i.isVoid }));
   if (!invoices.some((i) => i.isVoid)) return;
 
-  // ── 3) Already-fired set + today's fire count from audit_log. ───────────
-  const auditWindowStart = new Date(Date.parse(`${from}T00:00:00Z`) - 86_400_000).toISOString();
+  // ── 3) Already-fired set + today's fire count from the fire LEDGER. The
+  //    automation_fires UNIQUE (tenant_id, invoice_no, channel, destination)
+  //    is the dedupe AUTHORITY (claim-before-send below); this read is only a
+  //    pre-filter to skip re-attempting known-sent voids + a daily counter. ─
+  const ledgerWindowStart = new Date(Date.parse(`${from}T00:00:00Z`) - 86_400_000).toISOString();
   const { data: firedRows } = await supabase
-    .from('audit_log')
-    .select('resource,detail,created_at')
+    .from('automation_fires')
+    .select('invoice_no,channel,destination,created_at')
     .eq('tenant_id', tenantId)
-    .eq('action', 'automation.rule_fired')
-    .gte('created_at', auditWindowStart);
+    .gte('created_at', ledgerWindowStart);
   const alreadyFired = new Set<string>();
   const todayMidnight = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`).toISOString();
   let firesToday = 0;
   for (const row of firedRows ?? []) {
-    const detail = (row.detail ?? {}) as { channel?: string; destination?: string | null };
-    if (row.resource) alreadyFired.add(fireDedupeKey(String(row.resource), detail.channel ?? '', detail.destination ?? null));
+    alreadyFired.add(fireDedupeKey(String(row.invoice_no), String(row.channel), row.destination == null ? null : String(row.destination)));
     if (String(row.created_at) >= todayMidnight) firesToday += 1;
   }
 
@@ -482,19 +504,55 @@ async function runTenantVoidSentinel(
       continue;
     }
 
-    // One notifyWorkspace call per invoice — it fans out to every subscribed
-    // member/channel from prefs, so a single call already satisfies "one
-    // message per destination/channel". Per-rule accounting still records each
-    // contributing rule's fire below.
-    if (!sentInvoices.has(c.invoiceNo)) {
-      const msg = voidAlertMessage(storeLabel, c.invoice);
-      await notifyWorkspace(tenantId, 'void-alert', msg.subject, msg.text);
-      sentInvoices.add(c.invoiceNo);
+    // ── CLAIM-BEFORE-SEND (H1/H2): reserve the (invoice, channel, destination)
+    // row FIRST in the unique ledger. A returned id = we own this fire; no row
+    // (ON CONFLICT) = a prior pass or another replica already sent it → skip
+    // entirely (no send, no counter bump). This is intentionally AT-MOST-ONCE:
+    // a send that throws AFTER a successful claim is a MISSED alert, never
+    // retried — for owner-facing SMS one rare miss beats duplicate spam
+    // (contract priority: never overfire).
+    let claimId: string | null = null;
+    try {
+      const { data: claimed, error: claimErr } = await supabase
+        .from('automation_fires')
+        .upsert(automationFireClaim(tenantId, { rule_id: c.rule.id, invoiceNo: c.invoiceNo, channel: c.channel, destination: c.destination }), { onConflict: 'tenant_id,invoice_no,channel,destination', ignoreDuplicates: true })
+        .select('id');
+      if (claimErr) {
+        console.error('[automation-sentinel] claim insert failed — NOT sending:', c.invoiceNo, claimErr.message);
+        continue;
+      }
+      claimId = claimed?.[0]?.id ?? null;
+    } catch (err) {
+      console.error('[automation-sentinel] claim insert threw — NOT sending:', c.invoiceNo, err instanceof Error ? err.message : err);
+      continue;
     }
+    if (!claimId) continue; // already claimed elsewhere — do NOT send, do NOT count
+
+    // Claimed → deliver. One notifyWorkspace call per invoice fans out to every
+    // subscribed member/channel, so a single physical send covers all
+    // destinations even when two different-channel rules hit the same invoice
+    // (each claims its own ledger row; only one network send happens).
+    try {
+      if (!sentInvoices.has(c.invoiceNo)) {
+        const msg = voidAlertMessage(storeLabel, c.invoice);
+        await notifyWorkspace(tenantId, 'void-alert', msg.subject, msg.text);
+        sentInvoices.add(c.invoiceNo);
+      }
+    } catch (sendErr) {
+      // Claimed but delivery threw → AT-MOST-ONCE: mark and move on, never
+      // retry. The claim row stays and blocks a refire on the next pass (by
+      // design — no duplicate storm), so this one alert is accepted as missed.
+      console.error('[automation-sentinel] CLAIMED but SEND FAILED (alert missed, not retried):', c.invoiceNo, sendErr instanceof Error ? sendErr.message : sendErr);
+      await supabase.from('automation_fires').update({ status: 'send_failed' }).eq('id', claimId);
+      continue;
+    }
+
+    // Success bookkeeping. The ledger row is ALREADY the dedupe record, so a
+    // failure of any write below can never cause a refire.
     await supabase.from('event_subscriptions').update({ last_fired: now, fires_in_window: rate.nextFiresInWindow, window_started_at: rate.nextWindowStartedAt, updated_at: now }).eq('id', c.rule.id).eq('tenant_id', tenantId);
     c.rule.fires_in_window = rate.nextFiresInWindow;
     c.rule.window_started_at = rate.nextWindowStartedAt;
-    await auditLog({ tenantId, action: 'automation.rule_fired', resource: c.invoiceNo, detail: { rule_id: c.rule.id, channel: c.channel, destination: c.destination, amount: c.invoice.amount }, ip: 'scheduler' });
+    await auditLog({ tenantId, action: 'automation.rule_fired', resource: c.invoiceNo, detail: { rule_id: c.rule.id, channel: c.channel, destination: c.destination, amount: c.invoice.amount, fire_id: claimId }, ip: 'scheduler' });
     alreadyFired.add(fireDedupeKey(c.invoiceNo, c.channel, c.destination));
     firesToday += 1;
   }
