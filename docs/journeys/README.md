@@ -31,6 +31,7 @@ Every spec defaults to **Ramesh** unless it says otherwise:
 | 6 | [accept-terms-and-ai-disclosure.md](accept-terms-and-ai-disclosure.md) | "Fine, I agree" — clickwrap terms gate + first-chat AI disclosure. **Flagged off** (`TERMS_GATE_ENABLED`) until attorney sign-off. |
 | 7 | [install-an-app-from-marketplace.md](install-an-app-from-marketplace.md) | "I want that" — find an app (Documents, EDI Invoices) in the Marketplace, activate it, open it. |
 | 8 | [manage-my-account.md](manage-my-account.md) | "That's not my name" — update display name / password from the Profile page. |
+| 9 | [manage-my-automations.md](manage-my-automations.md) | "Is my alert on?" — review, pause, re-enable, or delete chat-created automation rules from the Notifications page. |
 
 ## How they're enforced
 

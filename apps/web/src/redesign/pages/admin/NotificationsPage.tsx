@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { type CSSProperties, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AdminPage, Loading, Pill, State } from './AdminPrimitives';
 
@@ -8,6 +8,39 @@ const API_BASE = (window as any).__AROS_API_URL__
 type CatalogEntry = { id: string; label: string; description: string };
 type Channel = { id: string; label: string; status: 'active' | 'activating' | 'pending-provider'; destinationHint: string };
 type Pref = { event: string; channel: string; enabled: boolean; destination: string | null };
+type Automation = {
+  id: string;
+  channel: 'email' | 'sms';
+  status: 'active' | 'pending_connector' | 'suspended' | 'disabled';
+  created_at: string;
+  last_checked: string | null;
+  last_fired: string | null;
+  description: string;
+};
+
+const STATUS_LABEL: Record<Automation['status'], string> = {
+  active: 'active',
+  pending_connector: 'waiting on store connection',
+  suspended: 'paused — too many alerts',
+  disabled: 'disabled',
+};
+
+const btnStyle: CSSProperties = {
+  border: '1px solid var(--line-strong)', background: 'var(--surface)', color: 'var(--ink)',
+  borderRadius: 9, padding: '6px 12px', cursor: 'pointer', font: 'inherit', fontWeight: 600, fontSize: 13,
+};
+
+function ago(iso: string | null): string {
+  if (!iso) return 'never';
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms)) return 'never';
+  if (ms < 60_000) return 'just now';
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
 
 /**
  * Per-user notification preferences (event × channel), honest about delivery:
@@ -16,7 +49,7 @@ type Pref = { event: string; channel: string; enabled: boolean; destination: str
  * be sent today.
  */
 export function NotificationsPage() {
-  const { user, tenant, session } = useAuth();
+  const { user, tenant, session, memberships } = useAuth();
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [prefs, setPrefs] = useState<Pref[]>([]);
@@ -25,6 +58,13 @@ export function NotificationsPage() {
   const [busy, setBusy] = useState('');
   const [note, setNote] = useState('');
   const [destinations, setDestinations] = useState<Record<string, string>>({});
+  const [automations, setAutomations] = useState<Automation[]>([]);
+  const [autoLoading, setAutoLoading] = useState(true);
+  const [autoError, setAutoError] = useState('');
+  const [autoBusy, setAutoBusy] = useState('');
+
+  const role = useMemo(() => memberships.find((m) => m.tenant.id === tenant?.id)?.role, [memberships, tenant?.id]);
+  const canManage = role === 'owner' || role === 'admin';
 
   const headers = useMemo(() => ({
     'Content-Type': 'application/json',
@@ -46,6 +86,31 @@ export function NotificationsPage() {
     finally { setLoading(false); }
   }
   useEffect(() => { if (session) void load(); }, [session?.access_token, tenant?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadAutomations() {
+    setAutoLoading(true); setAutoError('');
+    try {
+      const res = await fetch(`${API_BASE}/api/automations`, { headers });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      setAutomations((data.automations || []) as Automation[]);
+    } catch (e) { setAutoError(e instanceof Error ? e.message : 'Could not load your automation rules'); }
+    finally { setAutoLoading(false); }
+  }
+  useEffect(() => { if (session) void loadAutomations(); }, [session?.access_token, tenant?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function mutateAutomation(id: string, action: 'enable' | 'disable' | 'delete') {
+    setAutoBusy(id); setNote('');
+    try {
+      const res = action === 'delete'
+        ? await fetch(`${API_BASE}/api/automations/${id}`, { method: 'DELETE', headers })
+        : await fetch(`${API_BASE}/api/automations/${id}`, { method: 'PATCH', headers, body: JSON.stringify({ enabled: action === 'enable' }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as { error?: string })?.error || `HTTP ${res.status}`);
+      await loadAutomations();
+    } catch (e) { setNote(e instanceof Error ? e.message : 'Could not update the rule'); }
+    finally { setAutoBusy(''); }
+  }
 
   function prefFor(event: string, channel: string): Pref | undefined {
     return prefs.find((p) => p.event === event && p.channel === channel);
@@ -86,6 +151,45 @@ export function NotificationsPage() {
         : error ? <State title="Preferences unavailable" detail={error} retry={() => void load()} />
         : (
           <div style={{ display: 'grid', gap: 18 }}>
+            <section style={{ border: '1px solid var(--line)', borderRadius: 14, background: 'var(--surface)', padding: 18, boxShadow: 'var(--shadow-card)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
+                <strong style={{ fontSize: 15 }}>Automation rules</strong>
+                <Pill>created in chat</Pill>
+              </div>
+              <p style={{ color: 'var(--ink-2)', fontSize: 12.5, lineHeight: 1.5, margin: '0 0 12px' }}>
+                Alerts you set up by chatting (e.g. "text me when someone voids a transaction"). Manage them here; create new ones from chat.
+              </p>
+              {autoLoading ? <div style={{ color: 'var(--ink-3)', fontSize: 13, padding: '6px 0' }}>Loading your rules…</div>
+                : autoError ? <State title="Rules unavailable" detail={autoError} retry={() => void loadAutomations()} />
+                : automations.length === 0 ? (
+                  <div style={{ color: 'var(--ink-3)', fontSize: 13, padding: '6px 0' }}>
+                    No automation rules yet. In chat, try: <em>"text me when someone voids a transaction"</em>.
+                  </div>
+                ) : (
+                  <div>
+                    {automations.map((a) => (
+                      <div key={a.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '11px 0', borderTop: '1px solid var(--line)', flexWrap: 'wrap' }}>
+                        <span style={{ flex: '1 1 260px', minWidth: 200 }}>
+                          <strong style={{ display: 'block', fontSize: 13.5 }}>{a.description}</strong>
+                          <span style={{ color: 'var(--ink-2)', fontSize: 12, lineHeight: 1.5 }}>
+                            {STATUS_LABEL[a.status]} · checked {ago(a.last_checked)} · last fired {ago(a.last_fired)}
+                          </span>
+                        </span>
+                        <span style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                          {canManage ? (
+                            <>
+                              {a.status === 'disabled'
+                                ? <button type="button" disabled={autoBusy === a.id} onClick={() => void mutateAutomation(a.id, 'enable')} style={btnStyle}>Enable</button>
+                                : <button type="button" disabled={autoBusy === a.id} onClick={() => void mutateAutomation(a.id, 'disable')} style={btnStyle}>Disable</button>}
+                              <button type="button" disabled={autoBusy === a.id} onClick={() => void mutateAutomation(a.id, 'delete')} style={{ ...btnStyle, color: 'var(--danger, #b91c1c)' }}>Delete</button>
+                            </>
+                          ) : <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>owner/admin manages</span>}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+            </section>
             {channels.map((channel) => (
               <section key={channel.id} style={{ border: '1px solid var(--line)', borderRadius: 14, background: 'var(--surface)', padding: 18, boxShadow: 'var(--shadow-card)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
