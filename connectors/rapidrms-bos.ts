@@ -32,12 +32,30 @@ export type BosEmployeeHours = {
   voidedPunches: number;
 };
 
+export type BosTimecardCorrectionDraft = {
+  id: string;
+  type: 'missing_clock_out' | 'voided_punch_review' | 'zero_hour_punch' | 'long_shift_review';
+  severity: 'info' | 'warning' | 'critical';
+  employeeId: string | null;
+  employeeName: string | null;
+  clockId: string | null;
+  clockDate: string | null;
+  clockIn: string | null;
+  clockOut: string | null;
+  currentHours: number | null;
+  proposedAction: 'edit' | 'review';
+  reason: string;
+  requiresApproval: true;
+  writeEnabled: false;
+};
+
 export type BosTimecardReport = {
   from: string;
   to: string;
   employeeFilter: string | null;
   rows: BosTimecardRecord[];
   employees: BosEmployeeHours[];
+  correctionDrafts: BosTimecardCorrectionDraft[];
   totals: {
     hours: number;
     punches: number;
@@ -238,6 +256,59 @@ export function summarizeBosTimecards(rows: BosTimecardRecord[]): BosTimecardRep
     .sort((a, b) => b.totalHours - a.totalHours || String(a.employeeName || a.employeeId || '').localeCompare(String(b.employeeName || b.employeeId || '')));
 }
 
+function draftId(row: BosTimecardRecord, type: BosTimecardCorrectionDraft['type'], index: number): string {
+  const stable = [row.employeeId || row.employeeName || 'unknown', row.clockId || row.clockIn || row.clockDate || index].join(':');
+  return `${type}:${stable}`.replace(/\s+/g, '-').toLowerCase();
+}
+
+function correctionDraft(
+  row: BosTimecardRecord,
+  type: BosTimecardCorrectionDraft['type'],
+  severity: BosTimecardCorrectionDraft['severity'],
+  proposedAction: BosTimecardCorrectionDraft['proposedAction'],
+  reason: string,
+  index: number,
+): BosTimecardCorrectionDraft {
+  return {
+    id: draftId(row, type, index),
+    type,
+    severity,
+    employeeId: row.employeeId,
+    employeeName: row.employeeName,
+    clockId: row.clockId,
+    clockDate: row.clockDate,
+    clockIn: row.clockIn,
+    clockOut: row.clockOut,
+    currentHours: row.totalHours,
+    proposedAction,
+    reason,
+    requiresApproval: true,
+    writeEnabled: false,
+  };
+}
+
+export function draftBosTimecardCorrections(rows: BosTimecardRecord[]): BosTimecardCorrectionDraft[] {
+  const drafts: BosTimecardCorrectionDraft[] = [];
+  rows.forEach((row, index) => {
+    if (row.isVoid) {
+      drafts.push(correctionDraft(row, 'voided_punch_review', 'info', 'review', 'Voided punch is excluded from payroll hours; review only if the void was unexpected.', index));
+      return;
+    }
+    if (!row.clockOut) {
+      drafts.push(correctionDraft(row, 'missing_clock_out', 'critical', 'edit', 'Punch has a clock-in but no clock-out, so payroll hours may be incomplete.', index));
+      return;
+    }
+    if ((row.totalHours ?? 0) === 0 && row.clockIn && row.clockOut) {
+      drafts.push(correctionDraft(row, 'zero_hour_punch', 'warning', 'review', 'Punch has both clock-in and clock-out values but zero recorded hours.', index));
+      return;
+    }
+    if ((row.totalHours ?? 0) > 12) {
+      drafts.push(correctionDraft(row, 'long_shift_review', 'warning', 'review', 'Recorded shift is longer than 12 hours and should be reviewed before payroll.', index));
+    }
+  });
+  return drafts;
+}
+
 function filterEmployee(rows: BosTimecardRecord[], employee?: string): BosTimecardRecord[] {
   const needle = employee?.trim().toLowerCase();
   if (!needle) return rows;
@@ -252,6 +323,7 @@ export function buildBosTimecardReport(
 ): BosTimecardReport {
   const rows = filterEmployee(rawRows.map(normalizeBosTimecardRow), employee);
   const employees = summarizeBosTimecards(rows);
+  const correctionDrafts = draftBosTimecardCorrections(rows);
   const totals = employees.reduce((sum, employeeRow) => ({
     hours: sum.hours + employeeRow.totalHours,
     punches: sum.punches + employeeRow.punchCount,
@@ -264,6 +336,7 @@ export function buildBosTimecardReport(
     employeeFilter: employee?.trim() || null,
     rows,
     employees,
+    correctionDrafts,
     totals: { ...totals, hours: Math.round(totals.hours * 1000) / 1000 },
     source: 'RapidRMS BOS',
     fetchedAt: new Date().toISOString(),

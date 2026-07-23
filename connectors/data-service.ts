@@ -10,7 +10,7 @@
 // fabricated numbers. We never guess a value we can't read confidently.
 
 import * as rapidRms from './rapidrms-api.js';
-import { fetchBosTimecards, type BosTimecardReport } from './rapidrms-bos.js';
+import { fetchBosTimecards, type BosTimecardCorrectionDraft, type BosTimecardReport } from './rapidrms-bos.js';
 import type { RapidRmsSession } from './types.js';
 import { setTenantSecret, storeCredential, deleteCredential } from './vault-ref.js';
 
@@ -789,6 +789,35 @@ export async function fetchStoreTimecards(
     to,
     employee,
   );
+}
+
+export type StoreTimecardCorrectionReport = {
+  from: string;
+  to: string;
+  employeeFilter: string | null;
+  correctionDrafts: BosTimecardCorrectionDraft[];
+  writeEnabled: false;
+  source: 'RapidRMS BOS';
+  fetchedAt: string;
+};
+
+export async function fetchStoreTimecardCorrectionDrafts(
+  record: ConnectorRecord,
+  from: string,
+  to: string,
+  employee?: string,
+): Promise<StoreTimecardCorrectionReport | null> {
+  const report = await fetchStoreTimecards(record, from, to, employee);
+  if (!report) return null;
+  return {
+    from: report.from,
+    to: report.to,
+    employeeFilter: report.employeeFilter,
+    correctionDrafts: report.correctionDrafts,
+    writeEnabled: false,
+    source: report.source,
+    fetchedAt: report.fetchedAt,
+  };
 }
 
 export type DailyStoreSales = { businessDate: string; revenue: number; transactions: number };

@@ -308,6 +308,7 @@ import {
   fetchStoreSalesRange,
   fetchStoreInvoices,
   fetchStoreSummary,
+  fetchStoreTimecardCorrectionDrafts,
   fetchStoreTimecards,
   fetchTopSoldItems,
   hasSummaryMapper,
@@ -320,7 +321,7 @@ import {
   type TopSoldItem,
   type VoidExceptionBucket,
 } from '../connectors/data-service.js';
-import type { BosEmployeeHours } from '../connectors/rapidrms-bos.js';
+import type { BosEmployeeHours, BosTimecardCorrectionDraft } from '../connectors/rapidrms-bos.js';
 import { replicateSnapshotToCortex } from '../connectors/cortex-bridge.js';
 import { proxyToMib } from '../connectors/mib-documents.js';
 import { encryptValue, decryptValue, setEncryptionKey } from '../security/input-handler.js';
@@ -3547,6 +3548,7 @@ type ChatStoreIntent =
   | { kind: 'top_items'; from: string; to: string; limit: number }
   | { kind: 'item_changes'; mode: 'recently_added' | 'recently_edited' | 'recent_price_changes' | 'recent_cost_changes'; limit: number }
   | { kind: 'invoices'; from: string; to: string; limit: number; invoiceNo?: string }
+  | { kind: 'timecard_corrections'; from: string; to: string; limit: number; employee?: string }
   | { kind: 'timecards'; from: string; to: string; limit: number; employee?: string };
 
 function chatLimit(text: string): number {
@@ -3587,6 +3589,9 @@ function storeChatIntent(req: IncomingMessage, body: Record<string, unknown> | n
   const text = chatLatestText(body).toLowerCase().replace(/\s+/g, ' ').trim();
   if (!text) return null;
   const limit = chatLimit(text);
+  if (/\b(fix|correct|correction|edit|adjust|add|void|missing)\b/.test(text) && /\b(time\s*stamps?|timecards?|clock\s*(?:in|out)|punch(?:es)?|payroll)\b/.test(text)) {
+    return { kind: 'timecard_corrections', ...chatDateRange(text), limit, employee: employeeFromChat(text) };
+  }
   if (/\b(time\s*stamps?|timecards?|clock\s*(?:in|out)|employee\s+hours?|payroll)\b/.test(text)) {
     return { kind: 'timecards', ...chatDateRange(text), limit, employee: employeeFromChat(text) };
   }
@@ -3663,6 +3668,15 @@ async function handleArosStoreDataChat(req: IncomingMessage, res: ServerResponse
           const invoiceLabel = invoice.invoiceNo ? `Invoice ${invoice.invoiceNo}` : `Record ${invoice.recordId ?? 'unknown'}`;
           lines.push(`${index + 1}. ${invoiceLabel} - ${invoice.businessDate ?? 'unknown date'}, ${money(invoice.amount)}${invoice.isVoid ? ' (void)' : ''}`);
         }
+      } else if (intent.kind === 'timecard_corrections') {
+        const report = await fetchStoreTimecardCorrectionDrafts(record, intent.from, intent.to, intent.employee);
+        toolsUsed.push('mib_timecard_corrections');
+        lines.push(`**${row.name} time stamp correction drafts (${intent.from} to ${intent.to})**`);
+        lines.push('- Writes are disabled here. These are review drafts only and require owner/admin approval before any payroll-impacting change.');
+        if (!report?.correctionDrafts.length) lines.push('- No correction candidates were found for that exact range/filter.');
+        for (const [index, draft] of (report?.correctionDrafts ?? []).slice(0, intent.limit).entries()) {
+          lines.push(`${index + 1}. ${draft.employeeName || draft.employeeId || 'Unknown employee'} - ${draft.type.replace(/_/g, ' ')}, ${draft.severity}; proposed ${draft.proposedAction}. ${draft.reason}`);
+        }
       } else {
         const report = await fetchStoreTimecards(record, intent.from, intent.to, intent.employee);
         toolsUsed.push('mib_timecards');
@@ -3679,7 +3693,7 @@ async function handleArosStoreDataChat(req: IncomingMessage, res: ServerResponse
 
     json(res, 200, {
       content: lines.length ? lines.join('\n') : 'No supported RapidRMS store data source is mapped to this workspace yet.',
-      _shre: { model: 'aros-store-data', toolsUsed, mode: 'aros-store-data-direct', tenantId, source: toolsUsed.includes('mib_timecards') ? 'RapidRMS BOS' : 'RapidRMS API' },
+      _shre: { model: 'aros-store-data', toolsUsed, mode: 'aros-store-data-direct', tenantId, source: toolsUsed.some((tool) => tool === 'mib_timecards' || tool === 'mib_timecard_corrections') ? 'RapidRMS BOS' : 'RapidRMS API' },
     });
     return true;
   } catch (err) {
@@ -4084,6 +4098,65 @@ async function handleStoreTimecards(req: IncomingMessage, res: ServerResponse): 
   }
 }
 
+async function handleStoreTimecardCorrections(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const request = getRequestUrl(req);
+  const to = request.searchParams.get('to') || request.searchParams.get('endDate') || businessDate();
+  const from = request.searchParams.get('from') || request.searchParams.get('startDate') || to;
+  const limit = boundedLimit(request.searchParams.get('limit'), 25);
+  const employee = request.searchParams.get('employee') || request.searchParams.get('employeeId') || undefined;
+  if (validateStoreDateRange(res, from, to, 31, 'Time stamp correction') === null) return;
+
+  try {
+    const rows = await connectedConnectorRows(auth.tenantId);
+    const sources: ConnectorSourceStatus[] = [];
+    const correctionDrafts: Array<BosTimecardCorrectionDraft & { store: string }> = [];
+    let anyLive = false;
+    for (const row of rows) {
+      if (!hasSummaryMapper(row.type)) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false });
+        continue;
+      }
+      try {
+        const report = await fetchStoreTimecardCorrectionDrafts(decryptedConnectorRecord(row), from, to, employee);
+        if (!report) { sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: false }); continue; }
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: true });
+        anyLive = true;
+        correctionDrafts.push(...report.correctionDrafts.map((draft) => ({ ...draft, store: row.name })));
+      } catch (err) {
+        sources.push({ connectorId: row.id, name: row.name, type: row.type, supported: true, available: false, error: err instanceof Error ? err.message : 'unreachable' });
+      }
+    }
+    const severityRank: Record<BosTimecardCorrectionDraft['severity'], number> = { critical: 0, warning: 1, info: 2 };
+    const drafts = correctionDrafts
+      .sort((a, b) => severityRank[a.severity] - severityRank[b.severity] || String(a.clockDate || '').localeCompare(String(b.clockDate || '')))
+      .slice(0, limit);
+    await auditLog({
+      tenantId: auth.tenantId,
+      userId: auth.userId,
+      action: 'store.timecard_corrections.draft',
+      resource: `tenant:${auth.tenantId}`,
+      detail: { from, to, employeeFiltered: Boolean(employee), drafts: drafts.length, writeEnabled: false },
+      ip: getClientIp(req),
+    });
+    json(res, 200, {
+      connected: anyLive,
+      from,
+      to,
+      employeeFilter: employee || null,
+      correctionDrafts: drafts,
+      writeEnabled: false,
+      sources,
+      source: 'RapidRMS BOS',
+      fetchedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[store-timecard-corrections]', err instanceof Error ? err.message : err);
+    json(res, 502, { error: 'Time stamp correction drafts could not be retrieved' });
+  }
+}
+
 type AppSkillBundle = { name: string; capabilities: string[]; agent?: string };
 type AppAgentBundle = { name: string; capabilities: string[]; description?: string; skills?: string[] };
 type AppCapabilityBundle = {
@@ -4189,7 +4262,7 @@ const STOREPULSE_AGENTS: AppAgentBundle[] = STOREPULSE_AGENT_SKILLSETS.map((grou
 
 const APP_CAPABILITY_BUNDLES: Record<string, AppCapabilityBundle> = {
   storepulse: {
-    tools: ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_recent_items_added', 'mib_recent_items_edited', 'mib_recent_price_changes', 'mib_recent_cost_changes', 'mib_item_search', 'mib_low_inventory', 'mib_timecards'],
+    tools: ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_recent_items_added', 'mib_recent_items_edited', 'mib_recent_price_changes', 'mib_recent_cost_changes', 'mib_item_search', 'mib_low_inventory', 'mib_timecards', 'mib_timecard_corrections'],
     skills: STOREPULSE_SKILLS,
     agentSkillsets: STOREPULSE_AGENT_SKILLSETS,
     agents: STOREPULSE_AGENTS,
@@ -4199,7 +4272,7 @@ const APP_CAPABILITY_BUNDLES: Record<string, AppCapabilityBundle> = {
 };
 
 const CONNECTOR_CAPABILITY_TOOLS: Record<string, string[]> = {
-  'rapidrms-api': ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_recent_items_added', 'mib_recent_items_edited', 'mib_recent_price_changes', 'mib_recent_cost_changes', 'mib_store_list', 'mib_item_search', 'mib_low_inventory', 'mib_invoices', 'mib_timecards', 'rapidrms_storepulse'],
+  'rapidrms-api': ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_recent_items_added', 'mib_recent_items_edited', 'mib_recent_price_changes', 'mib_recent_cost_changes', 'mib_store_list', 'mib_item_search', 'mib_low_inventory', 'mib_invoices', 'mib_timecards', 'mib_timecard_corrections', 'rapidrms_storepulse'],
   'verifone-commander': ['mib_sales_today', 'mib_sales_summary', 'mib_top_items', 'mib_store_list', 'mib_item_search', 'mib_low_inventory', 'mib_invoices'],
 };
 
@@ -5603,6 +5676,10 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
 
   if (pathname === '/api/store/timecards' && method === 'GET') {
     return handleStoreTimecards(req, res);
+  }
+
+  if (pathname === '/api/store/timecard-corrections' && method === 'GET') {
+    return handleStoreTimecardCorrections(req, res);
   }
 
   if (pathname === '/api/store/inventory-risks' && method === 'GET') {
