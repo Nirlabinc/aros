@@ -3,31 +3,103 @@
 // components and browser APIs (FileReader, canvas, camera, BarcodeDetector)
 // live in the imperative shell (encode.ts, AttachSheet.tsx, BarcodeScanner.tsx).
 
-/** Router caps: 10MB per file, 20MB per turn (see mission contract Shared S). */
-export const MAX_FILE_BYTES = 10 * 1024 * 1024;
-export const MAX_TURN_BYTES = 20 * 1024 * 1024;
+// ── Transport ceiling ──────────────────────────────────────────────────────
+// The client cap is NOT a product choice — it is whatever the wire can actually
+// carry. Every AROS chat turn crosses an nginx that sets
+// `client_max_body_size 10m` (shreai/config/nginx-prod.conf:43 and
+// deploy/hostinger/nginx.conf:149), so a body above that is rejected at the
+// edge with a 413 before any of our code runs. Attachments ride as base64 data
+// URLs inside the JSON body, which inflates them by 4/3. Advertising a "20 MB
+// per message" limit while the transport dies at 10 MB of *encoded* bytes is
+// exactly the kind of promise the journey forbids — so the caps below are
+// derived from the ceiling and the copy quotes the derived number.
+
+/** Hard edge limit on the whole HTTP request body (nginx `client_max_body_size`). */
+export const TRANSPORT_MAX_BODY_BYTES = 10 * 1024 * 1024;
+/** Room reserved for the JSON envelope: system prompt, transcript, metadata. */
+export const ENVELOPE_RESERVE_BYTES = 256 * 1024;
+
+/** Encoded size of `decodedBytes` once base64'd into a data URL (4/3 + prefix). */
+export function base64WireBytes(decodedBytes: number): number {
+  if (decodedBytes <= 0) return 0;
+  return Math.ceil(decodedBytes / 3) * 4 + 64;
+}
+
+/** Largest decoded payload whose base64 form still fits under the edge limit. */
+export function maxDecodedBytesForTransport(
+  transport = TRANSPORT_MAX_BODY_BYTES,
+  reserve = ENVELOPE_RESERVE_BYTES,
+): number {
+  return Math.max(0, Math.floor(((transport - reserve - 64) / 4) * 3));
+}
+
+/** Per-turn cap: 7 MB decoded ≈ 9.34 MB on the wire, inside the 10 MB edge. */
+export const MAX_TURN_BYTES = 7 * 1024 * 1024;
+/** Per-file cap: a single file may not fill the whole turn budget. */
+export const MAX_FILE_BYTES = 6 * 1024 * 1024;
+/** Count cap — matches the router's own per-turn attachment limit. */
+export const MAX_ATTACHMENTS = 50;
 /** Large images are downscaled client-side before base64 encoding. */
 export const IMAGE_MAX_DIM = 2000;
 
 /** MIME allowlist — images the vision model reads, plus documents the router
- *  text-extracts (PDF/DOCX/XLSX/PPTX). Anything else is rejected before encode. */
-export const IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic', 'image/heif'];
+ *  text-extracts. Anything else is rejected before encode.
+ *
+ *  Deliberately EXCLUDED:
+ *  - legacy binary Office (`.doc`/`.xls`/`.ppt`): the router has no OLE2 parser,
+ *    so they fall through to a UTF-8 decode of binary and reach the model as
+ *    mojibake labelled "[Content of x]" — a fabrication vector.
+ *  - HEIC/HEIF as a *wire* type: Anthropic rejects it and the router forwards
+ *    media_type verbatim. HEIC picks are accepted at the input and transcoded to
+ *    JPEG in encode.ts (see HEIC_MIME); if the browser can't transcode, the user
+ *    gets an honest, actionable message instead of a silent 400. */
+export const IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+export const HEIC_MIME = ['image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence'];
 export const DOC_MIME = [
   'application/pdf',
-  'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-powerpoint',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   'text/plain',
   'text/csv',
 ];
-export const ATTACH_ACCEPT = [...IMAGE_MIME, ...DOC_MIME].join(',');
+/** Extension → MIME fallback. Android/Windows hand back files with an EMPTY
+ *  `file.type` often enough that a type-only allowlist rejects perfectly good
+ *  PDFs and photos; the extension is then the only signal we have. */
+const EXT_MIME: Record<string, string> = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
+  heic: 'image/heic', heif: 'image/heif',
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  txt: 'text/plain', md: 'text/plain', csv: 'text/csv',
+};
+
+const EXT_ACCEPT = Object.keys(EXT_MIME).map((e) => `.${e}`);
+
+/** `accept` for the generic "File" picker — images AND documents. */
+export const ATTACH_ACCEPT = [...IMAGE_MIME, ...HEIC_MIME, ...DOC_MIME, ...EXT_ACCEPT].join(',');
+/** `accept` for the image-only pickers (Photo / Camera). */
+export const IMAGE_ACCEPT = [...IMAGE_MIME, ...HEIC_MIME, '.heic', '.heif'].join(',');
+
+export function extensionOf(name: string): string {
+  const dot = (name || '').lastIndexOf('.');
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
+
+/** Resolve the effective MIME for a pick: the browser's type when we trust it,
+ *  otherwise the extension. Returns '' when neither is recognised. */
+export function resolveType(name: string, type: string): string {
+  const t = (type || '').toLowerCase().split(';')[0].trim();
+  if (isAllowedType(t)) return t;
+  return EXT_MIME[extensionOf(name)] || '';
+}
 
 /** One attachment as sent to the router: { name, type, dataUrl }. `size` is the
- *  decoded byte count, carried locally for cap math and never sent on the wire. */
+ *  decoded byte count and `id` a client-local handle — neither goes on the wire. */
 export interface Attachment {
+  id: string;
   name: string;
   type: string;
   dataUrl: string;
@@ -40,10 +112,22 @@ export function toWire(a: Attachment): { name: string; type: string; dataUrl: st
 }
 
 export function isImage(type: string): boolean {
-  return IMAGE_MIME.includes(type.toLowerCase());
+  const t = (type || '').toLowerCase();
+  return IMAGE_MIME.includes(t) || HEIC_MIME.includes(t);
 }
 
+export function isHeic(type: string): boolean {
+  return HEIC_MIME.includes((type || '').toLowerCase());
+}
+
+/** Types we accept at the INPUT (HEIC included — encode.ts transcodes it). */
 export function isAllowedType(type: string): boolean {
+  const t = (type || '').toLowerCase();
+  return IMAGE_MIME.includes(t) || HEIC_MIME.includes(t) || DOC_MIME.includes(t);
+}
+
+/** Types allowed on the WIRE (HEIC excluded — Anthropic rejects it). */
+export function isWireType(type: string): boolean {
   const t = (type || '').toLowerCase();
   return IMAGE_MIME.includes(t) || DOC_MIME.includes(t);
 }
@@ -69,15 +153,19 @@ export function formatBytes(n: number): string {
 
 export type CapResult = { ok: true } | { ok: false; reason: string };
 
-/** Pure cap gate: honors the 10MB/file and 20MB/turn limits with a graceful,
- *  human message instead of crashing on an oversized upload. */
+/** Pure cap gate: file size, turn size, and file count. The messages quote the
+ *  caps we can actually honour end-to-end (see TRANSPORT_MAX_BODY_BYTES) — an
+ *  advertised limit the transport rejects is a broken promise, not a limit. */
 export function checkCap(existing: Attachment[], incomingBytes: number, incomingName = 'That file'): CapResult {
+  if (existing.length >= MAX_ATTACHMENTS) {
+    return { ok: false, reason: `You can attach up to ${MAX_ATTACHMENTS} files in one message. Send these, then attach the rest.` };
+  }
   if (incomingBytes > MAX_FILE_BYTES) {
-    return { ok: false, reason: `${incomingName} is ${formatBytes(incomingBytes)} — over the ${formatBytes(MAX_FILE_BYTES)} per-file limit. Try a smaller file.` };
+    return { ok: false, reason: `${incomingName} is ${formatBytes(incomingBytes)} — over the ${formatBytes(MAX_FILE_BYTES)} per-file limit. Try a smaller file, or photograph the page you need.` };
   }
   const total = sumBytes(existing) + incomingBytes;
   if (total > MAX_TURN_BYTES) {
-    return { ok: false, reason: `Adding ${incomingName} would exceed the ${formatBytes(MAX_TURN_BYTES)} per-message limit. Send what you have, then attach the rest.` };
+    return { ok: false, reason: `Adding ${incomingName} would push this message over the ${formatBytes(MAX_TURN_BYTES)} limit. Send what you have, then attach the rest.` };
   }
   return { ok: true };
 }
@@ -144,6 +232,30 @@ export function resolveCatalogState(input: CatalogLookupInput): CatalogState {
   return 'not-found';
 }
 
+/** Phrases a truthful "I don't have it" answer uses. Matching only ever DOWN-
+ *  grades a claim (found → not-found) and adds the "Add item" CTA beside the
+ *  model's own words, so a false positive can never invent a product. */
+const NOT_FOUND_PHRASES =
+  /\b(not\s+(?:be\s+)?(?:found|in|listed|available)|no\s+(?:match|item|product|result)|isn'?t\s+in|couldn'?t\s+find|could\s+not\s+find|does\s+not\s+(?:appear|exist)|doesn'?t\s+(?:appear|exist)|unable\s+to\s+(?:find|locate))\b/i;
+
+export function readsAsNotFound(reply: string): boolean {
+  // Models emit curly apostrophes ("couldn’t"); normalise before matching or
+  // half the honest not-found answers slip through as "found".
+  return NOT_FOUND_PHRASES.test((reply || '').replace(/[‘’ʼ]/g, "'"));
+}
+
+/** Production resolver for a barcode turn: maps the three things we actually
+ *  know — is a store connected, did the turn complete, what did it say — onto
+ *  the four honest catalog states. This is what wires CATALOG_STATE_COPY to UI. */
+export function barcodeOutcome(input: { connected: boolean; transportOk: boolean; replyText?: string | null }): CatalogState {
+  const reply = (input.replyText || '').trim();
+  return resolveCatalogState({
+    connected: input.connected,
+    reachable: input.transportOk,
+    item: reply && !readsAsNotFound(reply) ? { upc: '', name: reply } : null,
+  });
+}
+
 /** The chat query a scanned UPC becomes when a store IS connected. The explicit
  *  "do not guess" instruction threads the never-fabricate rule to the model, so
  *  an item the catalog doesn't have comes back as an honest not-found. */
@@ -156,3 +268,13 @@ export const CATALOG_STATE_COPY: Record<Exclude<CatalogState, 'found'>, { title:
   'catalog-unreachable': { title: 'Catalog unavailable', body: 'The connected store’s catalog could not be reached just now. Try again in a moment.', cta: 'Retry' },
   'not-found': { title: 'Not in your catalog', body: 'That barcode did not match any item in your connected store. Want to add it?', cta: 'Add item' },
 };
+
+// ── Composer errors ────────────────────────────────────────────────────────
+
+export interface AttachError { id: string; text: string }
+
+let errorSeq = 0;
+export function attachError(text: string): AttachError {
+  errorSeq += 1;
+  return { id: `ae-${errorSeq}`, text };
+}

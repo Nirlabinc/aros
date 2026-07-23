@@ -8,7 +8,8 @@ import { itemsFromMessages, type CanvasWidgetItem } from '../aros-ai/canvas';
 import { AiDisclosureModal, AiDisclosureNotice, useAiDisclosure } from '../components/AiDisclosure';
 import { AttachSheet } from './attach/AttachSheet';
 import { AttachmentThumbs } from './attach/AttachmentThumbs';
-import { type Attachment, toWire, barcodeLookupQuery, CATALOG_STATE_COPY } from './attach/attachments';
+import { CatalogNotice } from './attach/CatalogNotice';
+import { type Attachment, type AttachError, type CatalogState, attachError, toWire, barcodeLookupQuery, barcodeOutcome } from './attach/attachments';
 
 /** Warm ChatPalette pulled from the live design tokens so the shared mib-widget
  *  renderer matches the current (light/dark) theme. */
@@ -57,7 +58,10 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
   const [messages, setMessages] = useState<ChatMsg[]>(initial && initial.length ? initial : demo ? CONCIERGE_SEED : []);
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState<Attachment[]>([]);
-  const [attachError, setAttachError] = useState('');
+  // One entry per rejected file. A single collapsing string meant picking three
+  // bad files told the user about one of them.
+  const [attachErrors, setAttachErrors] = useState<AttachError[]>([]);
+  const [attachBusy, setAttachBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [activeAgents, setActiveAgents] = useState<ActiveAgent[]>([]);
   const [activeModel, setActiveModel] = useState('auto');
@@ -88,16 +92,27 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
       .catch(() => setActiveModel('auto'));
   }, [demo, session?.access_token, tenant?.id]);
 
-  async function send(text: string, atts: Attachment[] = pending) {
+  async function send(text: string, atts: Attachment[] = pending, opts: { barcodeUpc?: string } = {}) {
     const q = text.trim();
     if ((!q && atts.length === 0) || sending) return;
+    // Never send while a file is still being read — the attachment would be
+    // silently dropped from the turn.
+    if (attachBusy) return;
     const hasAttachments = atts.length > 0;
     const userMsg: ChatMsg = { from: 'me', text: q, ...(hasAttachments ? { attachments: atts } : {}) };
     const nextMessages: ChatMsg[] = [...messages, userMsg];
     setMessages(prev => [...prev, userMsg]);
+    // Draft safety: the composer is cleared optimistically for a responsive
+    // feel, but every failure path below restores BOTH the text and the files.
+    // Losing an attachment on a failed send means re-photographing the invoice.
     setDraft('');
     setPending([]);
-    setAttachError('');
+    setAttachErrors([]);
+    const restoreDraft = () => {
+      setMessages(prev => prev.filter(m => m !== userMsg));
+      setDraft(current => current || q);
+      setPending(current => (current.length ? current : atts));
+    };
     const hasExternalIntelligence = activeAgents.some(agent => agent.capabilities.some(capability => capability === 'weather.read' || capability === 'web.search'));
     if (EXTERNAL_INTELLIGENCE_REQUEST.test(q) && !hasExternalIntelligence) {
       const active = activeAgents.length ? activeAgents.map(agent => agent.name).join(', ') : 'no specialists reported';
@@ -142,15 +157,28 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
       const tools: string[] = Array.isArray(shre?.toolsUsed) ? shre.toolsUsed.map(String) : [];
       const label = agent && agent !== 'main' ? agentLabel(agent) : 'Shre';
       const model = data?.model || shre?.model;
-      setMessages(prev => [...prev, { from: 'shre', text: reply, meta: model ? `${label} · ${model}` : 'Shre · Local', agent, tools }]);
+      // Barcode turns carry their honest catalog outcome: the model's own words
+      // decide found vs not-found, and the card only ever ADDS a CTA beside
+      // them — it never renders product data, so it cannot invent a product.
+      const catalog: CatalogState | undefined = opts.barcodeUpc
+        ? barcodeOutcome({ connected: connections.total > 0, transportOk: true, replyText: reply })
+        : undefined;
+      setMessages(prev => [...prev, { from: 'shre', text: reply, meta: model ? `${label} · ${model}` : 'Shre · Local', agent, tools, ...(catalog ? { catalog, upc: opts.barcodeUpc } : {}) }]);
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Unknown chat error';
+      if (opts.barcodeUpc) {
+        // A barcode lookup that never reached the catalog is "unreachable" —
+        // with a Retry, not a shrug.
+        setMessages(prev => [...prev, { from: 'shre', text: `I couldn’t reach your catalog to look that barcode up (${detail}).`, meta: 'AROS catalog', catalog: 'catalog-unreachable', upc: opts.barcodeUpc }]);
+        setSending(false);
+        return;
+      }
+      restoreDraft();
       // Honest failure: when an attachment was sent but the turn failed, say the
       // file couldn't be read — never describe an image we didn't actually see.
-      const text = hasAttachments
-        ? `I couldn’t read that attachment right now (${detail}). I won’t guess at what it contains — please try again in a moment.`
-        : `I couldn’t complete that request (${detail}). Try again in a moment.`;
-      setMessages(prev => [...prev, { from: 'shre', text, meta: 'Shre · Local' }]);
+      setAttachErrors([attachError(hasAttachments
+        ? `I couldn’t read that attachment right now (${detail}). I won’t guess at what it contains. Your message and ${atts.length === 1 ? 'file are' : 'files are'} back in the box — press Send to try again.`
+        : `I couldn’t complete that request (${detail}). Your message is back in the box — press Send to try again.`)]);
     } finally {
       setSending(false);
     }
@@ -161,11 +189,26 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
   // explicit "do not invent" lookup query on the real store-data path.
   function onBarcode(upc: string) {
     if (connections.total === 0) {
-      const copy = CATALOG_STATE_COPY['not-connected'];
-      setMessages(prev => [...prev, { from: 'shre', text: `${copy.title} — ${copy.body}`, meta: 'AROS catalog' }]);
+      setMessages(prev => [...prev, { from: 'shre', text: '', meta: 'AROS catalog', catalog: 'not-connected', upc }]);
       return;
     }
-    void send(barcodeLookupQuery(upc), []);
+    void send(barcodeLookupQuery(upc), [], { barcodeUpc: upc });
+  }
+
+  // Every catalog CTA does something real: connect a store, retry the read, or
+  // put a concrete "add this item" request in the composer.
+  function onCatalogAction(state: Exclude<CatalogState, 'found'>, upc?: string) {
+    if (state === 'not-connected') { onConnect?.(); return; }
+    if (state === 'catalog-unreachable') { if (upc) void send(barcodeLookupQuery(upc), [], { barcodeUpc: upc }); return; }
+    setDraft(`Add UPC ${upc || ''} to my catalog.`.replace(/\s+/g, ' ').trim());
+    inputRef.current?.focus({ preventScroll: true });
+  }
+
+  function removeAttachment(id: string) {
+    // Cap/size errors were computed against the previous set — once a file is
+    // pulled they are stale, so they go with it.
+    setPending(prev => prev.filter(a => a.id !== id));
+    setAttachErrors([]);
   }
 
   return (
@@ -178,10 +221,15 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
           <div key={i} className={`aros-msg ${m.from === 'me' ? 'aros-msg--me' : ''}`}>
             <div className="aros-msg__av">{m.from === 'me' ? 'DR' : mark}</div>
             <div>
-              <div className="aros-msg__bubble">
-                {m.attachments && m.attachments.length > 0 && <AttachmentThumbs attachments={m.attachments} />}
-                {m.from === 'me' ? m.text : <ChatMessageRenderer content={m.text} palette={palette} />}
-              </div>
+              {(m.text || (m.attachments && m.attachments.length > 0)) && (
+                <div className="aros-msg__bubble">
+                  {/* Success confirmation: what was actually sent stays visible
+                      in the transcript beside the answer. */}
+                  {m.attachments && m.attachments.length > 0 && <AttachmentThumbs attachments={m.attachments} />}
+                  {m.from === 'me' ? m.text : <ChatMessageRenderer content={m.text} palette={palette} />}
+                </div>
+              )}
+              {m.catalog && <CatalogNotice state={m.catalog} upc={m.upc} onAction={(state) => onCatalogAction(state, m.upc)} />}
               {m.meta && (
                 <div className="aros-msg__meta">
                   {m.meta}
@@ -205,14 +253,20 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
           {connections.total === 0 && <button className="aros-chip" type="button" onClick={onConnect}><span className="aros-chip__dot" />Connect Store</button>}
           <button className="aros-chip" type="button" onClick={onConnectApps}><span className="aros-chip__dot" />Connect Apps</button>
         </div>
-        {pending.length > 0 && <AttachmentThumbs attachments={pending} onRemove={(i) => setPending(prev => prev.filter((_, idx) => idx !== i))} />}
-        {attachError && <div className="aros-attach-error" role="status">{attachError}</div>}
+        {pending.length > 0 && <AttachmentThumbs attachments={pending} onRemove={removeAttachment} />}
+        {attachBusy && <div className="aros-attach-busy" role="status" aria-live="polite">Reading your file…</div>}
+        {attachErrors.length > 0 && (
+          <div role="alert">
+            {attachErrors.map(err => <div key={err.id} className="aros-attach-error">{err.text}</div>)}
+          </div>
+        )}
         <form className="aros-inputrow" onSubmit={(e: FormEvent) => { e.preventDefault(); send(draft); }}>
           <AttachSheet
             existing={pending}
-            onAttach={(a) => { setAttachError(''); setPending(prev => [...prev, ...a]); }}
+            onAttach={(a) => { setAttachErrors([]); setPending(prev => [...prev, ...a]); }}
             onBarcode={onBarcode}
-            onError={setAttachError}
+            onError={(msgs) => setAttachErrors(msgs.map(attachError))}
+            onBusyChange={setAttachBusy}
             disabled={sending}
           />
           <input
@@ -223,7 +277,7 @@ export function ConciergeChat({ onConnect, onConnectApps, seed, focusOnMount, in
             aria-label={`Message ${branding().concierge}`}
             disabled={sending}
           />
-          <button className="aros-send" type="submit" aria-label="Send" disabled={sending || (!draft.trim() && pending.length === 0)}>↑</button>
+          <button className="aros-send" type="submit" aria-label="Send" disabled={sending || attachBusy || (!draft.trim() && pending.length === 0)}>↑</button>
         </form>
         <AiDisclosureNotice />
         {!messages.some(m => m.from === 'me') && (

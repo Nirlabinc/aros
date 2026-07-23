@@ -5,7 +5,8 @@ import { AiDisclosureModal, AiDisclosureNotice, useAiDisclosure } from '../../co
 import { useAuth } from '../../contexts/AuthContext';
 import { AttachSheet } from '../../redesign/attach/AttachSheet';
 import { AttachmentThumbs } from '../../redesign/attach/AttachmentThumbs';
-import { type Attachment, toWire, barcodeLookupQuery } from '../../redesign/attach/attachments';
+import { CatalogNotice } from '../../redesign/attach/CatalogNotice';
+import { type Attachment, type AttachError, type CatalogState, attachError, toWire } from '../../redesign/attach/attachments';
 
 /**
  * StartChat — the day-one landing surface for a freshly signed-up tenant.
@@ -39,6 +40,8 @@ interface Message {
   role: 'user' | 'agent';
   content: string;
   attachments?: Attachment[];
+  catalog?: CatalogState;
+  upc?: string;
 }
 
 interface Activation {
@@ -70,7 +73,8 @@ export function StartChat() {
   const [checkingStore, setCheckingStore] = useState(true);
   const [input, setInput] = useState('');
   const [pending, setPending] = useState<Attachment[]>([]);
-  const [attachError, setAttachError] = useState('');
+  const [attachErrors, setAttachErrors] = useState<AttachError[]>([]);
+  const [attachBusy, setAttachBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [voiceConvo, setVoiceConvo] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
@@ -125,14 +129,23 @@ export function StartChat() {
   const sendMessage = async (text: string, atts: Attachment[] = pending): Promise<boolean> => {
     const t = text.trim();
     if ((!t && atts.length === 0) || sendingRef.current) return false;
+    // A send fired mid-encode drops the attachment from the turn.
+    if (attachBusy) return false;
     sendingRef.current = true;
     const hasAttachments = atts.length > 0;
-    setMessages((prev) => [...prev, { role: 'user', content: t, ...(hasAttachments ? { attachments: atts } : {}) }]);
+    const userMsg: Message = { role: 'user', content: t, ...(hasAttachments ? { attachments: atts } : {}) };
+    setMessages((prev) => [...prev, userMsg]);
+    // Draft safety: cleared optimistically, fully restored on failure so a
+    // dropped connection never costs the user a re-photographed invoice.
     setInput('');
     setPending([]);
-    setAttachError('');
+    setAttachErrors([]);
     setSending(true);
-    let reply = 'Something went wrong reaching your agent. Please try again.';
+    const restoreDraft = () => {
+      setMessages((prev) => prev.filter((m) => m !== userMsg));
+      setInput((current) => current || t);
+      setPending((current) => (current.length ? current : atts));
+    };
     try {
       const res = await fetch(`${ROUTER_URL}/v1/chat`, {
         method: 'POST',
@@ -151,16 +164,17 @@ export function StartChat() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      reply = chatReplyText(data);
+      const reply = chatReplyText(data);
       setMessages((prev) => [...prev, { role: 'agent', content: reply }]);
       if (voiceConvoRef.current) voiceRef.current?.speak(reply);
       return true;
     } catch {
+      restoreDraft();
       // Honest failure: never fabricate a description of an unread attachment.
-      const msg = hasAttachments
-        ? 'I couldn’t read that attachment right now. I won’t guess what it contains — please try again in a moment.'
-        : 'Something went wrong reaching your agent. Please try again.';
-      setMessages((prev) => [...prev, { role: 'agent', content: msg }]);
+      setAttachErrors([attachError(hasAttachments
+        ? 'I couldn’t read that attachment right now. I won’t guess what it contains. Your message and files are back in the box — press Send to try again.'
+        : 'Something went wrong reaching your agent. Your message is back in the box — press Send to try again.')]);
+      return false;
     } finally {
       sendingRef.current = false;
       setSending(false);
@@ -185,10 +199,29 @@ export function StartChat() {
     });
   };
 
-  const onBarcode = (upc: string) => { void sendMessage(barcodeLookupQuery(upc), []); };
+  // This surface runs in DEMO MODE (`demoMode: true` on every turn), so a
+  // barcode sent through it would be answered from the SAMPLE catalog — a real
+  // scan of a real bottle coming back as a plausible sample product. That is
+  // exactly the fabrication the journey says ends this journey permanently.
+  // A scan here is always the honest not-connected state, with the one action
+  // that fixes it. It is never sent.
+  const onBarcode = (upc: string) => {
+    setMessages((prev) => [...prev, { role: 'agent', content: '', catalog: 'not-connected', upc }]);
+  };
+
+  // The only real recovery from this surface is connecting a store — the
+  // sample catalog is not an answer to a real barcode.
+  const onCatalogAction = () => { window.location.href = '/onboarding'; };
+
+  const removeAttachment = (id: string) => {
+    setPending((prev) => prev.filter((a) => a.id !== id));
+    // Cap errors were computed against the previous set — stale once it changes.
+    setAttachErrors([]);
+  };
 
   const onSubmit = (e: FormEvent) => { e.preventDefault(); void sendMessage(input); };
   const fresh = messages.length === 0;
+  const sendBlocked = (!input.trim() && pending.length === 0) || sending || attachBusy;
 
   // Never flash the sample surface while deciding whether this tenant is
   // already connected (one authed round-trip).
@@ -236,9 +269,14 @@ export function StartChat() {
 
           {messages.map((m, i) => (
             <div key={i} style={{ ...s.row, justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-              <div style={{ ...s.bubble, ...(m.role === 'user' ? s.bubbleUser : s.bubbleAgent) }}>
-                {m.attachments && m.attachments.length > 0 && <AttachmentThumbs attachments={m.attachments} size={52} />}
-                {m.content && <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.content}</span>}
+              <div style={{ maxWidth: '85%' }}>
+                {(m.content || (m.attachments && m.attachments.length > 0)) && (
+                  <div style={{ ...s.bubble, maxWidth: '100%', ...(m.role === 'user' ? s.bubbleUser : s.bubbleAgent) }}>
+                    {m.attachments && m.attachments.length > 0 && <AttachmentThumbs attachments={m.attachments} size={52} />}
+                    {m.content && <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.content}</span>}
+                  </div>
+                )}
+                {m.catalog && <CatalogNotice state={m.catalog} upc={m.upc} onAction={onCatalogAction} />}
               </div>
             </div>
           ))}
@@ -258,18 +296,26 @@ export function StartChat() {
           )}
           {pending.length > 0 && (
             <div style={{ marginBottom: 8 }}>
-              <AttachmentThumbs attachments={pending} size={52} onRemove={(i) => setPending((prev) => prev.filter((_, idx) => idx !== i))} />
+              <AttachmentThumbs attachments={pending} size={52} onRemove={removeAttachment} />
             </div>
           )}
-          {attachError && <div role="status" style={{ marginBottom: 8, fontSize: 12.5, color: '#b45309' }}>{attachError}</div>}
+          {attachBusy && <div role="status" aria-live="polite" style={{ marginBottom: 8, fontSize: 12.5, color: '#6b7280' }}>Reading your file…</div>}
+          {attachErrors.length > 0 && (
+            <div role="alert">
+              {attachErrors.map((err) => <div key={err.id} style={{ marginBottom: 8, fontSize: 12.5, color: '#b45309', lineHeight: 1.45 }}>{err.text}</div>)}
+            </div>
+          )}
           <form onSubmit={onSubmit} style={s.inputBar}>
             <AttachSheet
               existing={pending}
-              onAttach={(a) => { setAttachError(''); setPending((prev) => [...prev, ...a]); }}
+              onAttach={(a) => { setAttachErrors([]); setPending((prev) => [...prev, ...a]); }}
               onBarcode={onBarcode}
-              onError={setAttachError}
+              onError={(msgs) => setAttachErrors(msgs.map(attachError))}
+              onBusyChange={setAttachBusy}
               disabled={sending}
               accent={ACCENT}
+              // A working mic sits in this same row.
+              voiceRow={voice.supported ? 'hidden' : 'coming-soon'}
             />
             {voice.supported && (
               <button
@@ -305,7 +351,7 @@ export function StartChat() {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" /></svg>
               </button>
             )}
-            <button type="submit" disabled={(!input.trim() && pending.length === 0) || sending} style={{ ...s.send, opacity: (!input.trim() && pending.length === 0) || sending ? 0.5 : 1 }}>
+            <button type="submit" disabled={sendBlocked} style={{ ...s.send, opacity: sendBlocked ? 0.5 : 1 }}>
               Send
             </button>
           </form>

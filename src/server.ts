@@ -993,31 +993,105 @@ async function serveDashboard(req: IncomingMessage, res: ServerResponse): Promis
   return sendStaticFile(res, join(WEB_DIST, 'index.html'));
 }
 
+/** Default JSON body limit for the ~40 small control-plane endpoints. */
+const JSON_BODY_LIMIT = 65_536;
+/**
+ * Body limit for /v1/chat. Chat turns carry attachments as base64 data URLs, so
+ * the ceiling has to clear the client's per-turn cap (7 MB decoded ≈ 9.4 MB
+ * encoded — see apps/web/src/redesign/attach/attachments.ts) plus the JSON
+ * envelope. The real binding constraint is the nginx `client_max_body_size 10m`
+ * in front of this process; this limit sits just above it so a 413 is always
+ * the edge's decision, never a surprise from our own parser.
+ */
+const CHAT_BODY_LIMIT = 12 * 1024 * 1024;
+
+/** Signals an over-limit body so the caller can answer 413 instead of a hang. */
+class BodyTooLargeError extends Error {
+  constructor(readonly limit: number) {
+    super(`Body exceeds ${limit} bytes`);
+    this.name = 'BodyTooLargeError';
+  }
+}
+
 function collectBody(req: IncomingMessage, maxBytes = 1_048_576): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
+    let over = false;
+    // Fail fast on a declared oversize body — no point streaming 500 MB to
+    // discover what content-length already told us.
+    const declared = Number(req.headers['content-length'] || 0);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      reject(new BodyTooLargeError(maxBytes));
+      req.resume();
+      return;
+    }
     req.on('data', (chunk: Buffer) => {
+      if (over) return;
       total += chunk.length;
       if (total > maxBytes) {
-        reject(new Error('Body too large'));
-        req.destroy();
+        over = true;
+        chunks.length = 0;
+        // Drain rather than req.destroy(): tearing the socket down mid-upload
+        // makes the browser report an opaque "Failed to fetch" with no status,
+        // so an over-cap attachment looked like a network outage. Draining lets
+        // the caller send a real 413 the composer can explain.
+        req.resume();
+        reject(new BodyTooLargeError(maxBytes));
         return;
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
+    req.on('end', () => { if (!over) resolve(Buffer.concat(chunks)); });
+    req.on('error', (err) => { if (!over) reject(err); });
   });
 }
 
-async function parseJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
+async function parseJsonBody(req: IncomingMessage, maxBytes = JSON_BODY_LIMIT): Promise<Record<string, unknown> | null> {
   try {
-    const raw = await collectBody(req, 65_536);
+    const raw = await collectBody(req, maxBytes);
     return JSON.parse(raw.toString());
   } catch {
     return null;
   }
+}
+
+type JsonBodyOutcome =
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; status: 400 | 413; error: string };
+
+/**
+ * Body reader for routes that must NOT silently forward garbage. `parseJsonBody`
+ * collapses "too large" and "malformed" into `null`, and /v1/chat then proxied
+ * the literal string "null" upstream — the user saw a nonsense model reply
+ * instead of "that file is too big". This distinguishes the two.
+ */
+async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<JsonBodyOutcome> {
+  let raw: Buffer;
+  try {
+    raw = await collectBody(req, maxBytes);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      return { ok: false, status: 413, error: `That message is too large to send (limit ${Math.floor(maxBytes / (1024 * 1024))} MB including attachments). Remove an attachment or send a smaller file.` };
+    }
+    return { ok: false, status: 400, error: 'The request body could not be read. Please try again.' };
+  }
+  try {
+    const parsed = JSON.parse(raw.toString());
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, status: 400, error: 'Expected a JSON object body.' };
+    }
+    return { ok: true, body: parsed as Record<string, unknown> };
+  } catch {
+    return { ok: false, status: 400, error: 'The request body was not valid JSON.' };
+  }
+}
+
+/** True when a chat turn carries attachments the text-only intent handlers
+ *  cannot see. */
+function hasAttachments(body: Record<string, unknown> | null | undefined): boolean {
+  const list = body?.attachments;
+  return Array.isArray(list) && list.length > 0;
 }
 
 // ── Rate Limiter (per-IP, in-memory) ────────────────────────────
@@ -6706,13 +6780,29 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   }
 
   if (pathname === '/v1/chat' && method === 'POST') {
-    const body = await parseJsonBody(req);
-    if (await handleArosHealthPing(req, res, body)) return;
-    // Automation intents run before the data intents: "text me when someone
-    // voids a transaction" would otherwise be swallowed as a sales question.
-    if (await handleArosAutomationChat(req, res, body)) return;
-    if (await handleArosStoreDataChat(req, res, body)) return;
-    if (await handleArosSalesChat(req, res, body)) return;
+    // Chat bodies carry base64 attachments — read them at the chat limit, and
+    // answer a real status when the body is oversized or malformed instead of
+    // proxying the literal `null` a failed parse used to produce.
+    const parsed = await readJsonBody(req, CHAT_BODY_LIMIT);
+    if (!parsed.ok) {
+      res.writeHead(parsed.status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: parsed.error }));
+      return;
+    }
+    const body = parsed.body;
+    // The intent interceptors below match on message TEXT alone and answer
+    // without ever proxying. An attachment turn that trips one is answered from
+    // store data while the photo is silently discarded — the user is told about
+    // sales they didn't ask about and never learns their invoice was dropped.
+    // Anything with an attachment goes straight to the router.
+    if (!hasAttachments(body)) {
+      if (await handleArosHealthPing(req, res, body)) return;
+      // Automation intents run before the data intents: "text me when someone
+      // voids a transaction" would otherwise be swallowed as a sales question.
+      if (await handleArosAutomationChat(req, res, body)) return;
+      if (await handleArosStoreDataChat(req, res, body)) return;
+      if (await handleArosSalesChat(req, res, body)) return;
+    }
     return proxyRequest(req, res, SHRE_ROUTER_URL, body);
   }
 

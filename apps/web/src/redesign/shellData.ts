@@ -52,7 +52,7 @@ export const HEALTH = { healthy: 2, degraded: 1, down: 1 };
 export const USER = { name: 'Dana Reyes', role: 'Owner', workspace: 'Five Points', initials: 'DR' };
 export const ROLES = ['Owner', 'Admin', 'Member'] as const;
 
-export interface ChatMsg { from: 'shre' | 'me'; text: string; meta?: string; agent?: string; tools?: string[]; attachments?: import('./attach/attachments').Attachment[]; }
+export interface ChatMsg { from: 'shre' | 'me'; text: string; meta?: string; agent?: string; tools?: string[]; attachments?: import('./attach/attachments').Attachment[]; catalog?: import('./attach/attachments').CatalogState; upc?: string; }
 export const CONCIERGE_SEED: ChatMsg[] = [
   { from: 'shre', text: 'I’m Shre — your store concierge. Ask me anything, like “How were sales yesterday?” or “Which SKUs are running low?” You can connect a register whenever you’re ready. I’ll never block the chat on setup.', meta: 'Shre · Local' },
   { from: 'shre', text: 'RapidRMS is connected — I can see all 5 stores and live sales are flowing. Ask me “How were sales yesterday?” whenever you’re ready.', meta: 'Shre · Local' },

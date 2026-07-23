@@ -8,7 +8,9 @@ import { chatReplyText } from '../lib/chatReply';
 import { useVoice, cancelSpeech, type VoiceApi } from './voice';
 import { AttachSheet } from '../redesign/attach/AttachSheet';
 import { AttachmentThumbs } from '../redesign/attach/AttachmentThumbs';
-import { type Attachment, toWire, barcodeLookupQuery } from '../redesign/attach/attachments';
+import { CatalogNotice } from '../redesign/attach/CatalogNotice';
+import { type Attachment, type AttachError, type CatalogState, attachError, toWire, barcodeLookupQuery, barcodeOutcome } from '../redesign/attach/attachments';
+import { useConnectionSummary } from '../redesign/data';
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -17,7 +19,7 @@ import { type Attachment, toWire, barcodeLookupQuery } from '../redesign/attach/
 const STORAGE_KEY = 'aros-chat-messages';
 const MAX_STORED = 50;
 
-interface Message { role: 'user' | 'agent'; content: string; timestamp: number; attachments?: Attachment[]; }
+interface Message { role: 'user' | 'agent'; content: string; timestamp: number; attachments?: Attachment[]; catalog?: CatalogState; upc?: string; }
 
 function loadMessages(greeting: string): Message[] {
   try {
@@ -48,12 +50,14 @@ export function ArosChat() {
   const { config } = useWhitelabel();
   const c = useChatTheme();
   const canvas = useCanvas();
+  const connections = useConnectionSummary();
 
   const greeting = config.agent.greeting ?? 'What do you need?';
   const [messages, setMessages] = useState<Message[]>(() => loadMessages(greeting));
   const [input, setInput] = useState('');
   const [pending, setPending] = useState<Attachment[]>([]);
-  const [attachError, setAttachError] = useState('');
+  const [attachErrors, setAttachErrors] = useState<AttachError[]>([]);
+  const [attachBusy, setAttachBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [sending, setSending] = useState(false);
   // Voice-conversation mode: hands-free (each spoken utterance auto-sends) + replies read aloud.
@@ -116,16 +120,25 @@ export function ArosChat() {
   useEffect(() => { voiceConvoRef.current = voiceConvo; }, [voiceConvo]);
   useEffect(() => { openRef.current = open; }, [open]);
 
-  const sendMessage = async (text: string, atts: Attachment[] = pending): Promise<boolean> => {
+  const sendMessage = async (text: string, atts: Attachment[] = pending, opts: { barcodeUpc?: string } = {}): Promise<boolean> => {
     if ((!text.trim() && atts.length === 0) || sendingRef.current) return false;
+    // A send fired while a file is still encoding drops the attachment.
+    if (attachBusy) return false;
     sendingRef.current = true;
     const hasAttachments = atts.length > 0;
     const userMsg: Message = { role: 'user', content: text.trim(), timestamp: Date.now(), ...(hasAttachments ? { attachments: atts } : {}) };
     setSending(true);
     setMessages((prev) => [...prev, userMsg]);
+    // Draft safety: cleared optimistically, restored in full on every failure
+    // path below. A dropped attachment means re-photographing the invoice.
     setInput('');
     setPending([]);
-    setAttachError('');
+    setAttachErrors([]);
+    const restoreDraft = () => {
+      setMessages((prev) => prev.filter((m) => m !== userMsg));
+      setInput((current) => current || text.trim());
+      setPending((current) => (current.length ? current : atts));
+    };
 
     try {
       const res = await fetch(`${ROUTER_URL}/v1/chat`, {
@@ -142,15 +155,25 @@ export function ArosChat() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const reply = chatReplyText(data);
-      setMessages((prev) => [...prev, { role: 'agent', content: reply, timestamp: Date.now() }]);
+      const catalog: CatalogState | undefined = opts.barcodeUpc
+        ? barcodeOutcome({ connected: connections.total > 0, transportOk: true, replyText: reply })
+        : undefined;
+      setMessages((prev) => [...prev, { role: 'agent', content: reply, timestamp: Date.now(), ...(catalog ? { catalog, upc: opts.barcodeUpc } : {}) }]);
       // speak only if voice-conversation is still on and the panel is still open (checked live)
       if (voiceConvoRef.current && openRef.current) voiceRef.current?.speak(reply);
     } catch {
+      if (opts.barcodeUpc) {
+        setMessages((prev) => [...prev, { role: 'agent', content: 'I couldn’t reach your catalog to look that barcode up.', timestamp: Date.now(), catalog: 'catalog-unreachable', upc: opts.barcodeUpc }]);
+        sendingRef.current = false;
+        setSending(false);
+        return false;
+      }
+      restoreDraft();
       // Honest failure: never describe an attachment we couldn't actually read.
-      const msg = hasAttachments
-        ? 'I couldn’t read that attachment right now. I won’t guess what it says — please try again in a moment.'
-        : 'Something went wrong. Please try again.';
-      setMessages((prev) => [...prev, { role: 'agent', content: msg, timestamp: Date.now() }]);
+      setAttachErrors([attachError(hasAttachments
+        ? 'I couldn’t read that attachment right now. I won’t guess what it says. Your message and files are back in the box — press Send to try again.'
+        : 'Something went wrong. Your message is back in the box — press Send to try again.')]);
+      return false;
     } finally {
       sendingRef.current = false;
       setSending(false);
@@ -158,7 +181,28 @@ export function ArosChat() {
     return true;
   };
 
-  const onBarcode = (upc: string) => { void sendMessage(barcodeLookupQuery(upc), []); };
+  // Barcode → catalog. Without a connected store there is nothing to look the
+  // code up IN, so the honest not-connected state is shown instead of sending a
+  // query whose only possible answer would be guesswork.
+  const onBarcode = (upc: string) => {
+    if (connections.total === 0) {
+      setMessages((prev) => [...prev, { role: 'agent', content: '', timestamp: Date.now(), catalog: 'not-connected', upc }]);
+      return;
+    }
+    void sendMessage(barcodeLookupQuery(upc), [], { barcodeUpc: upc });
+  };
+
+  const onCatalogAction = (state: Exclude<CatalogState, 'found'>, upc?: string) => {
+    if (state === 'not-connected') { window.location.href = '/connectors'; return; }
+    if (state === 'catalog-unreachable') { if (upc) void sendMessage(barcodeLookupQuery(upc), [], { barcodeUpc: upc }); return; }
+    setInput(`Add UPC ${upc || ''} to my catalog.`.replace(/\s+/g, ' ').trim());
+    inputRef.current?.focus();
+  };
+
+  const removeAttachment = (id: string) => {
+    setPending((prev) => prev.filter((a) => a.id !== id));
+    setAttachErrors([]);
+  };
 
   const voice = useVoice({
     handsFree: voiceConvo,
@@ -189,6 +233,9 @@ export function ArosChat() {
 
   if (!config.features?.agentChat) return null;
 
+  // Blocked while encoding too — otherwise Send fires before the attachment is
+  // in state and the file is dropped from the turn.
+  const sendBlocked = (!input.trim() && pending.length === 0) || sending || attachBusy;
   const agentName = config.agent.name;
   const font = '-apple-system, "SF Pro Text", "SF Pro Display", BlinkMacSystemFont, "Helvetica Neue", "Inter", system-ui, sans-serif';
 
@@ -333,23 +380,28 @@ export function ArosChat() {
                     </svg>
                   </div>
                 )}
-                <div style={{
-                  maxWidth: '80%', borderRadius: 16, padding: '10px 16px', fontSize: 13, lineHeight: 1.47,
-                  background: isUser ? c.msgUser : c.msgAi, color: c.text1,
-                  border: `1px solid ${isUser ? c.accentSoft : c.border2}`,
-                }}>
-                  {isUser ? (
-                    <>
-                      {msg.attachments && msg.attachments.length > 0 && <AttachmentThumbs attachments={msg.attachments} size={48} />}
-                      {msg.content && <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{msg.content}</span>}
-                    </>
-                  ) : (
-                    <ChatMessageRenderer
-                      content={msg.content}
-                      palette={c}
-                      onOpenWidget={(widgetIndex) => openWidgetOnCanvas(i, widgetIndex)}
-                    />
+                <div style={{ maxWidth: '80%' }}>
+                  {(msg.content || (msg.attachments && msg.attachments.length > 0)) && (
+                    <div style={{
+                      borderRadius: 16, padding: '10px 16px', fontSize: 13, lineHeight: 1.47,
+                      background: isUser ? c.msgUser : c.msgAi, color: c.text1,
+                      border: `1px solid ${isUser ? c.accentSoft : c.border2}`,
+                    }}>
+                      {isUser ? (
+                        <>
+                          {msg.attachments && msg.attachments.length > 0 && <AttachmentThumbs attachments={msg.attachments} size={48} />}
+                          {msg.content && <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{msg.content}</span>}
+                        </>
+                      ) : (
+                        <ChatMessageRenderer
+                          content={msg.content}
+                          palette={c}
+                          onOpenWidget={(widgetIndex) => openWidgetOnCanvas(i, widgetIndex)}
+                        />
+                      )}
+                    </div>
                   )}
+                  {msg.catalog && <CatalogNotice state={msg.catalog} upc={msg.upc} onAction={(state) => onCatalogAction(state, msg.upc)} />}
                 </div>
                 {isUser && (
                   <div style={{ width: 24, height: 24, borderRadius: '50%', flexShrink: 0, marginTop: 2, background: c.bgInput, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -381,10 +433,15 @@ export function ArosChat() {
         </div>
 
         {/* Input */}
-        {(pending.length > 0 || attachError) && (
+        {(pending.length > 0 || attachErrors.length > 0 || attachBusy) && (
           <div style={{ padding: '8px 16px 0', flexShrink: 0, background: c.bg2 }}>
-            {pending.length > 0 && <AttachmentThumbs attachments={pending} size={48} onRemove={(i) => setPending((prev) => prev.filter((_, idx) => idx !== i))} />}
-            {attachError && <div role="status" style={{ fontSize: 12, color: '#b45309', padding: '4px 0' }}>{attachError}</div>}
+            {pending.length > 0 && <AttachmentThumbs attachments={pending} size={48} onRemove={removeAttachment} />}
+            {attachBusy && <div role="status" aria-live="polite" style={{ fontSize: 12, color: c.text3, padding: '4px 0' }}>Reading your file…</div>}
+            {attachErrors.length > 0 && (
+              <div role="alert">
+                {attachErrors.map((err) => <div key={err.id} style={{ fontSize: 12, color: '#b45309', padding: '4px 0', lineHeight: 1.45 }}>{err.text}</div>)}
+              </div>
+            )}
           </div>
         )}
         <form
@@ -397,11 +454,15 @@ export function ArosChat() {
         >
           <AttachSheet
             existing={pending}
-            onAttach={(a) => { setAttachError(''); setPending((prev) => [...prev, ...a]); }}
+            onAttach={(a) => { setAttachErrors([]); setPending((prev) => [...prev, ...a]); }}
             onBarcode={onBarcode}
-            onError={setAttachError}
+            onError={(msgs) => setAttachErrors(msgs.map(attachError))}
+            onBusyChange={setAttachBusy}
             disabled={sending}
             accent={c.accent}
+            // This composer ships a WORKING mic two buttons away; a "Voice ·
+            // coming soon" row beside it contradicts what the user can see.
+            voiceRow={voice.supported ? 'hidden' : 'coming-soon'}
           />
           {voice.supported && (
             <button
@@ -453,13 +514,13 @@ export function ArosChat() {
           </div>
           <button
             type="submit"
-            disabled={(!input.trim() && pending.length === 0) || sending}
+            disabled={sendBlocked}
             style={{
               width: 32, height: 32, borderRadius: 8, flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: ((!input.trim() && pending.length === 0) || sending) ? c.bgInput : c.accent,
-              color: ((!input.trim() && pending.length === 0) || sending) ? c.text3 : '#fff',
-              border: 'none', cursor: ((!input.trim() && pending.length === 0) || sending) ? 'not-allowed' : 'pointer',
+              background: sendBlocked ? c.bgInput : c.accent,
+              color: sendBlocked ? c.text3 : '#fff',
+              border: 'none', cursor: sendBlocked ? 'not-allowed' : 'pointer',
               transition: 'background 150ms',
             }}
           >
