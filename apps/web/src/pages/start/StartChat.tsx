@@ -3,6 +3,9 @@ import { chatReplyText } from '../../lib/chatReply';
 import { useVoice, cancelSpeech, type VoiceApi } from '../../aros-ai/voice';
 import { AiDisclosureModal, AiDisclosureNotice, useAiDisclosure } from '../../components/AiDisclosure';
 import { useAuth } from '../../contexts/AuthContext';
+import { AttachSheet } from '../../redesign/attach/AttachSheet';
+import { AttachmentThumbs } from '../../redesign/attach/AttachmentThumbs';
+import { type Attachment, toWire, barcodeLookupQuery } from '../../redesign/attach/attachments';
 
 /**
  * StartChat — the day-one landing surface for a freshly signed-up tenant.
@@ -35,6 +38,7 @@ function getIntent(): string {
 interface Message {
   role: 'user' | 'agent';
   content: string;
+  attachments?: Attachment[];
 }
 
 interface Activation {
@@ -65,6 +69,8 @@ export function StartChat() {
   const [activation, setActivation] = useState<Activation | null>(null);
   const [checkingStore, setCheckingStore] = useState(true);
   const [input, setInput] = useState('');
+  const [pending, setPending] = useState<Attachment[]>([]);
+  const [attachError, setAttachError] = useState('');
   const [sending, setSending] = useState(false);
   const [voiceConvo, setVoiceConvo] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
@@ -116,12 +122,15 @@ export function StartChat() {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, sending]);
 
-  const sendMessage = async (text: string): Promise<boolean> => {
+  const sendMessage = async (text: string, atts: Attachment[] = pending): Promise<boolean> => {
     const t = text.trim();
-    if (!t || sendingRef.current) return false;
+    if ((!t && atts.length === 0) || sendingRef.current) return false;
     sendingRef.current = true;
-    setMessages((prev) => [...prev, { role: 'user', content: t }]);
+    const hasAttachments = atts.length > 0;
+    setMessages((prev) => [...prev, { role: 'user', content: t, ...(hasAttachments ? { attachments: atts } : {}) }]);
     setInput('');
+    setPending([]);
+    setAttachError('');
     setSending(true);
     let reply = 'Something went wrong reaching your agent. Please try again.';
     try {
@@ -135,7 +144,8 @@ export function StartChat() {
           // server-side session flag that an in-memory store could lose).
           demoMode: true,
           demoScenario: intent.current,
-          messages: [{ role: 'user', content: t }],
+          messages: [{ role: 'user', content: t || 'Please review the attached file(s).' }],
+          ...(hasAttachments ? { attachments: atts.map(toWire) } : {}),
           stream: false,
         }),
       });
@@ -146,12 +156,16 @@ export function StartChat() {
       if (voiceConvoRef.current) voiceRef.current?.speak(reply);
       return true;
     } catch {
-      setMessages((prev) => [...prev, { role: 'agent', content: reply }]);
-      return true;
+      // Honest failure: never fabricate a description of an unread attachment.
+      const msg = hasAttachments
+        ? 'I couldn’t read that attachment right now. I won’t guess what it contains — please try again in a moment.'
+        : 'Something went wrong reaching your agent. Please try again.';
+      setMessages((prev) => [...prev, { role: 'agent', content: msg }]);
     } finally {
       sendingRef.current = false;
       setSending(false);
     }
+    return true;
   };
 
   const voice = useVoice({
@@ -170,6 +184,8 @@ export function StartChat() {
       return next;
     });
   };
+
+  const onBarcode = (upc: string) => { void sendMessage(barcodeLookupQuery(upc), []); };
 
   const onSubmit = (e: FormEvent) => { e.preventDefault(); void sendMessage(input); };
   const fresh = messages.length === 0;
@@ -221,7 +237,8 @@ export function StartChat() {
           {messages.map((m, i) => (
             <div key={i} style={{ ...s.row, justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
               <div style={{ ...s.bubble, ...(m.role === 'user' ? s.bubbleUser : s.bubbleAgent) }}>
-                <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.content}</span>
+                {m.attachments && m.attachments.length > 0 && <AttachmentThumbs attachments={m.attachments} size={52} />}
+                {m.content && <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.content}</span>}
               </div>
             </div>
           ))}
@@ -239,7 +256,21 @@ export function StartChat() {
               ))}
             </div>
           )}
+          {pending.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <AttachmentThumbs attachments={pending} size={52} onRemove={(i) => setPending((prev) => prev.filter((_, idx) => idx !== i))} />
+            </div>
+          )}
+          {attachError && <div role="status" style={{ marginBottom: 8, fontSize: 12.5, color: '#b45309' }}>{attachError}</div>}
           <form onSubmit={onSubmit} style={s.inputBar}>
+            <AttachSheet
+              existing={pending}
+              onAttach={(a) => { setAttachError(''); setPending((prev) => [...prev, ...a]); }}
+              onBarcode={onBarcode}
+              onError={setAttachError}
+              disabled={sending}
+              accent={ACCENT}
+            />
             {voice.supported && (
               <button
                 type="button"
@@ -274,7 +305,7 @@ export function StartChat() {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" /></svg>
               </button>
             )}
-            <button type="submit" disabled={!input.trim() || sending} style={{ ...s.send, opacity: !input.trim() || sending ? 0.5 : 1 }}>
+            <button type="submit" disabled={(!input.trim() && pending.length === 0) || sending} style={{ ...s.send, opacity: (!input.trim() && pending.length === 0) || sending ? 0.5 : 1 }}>
               Send
             </button>
           </form>

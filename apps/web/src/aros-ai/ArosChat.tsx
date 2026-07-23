@@ -6,6 +6,9 @@ import { useCanvas } from './CanvasContext';
 import { itemsFromMessages } from './canvas';
 import { chatReplyText } from '../lib/chatReply';
 import { useVoice, cancelSpeech, type VoiceApi } from './voice';
+import { AttachSheet } from '../redesign/attach/AttachSheet';
+import { AttachmentThumbs } from '../redesign/attach/AttachmentThumbs';
+import { type Attachment, toWire, barcodeLookupQuery } from '../redesign/attach/attachments';
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -14,7 +17,7 @@ import { useVoice, cancelSpeech, type VoiceApi } from './voice';
 const STORAGE_KEY = 'aros-chat-messages';
 const MAX_STORED = 50;
 
-interface Message { role: 'user' | 'agent'; content: string; timestamp: number; }
+interface Message { role: 'user' | 'agent'; content: string; timestamp: number; attachments?: Attachment[]; }
 
 function loadMessages(greeting: string): Message[] {
   try {
@@ -25,7 +28,11 @@ function loadMessages(greeting: string): Message[] {
 }
 
 function persistMessages(msgs: Message[]) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(msgs.slice(-MAX_STORED))); } catch {}
+  // Drop heavy base64 dataUrls before persisting — they blow the localStorage
+  // quota. Durable attachment history is Shared S's job (shre-files + message
+  // ref); until then a reloaded transcript shows a lightweight file chip.
+  const light = msgs.slice(-MAX_STORED).map((m) => (m.attachments ? { ...m, attachments: m.attachments.map((a) => ({ ...a, dataUrl: '' })) } : m));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(light)); } catch {}
 }
 
 // ---------------------------------------------------------------------------
@@ -45,6 +52,8 @@ export function ArosChat() {
   const greeting = config.agent.greeting ?? 'What do you need?';
   const [messages, setMessages] = useState<Message[]>(() => loadMessages(greeting));
   const [input, setInput] = useState('');
+  const [pending, setPending] = useState<Attachment[]>([]);
+  const [attachError, setAttachError] = useState('');
   const [open, setOpen] = useState(false);
   const [sending, setSending] = useState(false);
   // Voice-conversation mode: hands-free (each spoken utterance auto-sends) + replies read aloud.
@@ -107,13 +116,16 @@ export function ArosChat() {
   useEffect(() => { voiceConvoRef.current = voiceConvo; }, [voiceConvo]);
   useEffect(() => { openRef.current = open; }, [open]);
 
-  const sendMessage = async (text: string): Promise<boolean> => {
-    if (!text.trim() || sendingRef.current) return false;
+  const sendMessage = async (text: string, atts: Attachment[] = pending): Promise<boolean> => {
+    if ((!text.trim() && atts.length === 0) || sendingRef.current) return false;
     sendingRef.current = true;
-    const userMsg: Message = { role: 'user', content: text.trim(), timestamp: Date.now() };
+    const hasAttachments = atts.length > 0;
+    const userMsg: Message = { role: 'user', content: text.trim(), timestamp: Date.now(), ...(hasAttachments ? { attachments: atts } : {}) };
     setSending(true);
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
+    setPending([]);
+    setAttachError('');
 
     try {
       const res = await fetch(`${ROUTER_URL}/v1/chat`, {
@@ -121,7 +133,8 @@ export function ArosChat() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agentId: 'aros-agent',
-          messages: [{ role: 'user', content: text.trim() }],
+          messages: [{ role: 'user', content: text.trim() || 'Please review the attached file(s).' }],
+          ...(hasAttachments ? { attachments: atts.map(toWire) } : {}),
           stream: false,
         }),
       });
@@ -133,13 +146,19 @@ export function ArosChat() {
       // speak only if voice-conversation is still on and the panel is still open (checked live)
       if (voiceConvoRef.current && openRef.current) voiceRef.current?.speak(reply);
     } catch {
-      setMessages((prev) => [...prev, { role: 'agent', content: 'Something went wrong. Please try again.', timestamp: Date.now() }]);
+      // Honest failure: never describe an attachment we couldn't actually read.
+      const msg = hasAttachments
+        ? 'I couldn’t read that attachment right now. I won’t guess what it says — please try again in a moment.'
+        : 'Something went wrong. Please try again.';
+      setMessages((prev) => [...prev, { role: 'agent', content: msg, timestamp: Date.now() }]);
     } finally {
       sendingRef.current = false;
       setSending(false);
     }
     return true;
   };
+
+  const onBarcode = (upc: string) => { void sendMessage(barcodeLookupQuery(upc), []); };
 
   const voice = useVoice({
     handsFree: voiceConvo,
@@ -320,7 +339,10 @@ export function ArosChat() {
                   border: `1px solid ${isUser ? c.accentSoft : c.border2}`,
                 }}>
                   {isUser ? (
-                    <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{msg.content}</span>
+                    <>
+                      {msg.attachments && msg.attachments.length > 0 && <AttachmentThumbs attachments={msg.attachments} size={48} />}
+                      {msg.content && <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{msg.content}</span>}
+                    </>
                   ) : (
                     <ChatMessageRenderer
                       content={msg.content}
@@ -359,6 +381,12 @@ export function ArosChat() {
         </div>
 
         {/* Input */}
+        {(pending.length > 0 || attachError) && (
+          <div style={{ padding: '8px 16px 0', flexShrink: 0, background: c.bg2 }}>
+            {pending.length > 0 && <AttachmentThumbs attachments={pending} size={48} onRemove={(i) => setPending((prev) => prev.filter((_, idx) => idx !== i))} />}
+            {attachError && <div role="status" style={{ fontSize: 12, color: '#b45309', padding: '4px 0' }}>{attachError}</div>}
+          </div>
+        )}
         <form
           onSubmit={send}
           style={{
@@ -367,6 +395,14 @@ export function ArosChat() {
             display: 'flex', alignItems: 'center', gap: 6,
           }}
         >
+          <AttachSheet
+            existing={pending}
+            onAttach={(a) => { setAttachError(''); setPending((prev) => [...prev, ...a]); }}
+            onBarcode={onBarcode}
+            onError={setAttachError}
+            disabled={sending}
+            accent={c.accent}
+          />
           {voice.supported && (
             <button
               type="button"
@@ -417,13 +453,13 @@ export function ArosChat() {
           </div>
           <button
             type="submit"
-            disabled={!input.trim() || sending}
+            disabled={(!input.trim() && pending.length === 0) || sending}
             style={{
               width: 32, height: 32, borderRadius: 8, flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: (!input.trim() || sending) ? c.bgInput : c.accent,
-              color: (!input.trim() || sending) ? c.text3 : '#fff',
-              border: 'none', cursor: (!input.trim() || sending) ? 'not-allowed' : 'pointer',
+              background: ((!input.trim() && pending.length === 0) || sending) ? c.bgInput : c.accent,
+              color: ((!input.trim() && pending.length === 0) || sending) ? c.text3 : '#fff',
+              border: 'none', cursor: ((!input.trim() && pending.length === 0) || sending) ? 'not-allowed' : 'pointer',
               transition: 'background 150ms',
             }}
           >
