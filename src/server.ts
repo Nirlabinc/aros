@@ -18,6 +18,7 @@ import {
 } from './billing/stripe.js';
 import { handleStripeWebhook } from './billing/webhook.js';
 import { publicServiceConfig } from './marketplace/service-config.js';
+import { fetchHubCatalog, selectCatalogSource, internalCatalogAuthorized } from './marketplace/hub-catalog.js';
 import { provisionLicense } from './billing/license.js';
 import { listTasks } from '../tasks/store.js';
 import { createSupabaseAdmin, createSupabaseAuthClient } from './supabase.js';
@@ -343,6 +344,13 @@ const startedAt = new Date().toISOString();
 const SHRE_METER_URL = process.env.SHRE_METER_URL || 'http://127.0.0.1:5495';
 const SHRE_TASKS_URL = process.env.SHRE_TASKS_URL || 'http://127.0.0.1:5460';
 const SHRE_ROUTER_URL = process.env.SHRE_ROUTER_URL || 'http://127.0.0.1:5497';
+// Capability-hub (mission P2): marketplace catalog via shre-hub, flag-gated.
+// Rollback = unset the flag; entitlement reads/writes never leave AROS.
+const SHRE_HUB_CATALOG_ENABLED = process.env.SHRE_HUB_CATALOG_ENABLED === 'true';
+const SHRE_HUB_URL = process.env.SHRE_HUB_URL || 'http://127.0.0.1:5537';
+const SHRE_HUB_TOKEN = process.env.SHRE_HUB_TOKEN;
+// Token the hub presents to /api/internal/catalog/* (endpoints 503 when unset).
+const HUB_INTERNAL_TOKEN = process.env.HUB_INTERNAL_TOKEN;
 // Router service passport — the launch.sh-managed shre-router enforces
 // passport auth on /v1/chat (cost/tenant accounting), but browser requests
 // arrive at this proxy with no bearer. Mint a SERVICE passport at boot and
@@ -2243,18 +2251,45 @@ async function reconcileActivatedAppResources(
   if (rows.length) await supabase.from('tenant_resources').upsert(rows, { onConflict: 'tenant_id,kind,name' });
 }
 
+// Capability-hub P2: internal read endpoints for shre-hub (system-of-record
+// proxy). Serve LOCAL data unconditionally — never consult the hub — so the
+// marketplace -> hub -> AROS chain terminates by construction. Service-token
+// gated (HUB_INTERNAL_TOKEN), fail-closed, no user auth context.
+async function handleInternalCatalog(req: IncomingMessage, res: ServerResponse, resource: 'apps' | 'entitlements'): Promise<void> {
+  const verdict = internalCatalogAuthorized(req.headers.authorization, HUB_INTERNAL_TOKEN);
+  if (verdict === 'unconfigured') return json(res, 503, { error: 'internal catalog access not configured (HUB_INTERNAL_TOKEN)' });
+  if (verdict === 'unauthorized') return json(res, 401, { error: 'Unauthorized' });
+  const supabase = createSupabaseAdmin();
+  if (resource === 'apps') {
+    const { data, error } = await supabase.from('platform_apps').select('*').order('name');
+    return error ? json(res, 500, { error: error.message }) : json(res, 200, { apps: data || [] });
+  }
+  const tenantId = new URL(req.url || '', 'http://localhost').searchParams.get('tenant_id');
+  if (!tenantId) return json(res, 400, { error: 'tenant_id query param required' });
+  const { data, error } = await supabase.from('marketplace_app_entitlements').select('app_key,status,source,service_config,enabled_at').eq('tenant_id', tenantId);
+  if (error) return json(res, 500, { error: error.message });
+  return json(res, 200, { entitlements: (data || []).map(row => ({ ...row, service_config: publicServiceConfig(row.service_config) })) });
+}
+
 async function handlePlatformApps(req: IncomingMessage, res: ServerResponse, appId?: string): Promise<void> {
   const auth = await authenticateRequest(req);
   if (!auth) return json(res, 401, { error: 'Authentication required' });
   const supabase = createSupabaseAdmin();
   if (req.method === 'GET') {
     const [{ data: apps, error }, { data: grants }] = await Promise.all([supabase.from('platform_apps').select('*').order('name'), supabase.from('marketplace_app_entitlements').select('app_key,status,service_config,role_mapping').eq('tenant_id', auth.tenantId)]);
+    // Capability-hub P2: catalog via shre-hub when flagged on; grants stay
+    // local always. Hub failure falls back to the local rows just queried.
+    const hub = SHRE_HUB_CATALOG_ENABLED
+      ? await fetchHubCatalog(SHRE_HUB_URL, SHRE_HUB_TOKEN)
+      : { ok: false as const, apps: [], capabilities: [], error: 'flag off' };
+    if (SHRE_HUB_CATALOG_ENABLED && !hub.ok) console.warn(`[hub-catalog] falling back to local catalog: ${hub.error}`);
+    const source = selectCatalogSource(apps || [], hub);
     // Publish each app's capability bundle so the marketplace can show what
     // activation unlocks (skills/agents/tools) before the user commits —
     // plus effective_skills: what THIS caller's role bundle actually gets
     // (tenant role_mapping override > preset rule > no bundle = none).
     const roleMappingByApp = new Map((grants || []).map(g => [g.app_key, (g as { role_mapping?: Record<string, { skills?: string[] }> | null }).role_mapping ?? null]));
-    return error ? json(res, 500, { error: error.message }) : json(res, 200, { apps: (apps || []).map(app => { const capability = APP_CAPABILITY_BUNDLES[app.id] || null; return { ...app, bundle: capability, effective_skills: capability ? effectiveAppSkills(auth.bundle, capability.skills.map(s => s.name), roleMappingByApp.get(app.id)) : [] }; }), grants: (grants || []).map(({ role_mapping: _rm, service_config, ...rest }) => ({ ...rest, service_config: publicServiceConfig(service_config) })) });
+    return error ? json(res, 500, { error: error.message }) : json(res, 200, { apps: source.apps.map(app => { const capability = APP_CAPABILITY_BUNDLES[app.id] || null; return { ...app, bundle: capability, effective_skills: capability ? effectiveAppSkills(auth.bundle, capability.skills.map(s => s.name), roleMappingByApp.get(app.id)) : [] }; }), grants: (grants || []).map(({ role_mapping: _rm, service_config, ...rest }) => ({ ...rest, service_config: publicServiceConfig(service_config) })), capabilities: source.capabilities, catalog_source: source.catalog_source });
   }
   if (!appId) return json(res, 400, { error: 'app id required' });
   if (!['owner', 'admin'].includes(auth.role)) return json(res, 403, { error: 'Workspace admin access required' });
@@ -5739,6 +5774,8 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   const workspaceRolesMatch = pathname.match(/^\/api\/workspaces\/([0-9a-f-]+)\/roles$/);
   if (workspaceRolesMatch && method === 'GET') return handleWorkspaceMembersCompat(req, res, workspaceRolesMatch[1]);
   if (pathname === '/api/apps' && method === 'GET') return handlePlatformApps(req, res);
+  if (pathname === '/api/internal/catalog/apps' && method === 'GET') return handleInternalCatalog(req, res, 'apps');
+  if (pathname === '/api/internal/catalog/entitlements' && method === 'GET') return handleInternalCatalog(req, res, 'entitlements');
   if (pathname === '/api/app-launch/consume' && method === 'POST') {
     if (!rateLimit(req, 30, 60_000)) return json(res, 429, { error: 'Too many launch attempts' });
     return handleAppLaunchConsume(req, res);
