@@ -49,7 +49,11 @@ export function scoreReply(question, reply, groundTruth, opts = {}) {
   const reasons = [];
   const checks = question.checks ?? {};
   const text = String(reply ?? '');
-  const latencyBudgetMs = opts.latencyBudgetMs ?? 20_000;
+  // Per-question budget wins, then caller default, then 20s. Deterministic
+  // handlers get a tight budget (catch a real regression); the on-prem 70B
+  // lane legitimately takes ~15-20s to generate a full answer, so a flat 20s
+  // cried wolf on inherent latency while masking fast-path regressions.
+  const latencyBudgetMs = question.latencyBudgetMs ?? opts.latencyBudgetMs ?? 20_000;
 
   if (isEmptyReply(reply)) {
     return { id: question.id, verdict: 'fail', reasons: ['empty-reply: raw/blank output leaked to user'] };

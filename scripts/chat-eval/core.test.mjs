@@ -80,3 +80,12 @@ test('mustNotContain fails on forbidden phrase', () => {
   assert.equal(scoreReply(q, 'degraded — model lane timed out', GT).verdict, 'fail');
   assert.equal(scoreReply(q, 'online (model lane verified, 900ms)', GT).verdict, 'pass');
 });
+
+test('per-question latencyBudgetMs overrides the default', () => {
+  const q = { id: 'hb', domain: 'meta', latencyBudgetMs: 25000, checks: {} };
+  // 22s answer: WARN under the old flat 20s, PASS under the 25s lane budget
+  assert.equal(scoreReply(q, 'online (model lane verified)', GT, { latencyMs: 22000 }).verdict, 'pass');
+  const fast = { id: 'conn', domain: 'account', latencyBudgetMs: 5000, checks: {} };
+  // deterministic handler regressing to 8s now WARNs (was masked by 20s default)
+  assert.equal(scoreReply(fast, 'You have 2 active connectors', GT, { latencyMs: 8000 }).verdict, 'warn');
+});

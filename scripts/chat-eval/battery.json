@@ -1,76 +1,88 @@
 {
-  "$comment": "Chat-eval question battery. Each question declares its domain and the deterministic checks the scorer applies. groundTruth paths refer to the ground-truth object assembled by run.mjs from /api/store/summary and /api/connectors.",
+  "$comment": "Chat-eval question battery. Each question declares its domain, the deterministic checks the scorer applies, and a latencyBudgetMs matched to its serving path (deterministic aros-platform/fast-path handlers = tight; on-prem 70B LLM lane = generous, since a full generation legitimately takes ~15-20s). groundTruth paths refer to the ground-truth object assembled by run.mjs from /api/store/summary and /api/connectors.",
   "questions": [
     {
       "id": "sales-today",
       "domain": "sales",
       "question": "What were my total sales today?",
+      "latencyBudgetMs": 5000,
       "checks": { "expectCurrencyFrom": "summary.todaySales.revenue" }
     },
     {
       "id": "top-items",
       "domain": "sales",
       "question": "What are my top 5 selling items this week?",
+      "latencyBudgetMs": 10000,
       "checks": { "expectSubstance": true }
     },
     {
       "id": "low-stock",
       "domain": "inventory",
       "question": "Is anything about to run out of stock?",
+      "latencyBudgetMs": 5000,
       "checks": { "expectAnyFrom": "lowStockNames" }
     },
     {
       "id": "voids",
       "domain": "integrity",
       "question": "Any voids or suspicious transactions I should look at?",
+      "latencyBudgetMs": 35000,
       "checks": { "expectSubstance": true }
     },
     {
       "id": "week-compare",
       "domain": "sales-range",
       "question": "Compare this week's sales to last week.",
+      "latencyBudgetMs": 10000,
       "checks": { "expectComparison": true }
     },
     {
       "id": "connectors",
       "domain": "account",
       "question": "Which connectors are active on my account?",
+      "latencyBudgetMs": 5000,
       "checks": { "expectAnyFrom": "connectorNames" }
     },
     {
       "id": "labor",
       "domain": "labor",
       "question": "Show me my labor costs for the last 7 days.",
+      "latencyBudgetMs": 12000,
       "checks": { "expectSubstance": true }
     },
     {
       "id": "capabilities",
       "domain": "meta",
       "question": "What can you help me with?",
+      "latencyBudgetMs": 25000,
       "checks": { "expectSubstance": true, "allowSalesTemplate": true }
     },
     {
       "id": "multi-part",
       "domain": "composite",
       "question": "Give me three things in one answer: today's total sales, my single best-selling item today, and any alerts I should know about.",
+      "latencyBudgetMs": 10000,
       "checks": { "expectCurrencyFrom": "summary.todaySales.revenue", "allowSalesTemplate": true }
     },
     {
       "id": "off-scope",
       "domain": "off-scope",
       "question": "What's the weather in Miami right now?",
+      "latencyBudgetMs": 15000,
       "checks": { "expectSubstance": true, "allowSalesTemplate": true }
     },
     {
       "id": "llm-canary",
       "domain": "meta",
       "question": "Reply with exactly one word: pong",
+      "latencyBudgetMs": 25000,
       "checks": { "expectSubstance": true, "allowSalesTemplate": true }
     },
     {
       "id": "heartbeat",
       "domain": "meta",
       "question": "connection status check please",
+      "latencyBudgetMs": 25000,
       "checks": { "expectSubstance": true, "allowSalesTemplate": true, "mustNotContain": ["degraded"] }
     }
   ]
