@@ -19,6 +19,7 @@ import {
   createCardSetupIntent,
   getDefaultPaymentMethodId,
   chargeSavedCard,
+  getPaymentReceiptUrl,
   type PlanId,
 } from './billing/stripe.js';
 import {
@@ -1925,6 +1926,34 @@ async function walletSettings(tenantId: string): Promise<WalletSettings & { paym
     hasCard: Boolean(data?.stripe_payment_method_id),
     paymentMethodId: (data?.stripe_payment_method_id as string) ?? null,
   };
+}
+
+/** Payment history: every wallet credit, with a Stripe hosted receipt link
+ * (view + download PDF) for card payments. The $50 grant has no receipt. */
+async function handleWalletReceipts(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  try {
+    const { data } = await createSupabaseAdmin()
+      .from('wallet_ledger')
+      .select('amount_usd,kind,stripe_ref,note,created_at')
+      .eq('tenant_id', auth.tenantId)
+      .order('created_at', { ascending: false })
+      .limit(30);
+    const entries = await Promise.all((data || []).map(async (row) => ({
+      date: row.created_at,
+      amountUsd: Number(row.amount_usd),
+      kind: row.kind,
+      description: row.note || (row.kind === 'onboarding_grant' ? 'Welcome credit' : 'Balance top-up'),
+      receiptUrl: (row.kind === 'topup' || row.kind === 'auto_recharge') && row.stripe_ref && process.env.STRIPE_SECRET_KEY
+        ? await getPaymentReceiptUrl(row.stripe_ref as string)
+        : null,
+    })));
+    json(res, 200, { entries });
+  } catch (err) {
+    console.error('[wallet.receipts]', err instanceof Error ? err.message : err);
+    json(res, 500, { error: 'Could not load payment history' });
+  }
 }
 
 async function handleWalletGet(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -6924,6 +6953,7 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (pathname === '/api/wallet/topup' && method === 'POST') return handleWalletTopup(req, res);
   if (pathname === '/api/wallet/setup-card' && method === 'POST') return handleWalletSetupCard(req, res);
   if (pathname === '/api/wallet/auto-recharge' && method === 'POST') return handleWalletAutoRecharge(req, res);
+  if (pathname === '/api/wallet/receipts' && method === 'GET') return handleWalletReceipts(req, res);
   if (pathname === '/api/automations' && method === 'GET') {
     return handleAutomationsList(req, res);
   }
