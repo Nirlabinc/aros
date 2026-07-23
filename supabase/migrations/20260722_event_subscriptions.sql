@@ -3,8 +3,10 @@
 -- this slice: no sentinel reads these rows yet, nothing sends.
 --
 -- Duplicate protection layer 1 (insert-time): canonical rule fingerprint with a
--- UNIQUE (tenant_id, fingerprint) constraint — exact dupes are impossible at the
--- database level regardless of which surface created the rule.
+-- PARTIAL unique index (excluding disabled rows) — exact dupes are impossible at
+-- the database level regardless of which surface created the rule, while a rule
+-- the user disabled can be re-created later (disabled rows don't dupe-block,
+-- matching evaluateCreatePreconditions).
 CREATE TABLE IF NOT EXISTS public.event_subscriptions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
@@ -31,9 +33,12 @@ CREATE TABLE IF NOT EXISTS public.event_subscriptions (
   fires_in_window int NOT NULL DEFAULT 0,
   window_started_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (tenant_id, fingerprint)
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS event_subscriptions_tenant_fingerprint
+  ON public.event_subscriptions(tenant_id, fingerprint)
+  WHERE status != 'disabled';
 
 CREATE INDEX IF NOT EXISTS event_subscriptions_tenant_status
   ON public.event_subscriptions(tenant_id, status);

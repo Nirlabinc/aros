@@ -33,11 +33,16 @@ import {
   confirmationCard,
   describeRule,
   detectConfirmReply,
+  duplicateReply,
   evaluateCreatePreconditions,
+  insertRowForRule,
   MAX_ENABLED_RULES,
   maskDestination,
+  prefRowForActiveRule,
   resolveRuleRef,
+  sanitizeConfirmedRule,
   triggerLabel,
+  type CreateDecision,
   type ExistingRule,
   type RuleSpec,
 } from './automation/rules.js';
@@ -3645,30 +3650,60 @@ async function automationConnectorConnected(tenantId: string, triggerType: strin
  * destinations. Email is always registered (account email fallback); SMS
  * requires a phone saved in notification_preferences.
  */
-async function automationDestination(tenantId: string, userId: string, channel: 'email' | 'sms'): Promise<{ registered: boolean; label: string }> {
-  if (channel === 'email') {
-    const supabase = createSupabaseAdmin();
-    const { data } = await supabase
-      .from('notification_preferences')
-      .select('destination')
-      .eq('tenant_id', tenantId)
-      .eq('user_id', userId)
-      .eq('channel', 'email')
-      .not('destination', 'is', null)
-      .limit(1);
-    return { registered: true, label: maskDestination('email', data?.[0]?.destination ?? null) };
-  }
+async function automationDestination(tenantId: string, userId: string, channel: 'email' | 'sms'): Promise<{ registered: boolean; label: string; destination: string | null }> {
   const supabase = createSupabaseAdmin();
   const { data } = await supabase
     .from('notification_preferences')
     .select('destination')
     .eq('tenant_id', tenantId)
     .eq('user_id', userId)
-    .eq('channel', 'sms')
+    .eq('channel', channel)
     .not('destination', 'is', null)
     .limit(1);
-  const destination = data?.[0]?.destination as string | undefined;
-  return { registered: Boolean(destination), label: maskDestination('sms', destination ?? null) };
+  const destination = (data?.[0]?.destination as string | undefined) ?? null;
+  return { registered: channel === 'email' || Boolean(destination), label: maskDestination(channel, destination), destination };
+}
+
+/** Shared create-precondition load for both stages (propose card + confirmed save). */
+async function loadAutomationCreateContext(
+  auth: { userId: string; tenantId: string; role: string },
+  rule: RuleSpec,
+  stage: 'propose' | 'save',
+): Promise<{ destination: { registered: boolean; label: string; destination: string | null }; rules: AutomationRow[]; connectorConnected: boolean; fingerprint: string; verdict: CreateDecision }> {
+  const [destination, rules, connectorConnected] = await Promise.all([
+    automationDestination(auth.tenantId, auth.userId, rule.channel),
+    automationRulesForTenant(auth.tenantId),
+    automationConnectorConnected(auth.tenantId, rule.trigger_type),
+  ]);
+  const enabled = rules.filter((r) => r.status !== 'disabled');
+  const sameType = enabled.filter((r) => (rule.kind === 'event' ? r.trigger_type === rule.trigger_type : r.report_type === rule.report_type)) as ExistingRule[];
+  const fingerprint = canonicalFingerprint(rule);
+  const verdict = evaluateCreatePreconditions({
+    role: auth.role,
+    existingRulesCount: enabled.length,
+    existingSameTypeRules: sameType,
+    connectorConnected,
+    destinationRegistered: destination.registered,
+    fingerprint,
+    stage,
+  });
+  return { destination, rules, connectorConnected, fingerprint, verdict };
+}
+
+/** Rejection replies shared by both stages; null = proceed. */
+function automationRejection(verdict: CreateDecision): string | null {
+  switch (verdict.decision) {
+    case 'reject_role':
+      return 'Only a workspace owner or admin can create automation rules. Ask an owner/admin to set this up.';
+    case 'reject_destination':
+      return `I don't have a registered destination for that yet. ${AUTOMATION_PREFS_HINT}`;
+    case 'duplicate_exact':
+      return duplicateReply(verdict.existing.status, verdict.existing.created_at);
+    case 'reject_cap':
+      return `This workspace already has ${verdict.cap} enabled automation rules — that's the limit. Disable or delete one first ("list my alerts").`;
+    default:
+      return null;
+  }
 }
 
 function automationReply(res: ServerResponse, tenantId: string, content: string, extra: Record<string, unknown> = {}): true {
@@ -3688,65 +3723,47 @@ async function saveConfirmedAutomation(
   rule: RuleSpec,
 ): Promise<true> {
   const tenantId = auth.tenantId;
-  // Re-validate EVERYTHING — the payload round-tripped through the client.
-  if (rule.tenant_id !== tenantId) {
-    return automationReply(res, tenantId, 'That confirmation was for a different workspace, so I discarded it. Please ask again from the workspace you want the alert in.');
-  }
-  const destination = await automationDestination(tenantId, auth.userId, rule.channel);
-  const rules = await automationRulesForTenant(tenantId);
-  const enabled = rules.filter((r) => r.status !== 'disabled');
-  const sameType = enabled.filter((r) => (rule.kind === 'event' ? r.trigger_type === rule.trigger_type : r.report_type === rule.report_type)) as ExistingRule[];
-  const fingerprint = canonicalFingerprint(rule);
-  const connectorConnected = await automationConnectorConnected(tenantId, rule.trigger_type);
-  const verdict = evaluateCreatePreconditions(rule, {
-    role: auth.role,
-    existingRulesCount: enabled.length,
-    existingSameTypeRules: sameType,
-    connectorConnected,
-    destinationRegistered: destination.registered,
-    fingerprint,
-    stage: 'save',
-  });
-
-  if (verdict.decision === 'reject_role') {
-    return automationReply(res, tenantId, 'Only a workspace owner or admin can create automation rules. Ask an owner/admin to set this up.');
-  }
-  if (verdict.decision === 'reject_destination') {
-    return automationReply(res, tenantId, AUTOMATION_PREFS_HINT);
-  }
-  if (verdict.decision === 'duplicate_exact') {
-    return automationReply(res, tenantId, `You already have this rule (created ${verdict.existing.created_at.slice(0, 10)}) — it's ${verdict.existing.status.replace(/_/g, ' ')}. Nothing new was created.`);
-  }
-  if (verdict.decision === 'reject_cap') {
-    return automationReply(res, tenantId, `This workspace already has ${verdict.cap} enabled automation rules — that's the limit. Disable or delete one first ("list my alerts").`);
+  // Trust NOTHING that round-tripped through the client: re-derive the
+  // destination from the authenticated user and whitelist the trigger, so a
+  // tampered history cannot mint authority (see banner above handleArosAutomationChat).
+  const sanitized = sanitizeConfirmedRule(rule, { tenantId, userId: auth.userId });
+  if (!sanitized) {
+    return automationReply(res, tenantId, 'That confirmation didn\'t match an automation I can set up, so I discarded it. Please ask again — for example, "text me when someone voids a transaction".');
   }
 
-  const status = verdict.decision === 'pending_connector' ? 'pending_connector' : 'active';
+  const ctx = await loadAutomationCreateContext(auth, sanitized, 'save');
+  const rejection = automationRejection(ctx.verdict);
+  if (rejection) return automationReply(res, tenantId, rejection);
+
+  const status = ctx.verdict.decision === 'pending_connector' ? 'pending_connector' : 'active';
+  const now = new Date().toISOString();
   const supabase = createSupabaseAdmin();
   const { data: inserted, error } = await supabase
     .from('event_subscriptions')
-    .insert({
-      tenant_id: tenantId,
-      created_by: auth.userId,
-      created_via: 'chat',
-      kind: rule.kind,
-      trigger_type: rule.trigger_type ?? null,
-      report_type: rule.report_type ?? null,
-      params: rule.params ?? {},
-      channel: rule.channel,
-      destination_ref: rule.destination_ref,
-      cadence: rule.cadence ?? null,
-      status,
-      fingerprint,
-    })
+    .insert(insertRowForRule(sanitized, { status, userId: auth.userId, fingerprint: ctx.fingerprint, now }))
     .select('id,created_at')
     .single();
   if (error) {
-    // Unique violation = a concurrent create won the race; same dupe answer.
+    // Unique violation = a concurrent create won the race. Re-read the live
+    // row so the reply states its REAL status, never a hardcoded guess.
     if (error.code === '23505') {
-      return automationReply(res, tenantId, "You already have this rule — it's active. Nothing new was created.");
+      const { data: existing } = await supabase
+        .from('event_subscriptions')
+        .select('status,created_at')
+        .eq('tenant_id', tenantId)
+        .eq('fingerprint', ctx.fingerprint)
+        .neq('status', 'disabled')
+        .maybeSingle();
+      return automationReply(res, tenantId, duplicateReply(existing?.status ?? 'active', existing?.created_at));
     }
     throw new Error(error.message);
+  }
+
+  // The rule IS the opt-in: enable the matching notification preference so
+  // /notifications reflects it and 1b's delivery gate lines up with chat.
+  const prefRow = prefRowForActiveRule(sanitized, { status, userId: auth.userId, destination: ctx.destination.destination, now });
+  if (prefRow) {
+    await supabase.from('notification_preferences').upsert(prefRow, { onConflict: 'tenant_id,user_id,event_type,channel' });
   }
 
   await auditLog({
@@ -3754,15 +3771,15 @@ async function saveConfirmedAutomation(
     userId: auth.userId,
     action: 'automation.rule_created',
     resource: `event_subscription:${inserted.id}`,
-    detail: { kind: rule.kind, trigger_type: rule.trigger_type ?? null, report_type: rule.report_type ?? null, channel: rule.channel, status, created_via: 'chat' },
+    detail: { kind: sanitized.kind, trigger_type: sanitized.trigger_type ?? null, channel: sanitized.channel, status, created_via: 'chat' },
     ip: getClientIp(req),
   });
 
-  const what = rule.kind === 'event' ? `when ${triggerLabel(rule.trigger_type)}` : `${rule.report_type} on schedule`;
+  const what = `when ${triggerLabel(sanitized.trigger_type)}`;
   if (status === 'pending_connector') {
-    return automationReply(res, tenantId, `Saved — I'll ${channelLabel(rule.channel)} ${destination.label} ${what}. It's **waiting on your store connection**: no POS is connected yet, so it activates automatically once you connect one (Connections page, /onboarding) and will never alert on history from before activation.`);
+    return automationReply(res, tenantId, `Saved — I'll ${channelLabel(sanitized.channel)} ${ctx.destination.label} ${what}. It's **waiting on your store connection**: no POS is connected yet, so it activates automatically once you connect one (Connections page, /onboarding) and will never alert on history from before activation.`);
   }
-  return automationReply(res, tenantId, `Done — your rule is **active**. I'll ${channelLabel(rule.channel)} ${destination.label} ${what}. Alert delivery goes live with the automation engine rollout; you can check it anytime with "list my alerts".`);
+  return automationReply(res, tenantId, `Done — your rule is **active**. I'll ${channelLabel(sanitized.channel)} ${ctx.destination.label} ${what}. Alert delivery goes live with the automation engine rollout; you can check it anytime with "list my alerts".`);
 }
 
 async function handleAutomationSubscribe(
@@ -3792,45 +3809,21 @@ async function handleAutomationSubscribe(
     cadence: null,
     params: {},
   };
-  const destination = await automationDestination(tenantId, auth.userId, rule.channel);
-  const rules = await automationRulesForTenant(tenantId);
-  const enabled = rules.filter((r) => r.status !== 'disabled');
-  const sameType = enabled.filter((r) => r.trigger_type === rule.trigger_type) as ExistingRule[];
-  const connectorConnected = await automationConnectorConnected(tenantId, rule.trigger_type);
-  const verdict = evaluateCreatePreconditions(rule, {
-    role: auth.role,
-    existingRulesCount: enabled.length,
-    existingSameTypeRules: sameType,
-    connectorConnected,
-    destinationRegistered: destination.registered,
-    fingerprint: canonicalFingerprint(rule),
-    stage: 'propose',
-  });
+  const ctx = await loadAutomationCreateContext(auth, rule, 'propose');
+  const rejection = automationRejection(ctx.verdict);
+  if (rejection) return automationReply(res, tenantId, rejection);
 
-  if (verdict.decision === 'reject_role') {
-    return automationReply(res, tenantId, 'Only a workspace owner or admin can create automation rules. Ask an owner/admin to set this up.');
-  }
-  if (verdict.decision === 'reject_destination') {
-    return automationReply(res, tenantId, `I don't have a registered mobile number for you yet. ${AUTOMATION_PREFS_HINT}`);
-  }
-  if (verdict.decision === 'duplicate_exact') {
-    return automationReply(res, tenantId, `You already have this rule (created ${verdict.existing.created_at.slice(0, 10)}) — it's ${verdict.existing.status.replace(/_/g, ' ')}.`);
-  }
-  if (verdict.decision === 'reject_cap') {
-    return automationReply(res, tenantId, `This workspace already has ${verdict.cap} enabled automation rules — that's the limit. Disable or delete one first ("list my alerts").`);
-  }
-
-  const similar = verdict.decision === 'similar_exists'
-    ? verdict.similar.map((s, i) => ({
+  const similar = ctx.verdict.decision === 'similar_exists'
+    ? ctx.verdict.similar.map((s, i) => ({
         // Same numbering as the "list my alerts" answer (full list, created_at asc).
-        index: rules.findIndex((r) => r.id === s.id) + 1 || i + 1,
+        index: ctx.rules.findIndex((r) => r.id === s.id) + 1 || i + 1,
         description: describeRule(s as AutomationRow),
         created_at: s.created_at,
       }))
     : [];
   const card = confirmationCard(rule, {
-    destinationLabel: destination.label,
-    connectorConnected,
+    destinationLabel: ctx.destination.label,
+    connectorConnected: ctx.connectorConnected,
     similar,
   });
   return automationReply(res, tenantId, card, { pendingConfirm: true });

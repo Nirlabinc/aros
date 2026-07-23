@@ -5,15 +5,20 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  AUTOMATION_CATALOG_EVENT,
   MAX_ENABLED_RULES,
   buildDestinationRef,
   canonicalFingerprint,
   confirmationCard,
   detectConfirmReply,
+  duplicateReply,
   evaluateCreatePreconditions,
   extractConfirmPayload,
+  insertRowForRule,
   maskDestination,
+  prefRowForActiveRule,
   resolveRuleRef,
+  sanitizeConfirmedRule,
   type CreateContext,
   type ExistingRule,
   type RuleSpec,
@@ -74,42 +79,109 @@ describe('evaluateCreatePreconditions', () => {
 
   it('rejects non-owner/admin roles (member, viewer, cashier)', () => {
     for (const role of ['member', 'viewer', 'cashier', '']) {
-      expect(evaluateCreatePreconditions(voidSmsRule, ctx({ role }))).toEqual({ decision: 'reject_role' });
+      expect(evaluateCreatePreconditions(ctx({ role }))).toEqual({ decision: 'reject_role' });
     }
   });
   it('allows owner and admin', () => {
-    expect(evaluateCreatePreconditions(voidSmsRule, ctx({ role: 'owner' }))).toEqual({ decision: 'ok' });
-    expect(evaluateCreatePreconditions(voidSmsRule, ctx({ role: 'admin' }))).toEqual({ decision: 'ok' });
+    expect(evaluateCreatePreconditions(ctx({ role: 'owner' }))).toEqual({ decision: 'ok' });
+    expect(evaluateCreatePreconditions(ctx({ role: 'admin' }))).toEqual({ decision: 'ok' });
   });
   it('rejects an unregistered destination even for an owner', () => {
-    expect(evaluateCreatePreconditions(voidSmsRule, ctx({ destinationRegistered: false }))).toEqual({ decision: 'reject_destination' });
+    expect(evaluateCreatePreconditions(ctx({ destinationRegistered: false }))).toEqual({ decision: 'reject_destination' });
   });
   it('exact duplicate wins over cap and connector state', () => {
-    const verdict = evaluateCreatePreconditions(voidSmsRule, ctx({
+    const verdict = evaluateCreatePreconditions(ctx({
       existingSameTypeRules: [existing], existingRulesCount: MAX_ENABLED_RULES, connectorConnected: false,
     }));
     expect(verdict).toMatchObject({ decision: 'duplicate_exact', existing: { id: 'r1' } });
   });
   it('a disabled rule with the same fingerprint is NOT an exact-dupe block', () => {
-    const verdict = evaluateCreatePreconditions(voidSmsRule, ctx({
+    const verdict = evaluateCreatePreconditions(ctx({
       existingSameTypeRules: [{ ...existing, status: 'disabled' }],
     }));
     expect(verdict.decision).toBe('ok');
   });
   it('rejects the 26th enabled rule (cap 25)', () => {
-    expect(evaluateCreatePreconditions(voidSmsRule, ctx({ existingRulesCount: 25 }))).toEqual({ decision: 'reject_cap', cap: 25 });
-    expect(evaluateCreatePreconditions(voidSmsRule, ctx({ existingRulesCount: 24 }))).toEqual({ decision: 'ok' });
+    expect(evaluateCreatePreconditions(ctx({ existingRulesCount: 25 }))).toEqual({ decision: 'reject_cap', cap: 25 });
+    expect(evaluateCreatePreconditions(ctx({ existingRulesCount: 24 }))).toEqual({ decision: 'ok' });
   });
   it('propose stage surfaces similar same-type rules (fuzzy dupe)', () => {
     const similar = { ...existing, id: 'r2', fingerprint: 'different' };
-    const verdict = evaluateCreatePreconditions(voidSmsRule, ctx({ stage: 'propose', existingSameTypeRules: [similar] }));
+    const verdict = evaluateCreatePreconditions(ctx({ stage: 'propose', existingSameTypeRules: [similar] }));
     expect(verdict).toMatchObject({ decision: 'similar_exists' });
   });
   it('propose stage with no conflicts asks for confirmation (never silent-saves)', () => {
-    expect(evaluateCreatePreconditions(voidSmsRule, ctx({ stage: 'propose' }))).toEqual({ decision: 'needs_confirm' });
+    expect(evaluateCreatePreconditions(ctx({ stage: 'propose' }))).toEqual({ decision: 'needs_confirm' });
   });
   it('save stage without a connected connector lands pending_connector', () => {
-    expect(evaluateCreatePreconditions(voidSmsRule, ctx({ connectorConnected: false }))).toEqual({ decision: 'pending_connector' });
+    expect(evaluateCreatePreconditions(ctx({ connectorConnected: false }))).toEqual({ decision: 'pending_connector' });
+  });
+});
+
+describe('sanitizeConfirmedRule (tamper defense — re-derive, never trust the payload)', () => {
+  it('re-derives destination_ref from the authenticated user, ignoring a tampered value', () => {
+    const tampered: RuleSpec = { ...voidSmsRule, destination_ref: 'prefs:sms:99999999-9999-9999-9999-999999999999' };
+    const clean = sanitizeConfirmedRule(tampered, { tenantId: TENANT, userId: USER });
+    expect(clean?.destination_ref).toBe(buildDestinationRef('sms', USER));
+  });
+  it('rejects a raw free-text destination smuggled into destination_ref', () => {
+    const tampered: RuleSpec = { ...voidSmsRule, destination_ref: '+15551234567' };
+    const clean = sanitizeConfirmedRule(tampered, { tenantId: TENANT, userId: USER });
+    expect(clean?.destination_ref).toBe(buildDestinationRef('sms', USER)); // re-derived, not the raw number
+  });
+  it('rejects a foreign tenant payload', () => {
+    expect(sanitizeConfirmedRule({ ...voidSmsRule, tenant_id: '33333333-3333-3333-3333-333333333333' }, { tenantId: TENANT, userId: USER })).toBeNull();
+  });
+  it('rejects a schedule kind (shift/tender have no verified data contract in v1)', () => {
+    const schedule = { ...voidSmsRule, kind: 'schedule' as const, trigger_type: undefined, report_type: 'shift_report' };
+    expect(sanitizeConfirmedRule(schedule as unknown as RuleSpec, { tenantId: TENANT, userId: USER })).toBeNull();
+  });
+  it('rejects an unknown/invented trigger_type not in the catalog whitelist', () => {
+    expect(sanitizeConfirmedRule({ ...voidSmsRule, trigger_type: 'delete_all_data' }, { tenantId: TENANT, userId: USER })).toBeNull();
+  });
+  it('strips unexpected params/scope, keeping only the user-chosen trigger + channel', () => {
+    const clean = sanitizeConfirmedRule({ ...voidSmsRule, params: { evil: true }, scope: 'somewhere' }, { tenantId: TENANT, userId: USER });
+    expect(clean?.params).toEqual({});
+    expect(clean?.trigger_type).toBe('transaction_voided');
+    expect(clean?.channel).toBe('sms');
+  });
+});
+
+describe('duplicateReply (reports the real status, never a hardcoded guess)', () => {
+  it('states active / pending / suspended distinctly', () => {
+    expect(duplicateReply('active', '2026-07-20T00:00:00Z')).toMatch(/active/i);
+    expect(duplicateReply('pending_connector')).toMatch(/store connection|waiting/i);
+    expect(duplicateReply('suspended')).toMatch(/suspended|paused/i);
+  });
+  it('does not claim active for a paused rule', () => {
+    expect(duplicateReply('pending_connector')).not.toMatch(/it's active/i);
+  });
+});
+
+describe('insertRowForRule (watermark = activation timestamp, no backlog)', () => {
+  const now = '2026-07-22T12:00:00Z';
+  it('sets watermark now for an active rule', () => {
+    const row = insertRowForRule(voidSmsRule, { status: 'active', userId: USER, fingerprint: 'fp', now });
+    expect(row.watermark).toBe(now);
+    expect(row.status).toBe('active');
+  });
+  it('leaves watermark null for pending_connector (1b sweep sets it on activation)', () => {
+    const row = insertRowForRule(voidSmsRule, { status: 'pending_connector', userId: USER, fingerprint: 'fp', now });
+    expect(row.watermark).toBeNull();
+  });
+});
+
+describe('prefRowForActiveRule (the rule is the opt-in)', () => {
+  const now = '2026-07-22T12:00:00Z';
+  it('enables the mapped catalog event for an active rule', () => {
+    const row = prefRowForActiveRule(voidSmsRule, { status: 'active', userId: USER, destination: '+15550100', now });
+    expect(row).toMatchObject({ event_type: AUTOMATION_CATALOG_EVENT.transaction_voided, channel: 'sms', enabled: true, destination: '+15550100' });
+  });
+  it('writes no pref row for a pending_connector rule (deferred to activation)', () => {
+    expect(prefRowForActiveRule(voidSmsRule, { status: 'pending_connector', userId: USER, destination: null, now })).toBeNull();
+  });
+  it('maps transaction_voided to the void-alert catalog id', () => {
+    expect(AUTOMATION_CATALOG_EVENT.transaction_voided).toBe('void-alert');
   });
 });
 

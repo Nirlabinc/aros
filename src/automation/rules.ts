@@ -13,6 +13,14 @@ import type { RuleRef } from './parse.js';
 export const MAX_ENABLED_RULES = 25;
 export const CONFIRM_MARKER = 'aros-automation-confirm';
 
+/**
+ * Trigger → NOTIFICATION_CATALOG event id. Doubles as the v1 trigger
+ * whitelist: a confirmed rule whose trigger is not a key here is rejected.
+ */
+export const AUTOMATION_CATALOG_EVENT: Record<string, string> = {
+  transaction_voided: 'void-alert',
+};
+
 export interface RuleSpec {
   tenant_id: string;
   kind: 'event' | 'schedule';
@@ -112,8 +120,7 @@ export interface ConfirmContext {
 /**
  * The exact confirm text chat renders. Embeds a machine-readable copy of the
  * rule in an HTML comment so the STATELESS confirm turn can recover it from
- * message history (the payload is re-validated server-side at save time, so a
- * tampered history cannot mint authority the user doesn't have).
+ * message history (see the save-path banner in src/server.ts).
  */
 export function confirmationCard(rule: RuleSpec, context: ConfirmContext): string {
   const lines: string[] = ['**Set up this automation?**'];
@@ -236,7 +243,7 @@ export interface CreateContext {
  * (role, destination), then exact dupe, then caps, then the confirm/similar
  * flow, then connector state.
  */
-export function evaluateCreatePreconditions(rule: RuleSpec, ctx: CreateContext): CreateDecision {
+export function evaluateCreatePreconditions(ctx: CreateContext): CreateDecision {
   if (!['owner', 'admin'].includes(ctx.role)) return { decision: 'reject_role' };
   if (!ctx.destinationRegistered) return { decision: 'reject_destination' };
   const exact = ctx.existingSameTypeRules.find((r) => r.fingerprint === ctx.fingerprint && r.status !== 'disabled');
@@ -254,6 +261,84 @@ export function evaluateCreatePreconditions(rule: RuleSpec, ctx: CreateContext):
 /** Destination reference for a prefs-registered destination — never raw. */
 export function buildDestinationRef(channel: 'email' | 'sms', userId: string): string {
   return `prefs:${channel}:${userId}`;
+}
+
+/**
+ * Sanitize a confirmed rule payload: keep only the fields the user actually
+ * chose (trigger + channel) and RE-DERIVE everything else server-side.
+ * Returns null for anything outside the v1 contract (schedules, unknown
+ * triggers, foreign tenant) — the payload round-trips through the client and
+ * is never trusted.
+ */
+export function sanitizeConfirmedRule(payload: RuleSpec, ctx: { tenantId: string; userId: string }): RuleSpec | null {
+  if (!payload || payload.tenant_id !== ctx.tenantId) return null;
+  if (payload.kind !== 'event') return null; // schedules are refused in v1 (honesty rule)
+  if (typeof payload.trigger_type !== 'string' || !(payload.trigger_type in AUTOMATION_CATALOG_EVENT)) return null;
+  if (payload.channel !== 'email' && payload.channel !== 'sms') return null;
+  return {
+    tenant_id: ctx.tenantId,
+    kind: 'event',
+    trigger_type: payload.trigger_type,
+    report_type: null,
+    scope: 'all-stores',
+    channel: payload.channel,
+    destination_ref: buildDestinationRef(payload.channel, ctx.userId),
+    cadence: null,
+    params: {},
+  };
+}
+
+/** The event_subscriptions insert row. Watermark = activation timestamp: set
+ * now for active rules; pending_connector stays NULL until the 1b activation
+ * sweep sets it (so a late-connected rule never fires on backlog). */
+export function insertRowForRule(rule: RuleSpec, opts: { status: 'active' | 'pending_connector'; userId: string; fingerprint: string; now: string }): Record<string, unknown> {
+  return {
+    tenant_id: rule.tenant_id,
+    created_by: opts.userId,
+    created_via: 'chat',
+    kind: rule.kind,
+    trigger_type: rule.trigger_type ?? null,
+    report_type: rule.report_type ?? null,
+    params: rule.params ?? {},
+    channel: rule.channel,
+    destination_ref: rule.destination_ref,
+    cadence: rule.cadence ?? null,
+    status: opts.status,
+    fingerprint: opts.fingerprint,
+    watermark: opts.status === 'active' ? opts.now : null,
+  };
+}
+
+/**
+ * The rule itself is the opt-in: an ACTIVE save also enables the matching
+ * notification_preferences row for the creator's channel, so /notifications
+ * reflects reality and 1b's isEnabled delivery gate lines up with what chat
+ * promised. Returns null when nothing should be written (pending_connector —
+ * the 1b activation sweep writes it on activation; unknown trigger).
+ */
+export function prefRowForActiveRule(rule: RuleSpec, opts: { status: string; userId: string; destination: string | null; now: string }): Record<string, unknown> | null {
+  if (opts.status !== 'active') return null;
+  const event = rule.trigger_type ? AUTOMATION_CATALOG_EVENT[rule.trigger_type] : undefined;
+  if (!event) return null;
+  return {
+    tenant_id: rule.tenant_id,
+    user_id: opts.userId,
+    event_type: event,
+    channel: rule.channel,
+    enabled: true,
+    destination: opts.destination,
+    updated_at: opts.now,
+  };
+}
+
+/** Duplicate answer that reports the existing rule's REAL status. */
+export function duplicateReply(status: string, createdAt?: string | null): string {
+  const state =
+    status === 'active' ? "it's active"
+    : status === 'pending_connector' ? "it's waiting on your store connection"
+    : status === 'suspended' ? "it's suspended (paused after too many fires)"
+    : `its status is ${status.replace(/_/g, ' ')}`;
+  return `You already have this rule${createdAt ? ` (created ${createdAt.slice(0, 10)})` : ''} — ${state}. Nothing new was created.`;
 }
 
 /**

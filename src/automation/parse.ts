@@ -50,6 +50,9 @@ export interface ParsedAutomation {
 }
 
 const VOID_RE = /\bvoid(?:s|ed|ing)?\b/;
+// Past-tense markers = the user is asking ABOUT history, not subscribing to
+// the future ("tell me if there were any voids today" is a read, not a rule).
+const PAST_TENSE_RE = /\b(were|was|did|had|has been|yesterday|last\s+(week|night|month|year))\b/;
 const RULE_NOUN_RE = /\b(alerts?|automations?|rules?|subscriptions?|notifications?|reminders?)\b/;
 const EMAIL_ADDR_RE = /[^\s@]+@[^\s@]+\.[^\s@]+/;
 // 7+ digits with optional separators — "text 555-0100" / "+1 (555) 555-0100".
@@ -124,7 +127,9 @@ export function parseAutomationSentence(rawText: string): ParsedAutomation | nul
 
   // ── disable / delete (checked before subscribe: "stop texting me…") ─────
   const mentionsRules = RULE_NOUN_RE.test(text) || VOID_RE.test(text);
-  if (/\b(delete|remove|get rid of)\b/.test(text) && mentionsRules) {
+  // delete needs an explicit rule noun — bare void vocabulary ("remove voided
+  // transactions from the report") is a data request, not rule management.
+  if (/\b(delete|remove|get rid of)\b/.test(text) && RULE_NOUN_RE.test(text)) {
     return { action: 'delete', rule_ref: parseRuleRef(text), confidence: 'high' };
   }
   if (/\b(pause|disable|mute|turn off|unsubscribe)\b/.test(text) && mentionsRules) {
@@ -139,6 +144,7 @@ export function parseAutomationSentence(rawText: string): ParsedAutomation | nul
   const cadence = parseCadence(text);
   if (wantsShiftOrTender && (cadence || /\b(every|each|daily|nightly|weekly)\b/.test(text))) {
     const { channel, explicit } = parseChannel(text);
+    const freeText = parseFreeTextDestination(text);
     return {
       action: 'subscribe',
       kind: 'schedule',
@@ -147,7 +153,7 @@ export function parseAutomationSentence(rawText: string): ParsedAutomation | nul
       cadence: cadence ?? { freq: 'daily' },
       supported: false, // no verified shift/tender data contract yet — never claim
       confidence: explicit ? 'high' : 'medium',
-      ...(parseFreeTextDestination(text) ? { destination_free_text: parseFreeTextDestination(text) } : {}),
+      ...(freeText ? { destination_free_text: freeText } : {}),
     };
   }
 
@@ -160,7 +166,7 @@ export function parseAutomationSentence(rawText: string): ParsedAutomation | nul
     (/\b(text|sms|email)\b/.test(text) && Boolean(parseFreeTextDestination(text)));
   const triggerClause = /\b(when(ever)?|if|any ?time|each time|every time|on)\b/.test(text) || /\bon voids?\b/.test(text);
 
-  if (subscribeVerb && VOID_RE.test(text) && (triggerClause || /\bvoids\b/.test(text))) {
+  if (subscribeVerb && VOID_RE.test(text) && (triggerClause || /\bvoids\b/.test(text)) && !PAST_TENSE_RE.test(text)) {
     const { channel, explicit } = parseChannel(text);
     const freeText = parseFreeTextDestination(text);
     return {

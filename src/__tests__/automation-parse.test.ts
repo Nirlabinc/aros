@@ -106,6 +106,8 @@ describe('parseAutomationSentence — non-automation sentences return null', () 
     'show me the top 10 items this week',
     'how many voided transactions did I have yesterday', // read intent, not a subscription
     'void the last transaction', // a write request, not an alert
+    'tell me if there were any voids today', // S6: past-tense question, not a forward subscription
+    'remove voided transactions from the report', // S6: bare void vocab + "remove" is a data request, not delete-rule
     'hello there',
     'list the invoices from last week',
     '',
