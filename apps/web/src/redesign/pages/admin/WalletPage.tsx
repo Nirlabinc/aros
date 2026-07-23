@@ -20,6 +20,7 @@ const PRESETS = [10, 25, 50, 100];
 export function WalletPage() {
   const { tenant, session } = useAuth();
   const [wallet, setWallet] = useState<Wallet | null>(null);
+  const [receipts, setReceipts] = useState<Array<{ date: string; amountUsd: number; description: string; receiptUrl: string | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -43,6 +44,7 @@ export function WalletPage() {
       setWallet(data);
       setThreshold(data.autoRecharge.autoRechargeThresholdUsd);
       setAmount(data.autoRecharge.autoRechargeAmountUsd);
+      fetch(`${API_BASE}/api/wallet/receipts`, { headers }).then(r => r.json()).then(d => setReceipts(d.entries || [])).catch(() => {});
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not load wallet'); }
     finally { setLoading(false); }
   }
@@ -133,6 +135,25 @@ export function WalletPage() {
               </div>
             )}
           </section>
+
+          {/* Payment history — receipts synced from Stripe (view + download). */}
+          {receipts.length > 0 && (
+            <section style={{ border: '1px solid var(--line)', borderRadius: 14, background: 'var(--surface)', padding: 18, boxShadow: 'var(--shadow-card)' }}>
+              <strong style={{ fontSize: 15 }}>Payment history</strong>
+              <div style={{ marginTop: 10 }}>
+                {receipts.map((r, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderTop: i ? '1px solid var(--line)' : 'none' }}>
+                    <span style={{ color: 'var(--ink-3)', fontSize: 12.5, width: 92, flexShrink: 0 }}>{new Date(r.date).toLocaleDateString()}</span>
+                    <span style={{ flex: 1, minWidth: 0, color: 'var(--ink)', fontSize: 13.5 }}>{r.description}</span>
+                    <strong style={{ color: 'var(--ink)', fontSize: 13.5 }}>{money(r.amountUsd)}</strong>
+                    {r.receiptUrl
+                      ? <a href={r.receiptUrl} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontSize: 12.5, whiteSpace: 'nowrap' }}>View receipt ↗</a>
+                      : <span style={{ color: 'var(--ink-3)', fontSize: 12.5, whiteSpace: 'nowrap', width: 88, textAlign: 'right' }}>—</span>}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {note && <State title="Wallet" detail={note} />}
         </div>

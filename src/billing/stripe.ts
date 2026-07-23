@@ -252,4 +252,16 @@ export async function chargeSavedCard(opts: {
 }
 
 /** Re-export Stripe types for consumers */
+/** Hosted receipt URL (view + download PDF) for a completed payment intent. */
+export async function getPaymentReceiptUrl(paymentIntentId: string): Promise<string | null> {
+  const stripe = getStripe();
+  try {
+    const intent = await stripe.paymentIntents.retrieve(paymentIntentId, { expand: ['latest_charge'] });
+    const charge = intent.latest_charge as Stripe.Charge | null;
+    return charge?.receipt_url ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export type { Stripe };
