@@ -1898,6 +1898,29 @@ function canManageMarketplace(role: string): boolean {
   return ['owner', 'admin'].includes(role);
 }
 
+/**
+ * True iff the tenant has an active marketplace entitlement for `appKey`.
+ * In-shell apps (Documents, EDI Invoices) gate their data routes on this so the
+ * server matches the install-gated UI — a tenant that hasn't installed the app
+ * from the Marketplace cannot reach its API. A DB failure fails closed (false).
+ */
+async function hasActiveAppEntitlement(tenantId: string, appKey: string): Promise<boolean> {
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data } = await supabase
+      .from('marketplace_app_entitlements')
+      .select('status')
+      .eq('tenant_id', tenantId)
+      .eq('app_key', appKey)
+      .maybeSingle();
+    return data?.status === 'active';
+  } catch {
+    return false;
+  }
+}
+
+const EDI_APP_KEY = 'edi-invoices';
+
 function normalizeAppKey(raw: unknown): string {
   const value = String(raw ?? '').trim().toLowerCase();
   const aliases: Record<string, string> = {
@@ -4711,6 +4734,7 @@ function ediErrorStatus(message: string): number {
 async function handleEdiList(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const auth = await authenticateRequest(req);
   if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!(await hasActiveAppEntitlement(auth.tenantId, EDI_APP_KEY))) return json(res, 409, { error: 'The EDI Invoices app is not installed for this workspace. Install it from the Marketplace to view supplier invoices.' });
   const override = ediOverrideAllowed() ? getRequestUrl(req).searchParams.get('apiUrl') : null;
   try {
     const files = await withTenantEdiSession(auth.tenantId, override, (session) => listEdiFiles(session));
@@ -4725,6 +4749,7 @@ async function handleEdiList(req: IncomingMessage, res: ServerResponse): Promise
 async function handleEdiUpload(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const auth = await authenticateRequest(req);
   if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!(await hasActiveAppEntitlement(auth.tenantId, EDI_APP_KEY))) return json(res, 409, { error: 'The EDI Invoices app is not installed for this workspace. Install it from the Marketplace first.' });
   if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
 
   const body = await parseJsonBody(req);
@@ -4754,6 +4779,7 @@ async function handleEdiUpload(req: IncomingMessage, res: ServerResponse): Promi
 async function handleEdiItems(req: IncomingMessage, res: ServerResponse, receiveId: number): Promise<void> {
   const auth = await authenticateRequest(req);
   if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!(await hasActiveAppEntitlement(auth.tenantId, EDI_APP_KEY))) return json(res, 409, { error: 'The EDI Invoices app is not installed for this workspace. Install it from the Marketplace to view supplier invoices.' });
   const override = ediOverrideAllowed() ? getRequestUrl(req).searchParams.get('apiUrl') : null;
   try {
     const items = await withTenantEdiSession(auth.tenantId, override, (session) => getEdiItems(session, receiveId));
@@ -4768,6 +4794,7 @@ async function handleEdiItems(req: IncomingMessage, res: ServerResponse, receive
 async function handleEdiRevert(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const auth = await authenticateRequest(req);
   if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!(await hasActiveAppEntitlement(auth.tenantId, EDI_APP_KEY))) return json(res, 409, { error: 'The EDI Invoices app is not installed for this workspace. Install it from the Marketplace first.' });
   if (!canManageMarketplace(auth.role)) return json(res, 403, { error: 'Owner or admin role required' });
 
   const body = await parseJsonBody(req);

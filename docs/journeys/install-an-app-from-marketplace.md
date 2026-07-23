@@ -41,6 +41,10 @@ opening it lands on the app's real page — no "not installed" screen.
   or new — installs these apps explicitly from the Marketplace.
 - `/api/apps`, `/api/marketplace/entitlements`, `/api/marketplace/install`,
   `/api/apps/:id/grant` live (all pre-existing).
+- Both in-shell apps gate their data routes server-side, not just in the UI:
+  `/api/documents/*` and `/api/rapidrms/edi*` return 409 without an active
+  entitlement for `documents` / `edi-invoices` respectively. Installing the
+  app is the only way to reach its data.
 - Documents needs `MIB_DOCS_BASE_URL` + `MIB_DOCS_ADMIN_TOKEN` server-side for
   the per-tenant token registration (wired in prod 2026-07-21); until wired,
   the Documents page shows its own honest error state (never fabricated
