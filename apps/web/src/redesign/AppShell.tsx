@@ -9,6 +9,7 @@ import {
   BillingPage, UsagePage, TeamPage, SettingsPage, PermissionsPage, ProfilePage, ConnectionHealthPage, DevicesPage,
 } from './pages/admin';
 import { NotificationsPage } from './pages/admin/NotificationsPage';
+import { WalletPage } from './pages/admin/WalletPage';
 import { DocumentsPage } from './pages/Documents';
 import { EdiInvoices } from './pages/EdiInvoices';
 import { ConnectWizard } from './ConnectWizard';
@@ -204,6 +205,7 @@ export function AppShell() {
     if (section === 'profile') return <ProfilePage />;
     if (section === 'developers') return <DeveloperPortal />;
     if (section === 'notifications') return <NotificationsPage />;
+    if (section === 'wallet') return <WalletPage />;
     if (section === 'skills' || section === 'agents' || section === 'models') {
       const kind = section === 'skills' ? 'skill' : section === 'agents' ? 'agent' : 'model';
       return <IntelligencePage kind={kind} />;

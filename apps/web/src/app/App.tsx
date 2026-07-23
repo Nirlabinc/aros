@@ -37,7 +37,7 @@ function isOnboardingComplete(tenant: Tenant | null): boolean {
 
 // Every route the SPA actually serves — anything else is honestly a 404 for
 // signed-out visitors instead of a silent bounce to /login (sweep finding).
-const KNOWN_PREFIXES = ['/login', '/auth', '/signup', '/reset-password', '/verify-email', '/legal', '/social', '/contact', '/start', '/connect', '/onboarding', '/platform', '/dashboard', '/developers', '/submit-plugin', '/billing', '/costs', '/marketplace', '/connectors', '/plugins', '/chat', '/human', '/admin', '/stores', '/apps', '/skills', '/agents', '/models', '/computers', '/connection-health', '/settings', '/permissions', '/documents', '/edi-invoices', '/profile', '/users', '/workspace', '/team', '/usage', '/notifications', '/channels', '/oauth', '/preview'];
+const KNOWN_PREFIXES = ['/login', '/auth', '/signup', '/reset-password', '/verify-email', '/legal', '/social', '/contact', '/start', '/connect', '/onboarding', '/platform', '/dashboard', '/developers', '/submit-plugin', '/billing', '/costs', '/marketplace', '/connectors', '/plugins', '/chat', '/human', '/admin', '/stores', '/apps', '/skills', '/agents', '/models', '/computers', '/connection-health', '/settings', '/permissions', '/documents', '/edi-invoices', '/profile', '/users', '/workspace', '/team', '/usage', '/notifications', '/wallet', '/channels', '/oauth', '/preview'];
 
 /** Tab titles per route — every page shared one static title before (sweep). */
 const ROUTE_TITLES: Array<[string, string]> = [
@@ -46,7 +46,7 @@ const ROUTE_TITLES: Array<[string, string]> = [
   ['/contact', 'Contact — AROS'], ['/start', 'Get started — AROS'], ['/connect', 'Connect your store — AROS'],
   ['/onboarding', 'Setup — AROS'], ['/platform', 'Platform console — AROS'], ['/dashboard', 'Home — AROS'],
   ['/stores', 'Stores — AROS'], ['/team', 'Team — AROS'], ['/users', 'Team — AROS'], ['/billing', 'Billing — AROS'],
-  ['/usage', 'Usage — AROS'], ['/costs', 'Usage — AROS'], ['/notifications', 'Notifications — AROS'], ['/settings', 'Settings — AROS'], ['/marketplace', 'Marketplace — AROS'], ['/apps', 'Apps — AROS'],
+  ['/usage', 'Usage — AROS'], ['/costs', 'Usage — AROS'], ['/notifications', 'Notifications — AROS'], ['/wallet', 'Wallet — AROS'], ['/settings', 'Settings — AROS'], ['/marketplace', 'Marketplace — AROS'], ['/apps', 'Apps — AROS'],
   ['/documents', 'Documents — AROS'], ['/edi-invoices', 'EDI Invoices — AROS'], ['/profile', 'Profile — AROS'], ['/connectors', 'Connectors — AROS'], ['/plugins', 'Plugins — AROS'],
   ['/developers', 'Developers — AROS'], ['/auth/accept', 'Accept invite — AROS'],
 ];

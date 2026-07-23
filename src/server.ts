@@ -14,8 +14,18 @@ import {
   createCheckoutSession,
   createPortalSession,
   getSubscription,
+  ensureStripeCustomer,
+  createTopupCheckout,
+  createCardSetupIntent,
+  getDefaultPaymentMethodId,
+  chargeSavedCard,
   type PlanId,
 } from './billing/stripe.js';
+import {
+  ONBOARDING_GRANT_USD, buildWalletView, shouldAutoRecharge,
+  validateTopupUsd, validateAutoRechargeInput, computeBalanceUsd, isFrozen,
+  type WalletSettings,
+} from './wallet.js';
 import { handleStripeWebhook } from './billing/webhook.js';
 import { publicServiceConfig } from './marketplace/service-config.js';
 import { provisionLicense } from './billing/license.js';
@@ -905,6 +915,14 @@ async function proxyRequest(req: IncomingMessage, res: ServerResponse, baseUrl: 
     } else {
       const auth = await authenticateRequest(req);
       if (auth) {
+        // Freeze gate: block chat when the workspace is out of credit. Flag-
+        // gated (WALLET_ENFORCE) and fail-open, so it never blocks until the
+        // wallet is proven. 30s balance cache keeps the hot path cheap.
+        if (process.env.WALLET_ENFORCE === '1' && upstreamPath.startsWith('/v1/chat') && await isWorkspaceFrozen(auth.tenantId)) {
+          res.writeHead(402, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Your workspace is out of credit. Add funds to keep using AI.', code: 'WALLET_FROZEN' }));
+          return;
+        }
         // The router's tenant registry speaks warehouse ids (client-<N>),
         // not AROS workspace UUIDs — an unmapped identity silently scopes
         // chat to an empty store and every answer reads $0. Resolve through
@@ -1825,7 +1843,238 @@ async function ensureSignupTenant(
   });
   if (baselineError) console.error('[signup] Core baseline provisioning failed:', baselineError.message);
 
+  // Prepaid wallet: grant the $50 onboarding credit (idempotent via the
+  // one-grant-per-tenant unique index). Non-fatal — never block signup.
+  void grantOnboardingCredit(ensuredTenantId);
+
   return { tenantId: ensuredTenantId, licenseKey, existing: false };
+}
+
+// ── Prepaid wallet ──────────────────────────────────────────────
+// Balance = credits (grants + top-ups) − metered usage. The meter is the
+// usage source of truth; AROS owns the credits ledger, keyed by workspace.
+
+/** Grant the one-time $50 onboarding credit. Idempotent: the unique index
+ * on (tenant_id) where kind='onboarding_grant' rejects a second grant. */
+async function grantOnboardingCredit(tenantId: string): Promise<void> {
+  try {
+    const { error } = await createSupabaseAdmin().from('wallet_ledger').insert({
+      tenant_id: tenantId, amount_usd: ONBOARDING_GRANT_USD, kind: 'onboarding_grant', note: 'Welcome credit',
+    });
+    if (error && (error as { code?: string }).code !== '23505') {
+      console.error('[wallet] onboarding grant failed:', error.message);
+    }
+  } catch (err) {
+    console.error('[wallet] onboarding grant error:', err instanceof Error ? err.message : err);
+  }
+}
+
+/** All meter tenant ids that belong to a workspace: every connected RapidRMS
+ * store's warehouse id (client-<N>) plus the workspace UUID itself (usage
+ * recorded before any store connected). Deduped. */
+async function workspaceMeterTenants(tenantId: string): Promise<string[]> {
+  const ids = new Set<string>([tenantId]);
+  try {
+    const { data } = await createSupabaseAdmin()
+      .from('tenant_connectors')
+      .select('config')
+      .eq('tenant_id', tenantId)
+      .eq('type', 'rapidrms-api')
+      .eq('status', 'connected');
+    for (const row of data || []) {
+      const clientId = (row.config as Record<string, unknown> | null)?.clientId;
+      if (typeof clientId === 'string' && clientId.trim()) ids.add(`client-${clientId.trim()}`);
+    }
+  } catch { /* fall back to the UUID alone */ }
+  return [...ids];
+}
+
+/** Total metered usage (billedUsd) for a workspace across all its stores. */
+async function workspaceUsageUsd(tenantId: string): Promise<number> {
+  const tenants = await workspaceMeterTenants(tenantId);
+  let total = 0;
+  for (const t of tenants) {
+    try {
+      const url = new URL('/v1/costs/summary', SHRE_METER_URL);
+      url.searchParams.set('tenantId', t);
+      const res = await fetch(url, { headers: { 'x-gate-user': 'aros-platform', 'x-gate-role': 'service' }, signal: AbortSignal.timeout(4000) });
+      if (res.ok) {
+        const s = (await res.json()) as { totalBilledUsd?: number };
+        total += s.totalBilledUsd || 0;
+      }
+    } catch { /* skip this store's usage on a transient meter error */ }
+  }
+  return total;
+}
+
+async function walletCreditsUsd(tenantId: string): Promise<number> {
+  const { data } = await createSupabaseAdmin().from('wallet_ledger').select('amount_usd').eq('tenant_id', tenantId);
+  return (data || []).reduce((sum, r) => sum + Number(r.amount_usd || 0), 0);
+}
+
+async function walletSettings(tenantId: string): Promise<WalletSettings & { paymentMethodId: string | null }> {
+  const { data } = await createSupabaseAdmin()
+    .from('wallet_settings')
+    .select('auto_recharge_enabled,auto_recharge_threshold_usd,auto_recharge_amount_usd,stripe_payment_method_id')
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  return {
+    autoRechargeEnabled: Boolean(data?.auto_recharge_enabled),
+    autoRechargeThresholdUsd: Number(data?.auto_recharge_threshold_usd ?? 10),
+    autoRechargeAmountUsd: Number(data?.auto_recharge_amount_usd ?? 25),
+    hasCard: Boolean(data?.stripe_payment_method_id),
+    paymentMethodId: (data?.stripe_payment_method_id as string) ?? null,
+  };
+}
+
+async function handleWalletGet(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  try {
+    const [credits, usage, settings] = await Promise.all([
+      walletCreditsUsd(auth.tenantId), workspaceUsageUsd(auth.tenantId), walletSettings(auth.tenantId),
+    ]);
+    json(res, 200, buildWalletView(credits, usage, {
+      autoRechargeEnabled: settings.autoRechargeEnabled,
+      autoRechargeThresholdUsd: settings.autoRechargeThresholdUsd,
+      autoRechargeAmountUsd: settings.autoRechargeAmountUsd,
+      hasCard: settings.hasCard,
+    }));
+  } catch (err) {
+    console.error('[wallet.get]', err instanceof Error ? err.message : err);
+    json(res, 500, { error: 'Could not load wallet' });
+  }
+}
+
+/** Resolve (creating if needed) the workspace's Stripe customer id. */
+async function ensureWorkspaceStripeCustomer(tenantId: string, userEmail: string | null): Promise<string> {
+  const supabase = createSupabaseAdmin();
+  const { data } = await supabase.from('tenants').select('stripe_customer_id').eq('id', tenantId).maybeSingle();
+  const existing = (data?.stripe_customer_id as string) || null;
+  const customerId = await ensureStripeCustomer(existing, tenantId, userEmail);
+  if (!existing) await supabase.from('tenants').update({ stripe_customer_id: customerId }).eq('id', tenantId);
+  return customerId;
+}
+
+async function handleWalletTopup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!process.env.STRIPE_SECRET_KEY) return json(res, 503, { error: 'Payments are not configured yet' });
+  const body = await parseJsonBody(req);
+  const amount = validateTopupUsd((body as Record<string, unknown> | null)?.amountUsd);
+  if ('error' in amount) return json(res, 400, { error: amount.error });
+  try {
+    const { data: { user } } = await createSupabaseAdmin().auth.admin.getUserById(auth.userId);
+    const customerId = await ensureWorkspaceStripeCustomer(auth.tenantId, user?.email ?? null);
+    const appUrl = (process.env.PUBLIC_APP_URL || 'https://app.aros.live').replace(/\/$/, '');
+    const checkoutUrl = await createTopupCheckout({
+      customerId, tenantId: auth.tenantId, amountCents: amount.cents,
+      successUrl: `${appUrl}/wallet?topup=success`, cancelUrl: `${appUrl}/wallet?topup=cancelled`,
+    });
+    await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'wallet.topup_started', resource: `$${amount.cents / 100}`, detail: {}, ip: getClientIp(req) });
+    json(res, 200, { url: checkoutUrl });
+  } catch (err) {
+    console.error('[wallet.topup]', err instanceof Error ? err.message : err);
+    json(res, 500, { error: 'Could not start checkout' });
+  }
+}
+
+async function handleWalletSetupCard(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  if (!process.env.STRIPE_SECRET_KEY) return json(res, 503, { error: 'Payments are not configured yet' });
+  try {
+    const { data: { user } } = await createSupabaseAdmin().auth.admin.getUserById(auth.userId);
+    const customerId = await ensureWorkspaceStripeCustomer(auth.tenantId, user?.email ?? null);
+    const clientSecret = await createCardSetupIntent(customerId, auth.tenantId);
+    json(res, 200, { clientSecret });
+  } catch (err) {
+    console.error('[wallet.setup-card]', err instanceof Error ? err.message : err);
+    json(res, 500, { error: 'Could not start card setup' });
+  }
+}
+
+async function handleWalletAutoRecharge(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = await authenticateRequest(req);
+  if (!auth) return json(res, 401, { error: 'Authentication required' });
+  const body = await parseJsonBody(req);
+  const input = validateAutoRechargeInput(body);
+  if ('error' in input) return json(res, 400, { error: input.error });
+  try {
+    const supabase = createSupabaseAdmin();
+    // Enabling requires a saved card — pull the customer's default and store it.
+    let paymentMethodId: string | null = null;
+    if (input.enabled) {
+      const { data } = await supabase.from('tenants').select('stripe_customer_id').eq('id', auth.tenantId).maybeSingle();
+      const customerId = (data?.stripe_customer_id as string) || null;
+      paymentMethodId = customerId ? await getDefaultPaymentMethodId(customerId) : null;
+      if (!paymentMethodId) return json(res, 400, { error: 'Add a card first, then enable auto-recharge.' });
+    }
+    await supabase.from('wallet_settings').upsert({
+      tenant_id: auth.tenantId,
+      auto_recharge_enabled: input.enabled,
+      auto_recharge_threshold_usd: input.thresholdUsd,
+      auto_recharge_amount_usd: input.amountUsd,
+      ...(paymentMethodId ? { stripe_payment_method_id: paymentMethodId } : {}),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'tenant_id' });
+    await auditLog({ tenantId: auth.tenantId, userId: auth.userId, action: 'wallet.auto_recharge_updated', resource: input.enabled ? 'on' : 'off', detail: { thresholdUsd: input.thresholdUsd, amountUsd: input.amountUsd }, ip: getClientIp(req) });
+    json(res, 200, { ok: true, enabled: input.enabled, thresholdUsd: input.thresholdUsd, amountUsd: input.amountUsd });
+  } catch (err) {
+    console.error('[wallet.auto-recharge]', err instanceof Error ? err.message : err);
+    json(res, 500, { error: 'Could not save auto-recharge settings' });
+  }
+}
+
+// Freeze gate: is this workspace out of funds? Cached briefly so the chat
+// hot-path adds at most one cheap check, not a DB+meter round-trip per token.
+const frozenCache = new Map<string, { frozen: boolean; expiresAt: number }>();
+async function isWorkspaceFrozen(tenantId: string): Promise<boolean> {
+  const cached = frozenCache.get(tenantId);
+  if (cached && cached.expiresAt > Date.now()) return cached.frozen;
+  let frozen = false;
+  try {
+    const [credits, usage] = await Promise.all([walletCreditsUsd(tenantId), workspaceUsageUsd(tenantId)]);
+    frozen = isFrozen(computeBalanceUsd(credits, usage));
+  } catch { frozen = false; } // fail OPEN — never block chat on a wallet error
+  frozenCache.set(tenantId, { frozen, expiresAt: Date.now() + 30_000 });
+  return frozen;
+}
+
+/** Auto-recharge sweep: charge the saved card for workspaces below threshold.
+ * Flag-gated (WALLET_AUTO_RECHARGE) — off until the card flow is proven. */
+async function runWalletAutoRecharge(): Promise<void> {
+  if (process.env.WALLET_AUTO_RECHARGE !== '1' || !process.env.STRIPE_SECRET_KEY) return;
+  try {
+    const supabase = createSupabaseAdmin();
+    const { data: rows } = await supabase.from('wallet_settings')
+      .select('tenant_id,auto_recharge_threshold_usd,auto_recharge_amount_usd,stripe_payment_method_id')
+      .eq('auto_recharge_enabled', true).not('stripe_payment_method_id', 'is', null);
+    for (const row of rows || []) {
+      try {
+        const tenantId = row.tenant_id as string;
+        const [credits, usage] = await Promise.all([walletCreditsUsd(tenantId), workspaceUsageUsd(tenantId)]);
+        const balance = computeBalanceUsd(credits, usage);
+        const settings: WalletSettings = {
+          autoRechargeEnabled: true, hasCard: true,
+          autoRechargeThresholdUsd: Number(row.auto_recharge_threshold_usd), autoRechargeAmountUsd: Number(row.auto_recharge_amount_usd),
+        };
+        if (!shouldAutoRecharge(balance, settings)) continue;
+        const { data: t } = await supabase.from('tenants').select('stripe_customer_id').eq('id', tenantId).maybeSingle();
+        const customerId = (t?.stripe_customer_id as string) || null;
+        if (!customerId) continue;
+        // Off-session charge → webhook credits the wallet on payment_intent.succeeded.
+        await chargeSavedCard({ customerId, paymentMethodId: row.stripe_payment_method_id as string, amountCents: Math.round(settings.autoRechargeAmountUsd * 100), tenantId });
+        frozenCache.delete(tenantId);
+        console.log(`[wallet] auto-recharge $${settings.autoRechargeAmountUsd} for ${tenantId}`);
+      } catch (err) {
+        console.error('[wallet] auto-recharge charge failed:', err instanceof Error ? err.message : err);
+        await supabase.from('wallet_settings').update({ auto_recharge_failed_at: new Date().toISOString() }).eq('tenant_id', row.tenant_id);
+      }
+    }
+  } catch (err) {
+    console.error('[wallet] auto-recharge sweep:', err instanceof Error ? err.message : err);
+  }
 }
 
 async function handleSignup(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -6671,6 +6920,10 @@ async function handler(req: IncomingMessage, res: ServerResponse): Promise<void>
   if (pathname === '/api/notifications/preferences' && (method === 'GET' || method === 'PUT')) {
     return handleNotificationPreferences(req, res);
   }
+  if (pathname === '/api/wallet' && method === 'GET') return handleWalletGet(req, res);
+  if (pathname === '/api/wallet/topup' && method === 'POST') return handleWalletTopup(req, res);
+  if (pathname === '/api/wallet/setup-card' && method === 'POST') return handleWalletSetupCard(req, res);
+  if (pathname === '/api/wallet/auto-recharge' && method === 'POST') return handleWalletAutoRecharge(req, res);
   if (pathname === '/api/automations' && method === 'GET') {
     return handleAutomationsList(req, res);
   }
@@ -6789,6 +7042,14 @@ server.listen(PORT, '0.0.0.0', () => {
     setInterval(() => void runUsageInvoicing(), 24 * 3600_000).unref();
     setTimeout(() => void runUsageInvoicing(), 300_000).unref();
     console.log('[aros-platform] usage invoicing enabled');
+  }
+
+  // Prepaid wallet auto-recharge sweep — flag-gated (WALLET_AUTO_RECHARGE),
+  // off until the saved-card flow is proven end-to-end.
+  if (process.env.WALLET_AUTO_RECHARGE === '1' && process.env.STRIPE_SECRET_KEY) {
+    setInterval(() => void runWalletAutoRecharge(), 15 * 60_000).unref();
+    setTimeout(() => void runWalletAutoRecharge(), 120_000).unref();
+    console.log('[aros-platform] wallet auto-recharge enabled');
   }
 
   // Automation sentinel (slice 1b): fires chat-registered event rules

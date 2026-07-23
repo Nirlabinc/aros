@@ -178,6 +178,31 @@ export async function handleStripeWebhook(
       break;
     }
 
+    // Prepaid wallet top-up (manual checkout OR off-session auto-recharge).
+    // Both produce a payment_intent.succeeded carrying wallet_topup metadata;
+    // crediting here (keyed by the intent id) covers both and cannot
+    // double-credit — wallet_ledger has a unique index on stripe_ref.
+    case 'payment_intent.succeeded': {
+      const intent = event.data.object as Stripe.PaymentIntent;
+      if (intent.metadata?.wallet_topup === 'true') {
+        const tenantId = intent.metadata?.tenant_id;
+        const amountUsd = (intent.amount_received ?? intent.amount ?? 0) / 100;
+        if (tenantId && amountUsd > 0) {
+          const { error } = await supabase.from('wallet_ledger').insert({
+            tenant_id: tenantId,
+            amount_usd: amountUsd,
+            kind: intent.metadata?.auto_recharge === 'true' ? 'auto_recharge' : 'topup',
+            stripe_ref: intent.id,
+            note: intent.metadata?.auto_recharge === 'true' ? 'Automatic recharge' : 'Balance top-up',
+          });
+          if (error && (error as { code?: string }).code !== PG_UNIQUE_VIOLATION) {
+            console.error('[billing] wallet credit failed:', error.message);
+          }
+        }
+      }
+      break;
+    }
+
     default:
       // Unhandled event type — acknowledge receipt
       break;

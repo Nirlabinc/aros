@@ -7,7 +7,7 @@
 export type SectionKey =
   | 'chat' | 'stores' | 'marketplace' | 'apps' | 'connectors' | 'plugins' | 'skills' | 'agents'
   | 'models' | 'devices' | 'permissions' | 'health' | 'documents' | 'team' | 'billing' | 'usage' | 'settings'
-  | 'notifications' | 'profile' | 'developers'
+  | 'notifications' | 'wallet' | 'profile' | 'developers'
   | 'edi-invoices';
 
 export interface NavItem { key: SectionKey; label: string; glyph: string; count?: number; }
@@ -42,6 +42,7 @@ export const EMBEDDED_APP_NAV: Record<'documents' | 'edi-invoices', NavItem> = {
 export const WORKSPACE_NAV: NavItem[] = [
   { key: 'team', label: 'Team', glyph: 'Tm' },
   { key: 'billing', label: 'Billing', glyph: 'Bi' },
+  { key: 'wallet', label: 'Wallet', glyph: 'Wa' },
   { key: 'usage', label: 'Usage', glyph: 'Us' },
   { key: 'settings', label: 'Settings', glyph: 'Se' },
   { key: 'notifications', label: 'Notifications', glyph: 'No' },
@@ -244,6 +245,10 @@ export const SECTIONS: Record<Exclude<SectionKey, 'chat'>, SectionSpec> = {
     lead: 'Choose which notifications reach you and on which channel (email, text).',
     stats: [{ value: 5, label: 'Notification types' }, { value: 2, label: 'Channels' }],
   },
+  wallet: {
+    eyebrow: 'Billing', primaryCta: 'Add credit',
+    lead: 'Your prepaid balance for AI usage. Add funds, or turn on auto-recharge.',
+  },
   developers: {
     eyebrow: 'Developers', primaryCta: 'Submit a plugin',
     lead: 'Publish an app, connector, or plugin to the AROS Marketplace — submission steps, integration contract, and demo-credential requirements.',
@@ -276,7 +281,7 @@ export const STORES_SCOPE = ['Main St', 'Oak Ave', '3rd St Express', 'Harbor', '
 export const SECTION_TITLES: Record<SectionKey, string> = {
   chat: 'Concierge', stores: 'Stores', marketplace: 'Marketplace', apps: 'Apps', connectors: 'Connectors', plugins: 'Plugins', skills: 'Skills', agents: 'Agents',
   models: 'Models', devices: 'Computers', permissions: 'Permissions', health: 'Connection Health',
-  documents: 'Documents', team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings', notifications: 'Notifications', profile: 'Profile', developers: 'Developers', 'edi-invoices': 'EDI Invoices',
+  documents: 'Documents', team: 'Team', billing: 'Billing', usage: 'Usage', settings: 'Settings', notifications: 'Notifications', wallet: 'Wallet', profile: 'Profile', developers: 'Developers', 'edi-invoices': 'EDI Invoices',
 };
 
 function rowStatus([status, statusLabel]: [Status, string]) { return { status, statusLabel }; }
