@@ -49,6 +49,27 @@ export type BosTimecardCorrectionDraft = {
   writeEnabled: false;
 };
 
+export type BosTimecardCorrectionRequest = {
+  draftId: string;
+  type: BosTimecardCorrectionDraft['type'];
+  severity: BosTimecardCorrectionDraft['severity'];
+  employeeId: string | null;
+  employeeName: string | null;
+  clockId: string | null;
+  clockDate: string | null;
+  clockIn: string | null;
+  clockOut: string | null;
+  currentHours: number | null;
+  proposedAction: BosTimecardCorrectionDraft['proposedAction'];
+  proposedChange: {
+    clockIn?: string;
+    clockOut?: string;
+    reason: string;
+  };
+  requiresApproval: true;
+  writeEnabled: false;
+};
+
 export type BosTimecardReport = {
   from: string;
   to: string;
@@ -68,6 +89,9 @@ export type BosTimecardReport = {
 
 const DEFAULT_BOS_BASE_URL = 'https://www.rapidrms.com';
 const DEFAULT_TIMEZONE = 'America/New_York';
+const CORRECTION_TYPES: BosTimecardCorrectionDraft['type'][] = ['missing_clock_out', 'voided_punch_review', 'zero_hour_punch', 'long_shift_review'];
+const CORRECTION_SEVERITIES: BosTimecardCorrectionDraft['severity'][] = ['info', 'warning', 'critical'];
+const CORRECTION_ACTIONS: BosTimecardCorrectionDraft['proposedAction'][] = ['edit', 'review'];
 
 const EMPLOYEE_ID_FIELDS = ['employeeId', 'EmployeeId', 'employeeID', 'empId', 'EmpId', 'userId', 'UserId', 'cashierId', 'CashierId', 'id', 'Id'];
 const EMPLOYEE_NAME_FIELDS = ['employeeName', 'EmployeeName', 'empName', 'EmpName', 'userName', 'UserName', 'cashierName', 'CashierName', 'name', 'Name'];
@@ -185,6 +209,60 @@ function normalizeDateTime(value: string | null): string | null {
   if (!value) return null;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : value;
+}
+
+function cleanCorrectionString(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const text = String(value).replace(/[<>]/g, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').trim();
+  return text ? text.slice(0, maxLength) : null;
+}
+
+function cleanCorrectionHours(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value * 1000) / 1000;
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Math.round(Number(value) * 1000) / 1000;
+  return null;
+}
+
+export function normalizeBosTimecardCorrectionRequest(input: unknown): { ok: true; value: BosTimecardCorrectionRequest } | { ok: false; error: string } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { ok: false, error: 'Correction request body is required' };
+  const body = input as Record<string, unknown>;
+  const draft = body.draft && typeof body.draft === 'object' && !Array.isArray(body.draft) ? body.draft as Record<string, unknown> : body;
+  const draftId = cleanCorrectionString(draft.id ?? body.draftId, 160);
+  const type = cleanCorrectionString(draft.type ?? body.type, 80) as BosTimecardCorrectionDraft['type'] | null;
+  const severity = cleanCorrectionString(draft.severity ?? body.severity ?? 'warning', 20) as BosTimecardCorrectionDraft['severity'] | null;
+  const proposedAction = cleanCorrectionString(draft.proposedAction ?? body.proposedAction ?? 'review', 20) as BosTimecardCorrectionDraft['proposedAction'] | null;
+  const reason = cleanCorrectionString(body.reason ?? draft.reason, 500);
+  if (!draftId) return { ok: false, error: 'draftId is required' };
+  if (!type || !CORRECTION_TYPES.includes(type)) return { ok: false, error: 'Unsupported correction type' };
+  if (!severity || !CORRECTION_SEVERITIES.includes(severity)) return { ok: false, error: 'Unsupported severity' };
+  if (!proposedAction || !CORRECTION_ACTIONS.includes(proposedAction)) return { ok: false, error: 'Unsupported proposed action' };
+  if (!reason) return { ok: false, error: 'A correction reason is required' };
+
+  const proposedClockIn = normalizeDateTime(cleanCorrectionString(body.proposedClockIn, 80));
+  const proposedClockOut = normalizeDateTime(cleanCorrectionString(body.proposedClockOut, 80));
+  const proposedChange: BosTimecardCorrectionRequest['proposedChange'] = { reason };
+  if (proposedClockIn) proposedChange.clockIn = proposedClockIn;
+  if (proposedClockOut) proposedChange.clockOut = proposedClockOut;
+
+  return {
+    ok: true,
+    value: {
+      draftId,
+      type,
+      severity,
+      employeeId: cleanCorrectionString(draft.employeeId, 120),
+      employeeName: cleanCorrectionString(draft.employeeName, 160),
+      clockId: cleanCorrectionString(draft.clockId, 120),
+      clockDate: normalizeBusinessDate(cleanCorrectionString(draft.clockDate, 80)),
+      clockIn: normalizeDateTime(cleanCorrectionString(draft.clockIn, 80)),
+      clockOut: normalizeDateTime(cleanCorrectionString(draft.clockOut, 80)),
+      currentHours: cleanCorrectionHours(draft.currentHours),
+      proposedAction,
+      proposedChange,
+      requiresApproval: true,
+      writeEnabled: false,
+    },
+  };
 }
 
 function normalizeBusinessDate(value: string | null): string | null {

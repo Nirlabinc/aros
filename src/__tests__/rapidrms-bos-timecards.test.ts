@@ -4,6 +4,7 @@ import {
   buildBosTimecardReport,
   draftBosTimecardCorrections,
   normalizeBosTimecardRow,
+  normalizeBosTimecardCorrectionRequest,
   parseRowsFromBosPayload,
   summarizeBosTimecards,
 } from '../../connectors/rapidrms-bos.js';
@@ -108,5 +109,49 @@ describe('RapidRMS BOS timecard adapter', () => {
 
     expect(report.correctionDrafts).toHaveLength(1);
     expect(report.correctionDrafts[0]).toMatchObject({ employeeName: 'Larry Patel', writeEnabled: false });
+  });
+
+  it('normalizes approval requests without enabling BOS writes', () => {
+    const result = normalizeBosTimecardCorrectionRequest({
+      draft: {
+        id: 'missing_clock_out:e1:clk-1',
+        type: 'missing_clock_out',
+        severity: 'critical',
+        employeeId: 'e1',
+        employeeName: '<Larry>',
+        clockId: 'clk-1',
+        clockDate: '7/21/2026',
+        clockIn: '2026-07-21T08:00:00',
+        currentHours: '4.25',
+        proposedAction: 'edit',
+      },
+      proposedClockOut: '2026-07-21T12:15:00Z',
+      reason: 'Forgot to clock out <script>',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toMatchObject({
+      draftId: 'missing_clock_out:e1:clk-1',
+      type: 'missing_clock_out',
+      severity: 'critical',
+      employeeName: 'Larry',
+      clockDate: '2026-07-21',
+      currentHours: 4.25,
+      requiresApproval: true,
+      writeEnabled: false,
+      proposedChange: {
+        clockOut: '2026-07-21T12:15:00.000Z',
+        reason: 'Forgot to clock out script',
+      },
+    });
+  });
+
+  it('rejects unsupported approval request types', () => {
+    expect(normalizeBosTimecardCorrectionRequest({
+      draftId: 'x',
+      type: 'delete_employee',
+      reason: 'no',
+    })).toEqual({ ok: false, error: 'Unsupported correction type' });
   });
 });
