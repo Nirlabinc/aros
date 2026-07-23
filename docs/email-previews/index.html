@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AROS notification emails — preview</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#F4F1EB; color:#1A1714;
+    font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+  .page { max-width:1360px; margin:0 auto; padding:56px 24px 96px; }
+  .lede { max-width:660px; }
+  .mark { display:inline-block; width:8px; height:8px; border-radius:2px; background:#B8842A; margin-right:10px; vertical-align:middle; }
+  h1 { font-family:Newsreader, 'Iowan Old Style', Georgia, serif; font-size:38px; line-height:44px;
+       letter-spacing:-0.02em; font-weight:600; margin:0 0 12px; }
+  .lede p { font-size:17px; line-height:27px; color:#4A443C; margin:0 0 10px; }
+  .rail { display:flex; gap:8px; flex-wrap:wrap; margin:28px 0 0; padding:0; list-style:none; }
+  .rail a { display:inline-block; padding:7px 13px; border:1px solid #DFD8CB; border-radius:999px;
+            background:#FFF; color:#5A5248; text-decoration:none; font-size:13px; font-weight:600; }
+  .rail a:hover { border-color:#B8842A; color:#8A6318; }
+  .card { margin:56px 0 0; padding:28px 28px 20px; background:#FFF; border:1px solid #E4DDD1; border-radius:16px; }
+  .card-head h2 { font-family:Newsreader, 'Iowan Old Style', Georgia, serif; font-size:24px; line-height:30px;
+                  letter-spacing:-0.015em; font-weight:600; margin:0 0 6px; }
+  .meta { margin:0 0 16px; font-size:13px; line-height:20px; color:#8A8175;
+          font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .kv { display:grid; gap:8px; margin:0 0 22px; padding:16px 18px; background:#FBF9F5;
+        border:1px solid #EDE7DC; border-radius:10px; }
+  .kv > div { display:grid; grid-template-columns:110px 1fr; gap:12px; }
+  .kv dt { margin:0; font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:700; color:#8A8175; padding-top:2px; }
+  .kv dd { margin:0; font-size:14px; line-height:20px; color:#2E2A25; }
+  .frames { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  @media (max-width:1000px) { .frames { grid-template-columns:1fr; } }
+  figure { margin:0; }
+  figcaption { font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:700;
+               color:#8A8175; margin:0 0 8px; }
+  iframe { width:100%; border:1px solid #E4DDD1; border-radius:12px; background:#FBF9F5; display:block; }
+  details { margin:20px 0 0; }
+  summary { cursor:pointer; font-size:13px; font-weight:600; color:#8A6318; padding:8px 0; }
+  pre { margin:8px 0 0; padding:20px; background:#1E1B17; color:#E6DFD3; border-radius:10px;
+        overflow-x:auto; font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size:12.5px; line-height:20px; white-space:pre-wrap; }
+  footer { margin:64px 0 0; font-size:13px; line-height:20px; color:#8A8175; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="lede">
+    <h1><span class="mark"></span>AROS notification emails</h1>
+    <p>Every notification lane, rendered from the same shell with realistic Party Liquor data. Light and dark are shown side by side; the dark frames have the <code>prefers-color-scheme</code> wrapper unwrapped so they render regardless of your OS setting.</p>
+    <p>Each card also shows the subject, the hidden preheader that controls the inbox snippet, and the plain-text alternative that ships alongside every HTML send.</p>
+  </div>
+  <ul class="rail"><li><a href="#type-specimen">Type specimen</a></li><li><a href="#void-alert">Void alert (real)</a></li><li><a href="#void-alert-test">Void alert (TEST fire)</a></li><li><a href="#weekly-brief">Weekly brief</a></li><li><a href="#daily-sales">Daily sales summary</a></li><li><a href="#low-stock">Low stock</a></li><li><a href="#connector-health">Connection issue</a></li><li><a href="#team-change">Team change</a></li><li><a href="#fallback-generic">Fallback (unmapped event)</a></li></ul>
+<section class="card" id="type-specimen">
+  <header class="card-head">
+    <h2>Type specimen</h2>
+    <p class="meta">Not a notification — every typographic role in the system, on one card.</p>
+    <dl class="kv">
+      <div><dt>Subject</dt><dd>(specimen — not sent)</dd></div>
+      <div><dt>Preheader</dt><dd>Display 32 · Title 24 · Section 20 · Lead 17 · Body 15 · Label 13.</dd></div>
+    </dl>
+  </header>
+  <div class="frames">
+    <figure><figcaption>Light</figcaption><iframe src="./type-specimen.light.html" style="height:1620px" title="Type specimen — light"></iframe></figure>
+    <figure><figcaption>Dark</figcaption><iframe src="./type-specimen.dark.html" style="height:1620px" title="Type specimen — dark"></iframe></figure>
+  </div>
+  <details>
+    <summary>Plain-text alternative (what text clients and spam filters read)</summary>
+    <pre>AROS
+Party Liquor
+────────────────────────────────────────────────────────
+
+SPECIMEN
+The type system, on one page
+
+Lead, 17px sans at 26px line-height with a hair of negative tracking.
+One sentence, the one that matters, sitting directly under the serif
+title.
+
+Body, 15px sans at 24px — roughly 1.6 — held to about sixty-six
+characters a line by forty pixels of card padding. Hierarchy comes from
+weight, colour and space rather than size, so supporting copy recedes
+without shrinking.
+
+────────────────────────────────────────────────────────
+
+SECTION HEADING, 20PX SERIF
+THE HERO METRIC
+
+VOID AMOUNT
+  $42.00   Tabular serif, 32px, −0.02em
+
+TRANSACTIONS
+  128
+
+AVERAGE TICKET
+  $21.44
+
+REFUNDS
+  3
+
+────────────────────────────────────────────────────────
+
+MONO, TABULAR FIGURES
+LEDGER ROWS
+
+Store     Party Liquor
+Invoice   INV-4482
+Time      Jul 22, 2026 · 9:41 PM
+Amount    $42.00
+
+  • List items carry an ink label and a muted mono detail — 3 / 12
+  • The detail column right-aligns so figures form a column — 128 / 240
+  …and a muted overflow line
+
+CALLOUT
+A tinted panel for the one fact
+Three-pixel accent rule on the left, cream panel, hairline border.
+
+Bulletproof button: https://app.aros.live/dashboard
+
+Note, 13px muted — disclaimers, units, and the quiet print.
+
+────────────────────────────────────────────────────────
+— AROS · app.aros.live
+Manage notifications: https://app.aros.live/notifications
+You are receiving this because notifications are on for your AROS workspace.</pre>
+  </details>
+</section>
+<section class="card" id="void-alert">
+  <header class="card-head">
+    <h2>Void alert (real)</h2>
+    <p class="meta">event: void-alert · structured builder · calm-urgent alert hairline</p>
+    <dl class="kv">
+      <div><dt>Subject</dt><dd>Voided transaction at Party Liquor</dd></div>
+      <div><dt>Preheader</dt><dd>$42.00 voided · invoice INV-4482 · Jul 22, 2026 · 9:41 PM</dd></div>
+    </dl>
+  </header>
+  <div class="frames">
+    <figure><figcaption>Light</figcaption><iframe src="./void-alert.light.html" style="height:1020px" title="Void alert (real) — light"></iframe></figure>
+    <figure><figcaption>Dark</figcaption><iframe src="./void-alert.dark.html" style="height:1020px" title="Void alert (real) — dark"></iframe></figure>
+  </div>
+  <details>
+    <summary>Plain-text alternative (what text clients and spam filters read)</summary>
+    <pre>AROS
+Party Liquor
+────────────────────────────────────────────────────────
+
+VOIDED TRANSACTION
+A transaction was voided at Party Liquor
+
+VOID AMOUNT
+  $42.00   Jul 22, 2026 · 9:41 PM
+
+Store     Party Liquor
+Invoice   INV-4482
+Time      Jul 22, 2026 · 9:41 PM
+Cashier   Ravi P.
+
+Review this transaction: https://app.aros.live/dashboard
+
+Voids are reported exactly as your point of sale records them.
+
+────────────────────────────────────────────────────────
+— AROS · app.aros.live
+Manage notifications: https://app.aros.live/notifications
+You are receiving this because notifications are on for your AROS workspace.</pre>
+  </details>
+</section>
+<section class="card" id="void-alert-test">
+  <header class="card-head">
+    <h2>Void alert (TEST fire)</h2>
+    <p class="meta">event: void-alert · muted TEST band, deliberately unalarming</p>
+    <dl class="kv">
+      <div><dt>Subject</dt><dd>TEST — your void alert is live</dd></div>
+      <div><dt>Preheader</dt><dd>Test only. No transaction was voided at Party Liquor.</dd></div>
+    </dl>
+  </header>
+  <div class="frames">
+    <figure><figcaption>Light</figcaption><iframe src="./void-alert-test.light.html" style="height:1000px" title="Void alert (TEST fire) — light"></iframe></figure>
+    <figure><figcaption>Dark</figcaption><iframe src="./void-alert-test.dark.html" style="height:1000px" title="Void alert (TEST fire) — dark"></iframe></figure>
+  </div>
+  <details>
+    <summary>Plain-text alternative (what text clients and spam filters read)</summary>
+    <pre>AROS
+Party Liquor
+────────────────────────────────────────────────────────
+
+TEST — NO ACTION NEEDED
+Your void alert is working
+
+THIS IS A TEST
+No transaction was voided at Party Liquor. Nothing has happened at
+your store.
+
+When a real void happens I'll email you a message like this one — with
+the amount, the invoice number and the time.
+
+Manage this alert: https://app.aros.live/notifications
+
+Test messages don't count toward your alert limits.
+
+────────────────────────────────────────────────────────
+— AROS · app.aros.live
+Manage notifications: https://app.aros.live/notifications
+You are receiving this because notifications are on for your AROS workspace.</pre>
+  </details>
+</section>
+<section class="card" id="weekly-brief">
+  <header class="card-head">
+    <h2>Weekly brief</h2>
+    <p class="meta">event: weekly-brief · consumes the existing owner-digest payload</p>
+    <dl class="kv">
+      <div><dt>Subject</dt><dd>Weekly Brief — Party Liquor (week ending 2026-07-20)</dd></div>
+      <div><dt>Preheader</dt><dd>Party Liquor: 5 reorder suggestions and this week&amp;#39;s attach rates.</dd></div>
+    </dl>
+  </header>
+  <div class="frames">
+    <figure><figcaption>Light</figcaption><iframe src="./weekly-brief.light.html" style="height:1880px" title="Weekly brief — light"></iframe></figure>
+    <figure><figcaption>Dark</figcaption><iframe src="./weekly-brief.dark.html" style="height:1880px" title="Weekly brief — dark"></iframe></figure>
+  </div>
+  <details>
+    <summary>Plain-text alternative (what text clients and spam filters read)</summary>
+    <pre>AROS
+Party Liquor
+────────────────────────────────────────────────────────
+
+WEEK ENDING 2026-07-20
+Your weekly brief
+
+Your 7-day brief for Party Liquor, week ending 2026-07-20.
+
+────────────────────────────────────────────────────────
+
+5 ITEMS
+REORDER SUGGESTIONS
+
+ESTIMATED REORDER COST
+  $1184.10   Across the items below
+
+  • MICHELOB ULTRA 12 CAN — 0 · buy 23
+  • TITOS HANDMADE VODKA 750 — 3 · buy 12
+  • JAMESON IRISH WHISKEY 750 — 2 · buy 9
+  • CROWN ROYAL 1.75 — 1 · buy 6
+  • DON JULIO BLANCO 750 — 0 · buy 6
+
+On hand · suggested order quantity.
+
+────────────────────────────────────────────────────────
+
+ATTACH RATES
+BOUGHT TOGETHER
+
+  • LIBERTY CREEK MOSCATO 1.5 + LIBERTY CREEK PINOT NOIR 1.5 — 92% · 33×
+  • MODELO ESPECIAL 12 CAN + TAKIS FUEGO 4OZ — 41% · 41×
+  • WHITE CLAW VARIETY 12 + ICE 10LB BAG — 31% · 27×
+
+Open the full brief: https://app.aros.live/dashboard
+
+────────────────────────────────────────────────────────
+— AROS · app.aros.live
+Manage notifications: https://app.aros.live/notifications
+You are receiving this because notifications are on for your AROS workspace.</pre>
+  </details>
+</section>
+<section class="card" id="daily-sales">
+  <header class="card-head">
+    <h2>Daily sales summary</h2>
+    <p class="meta">event: daily-sales-summary · revenue is the typographic hero</p>
+    <dl class="kv">
+      <div><dt>Subject</dt><dd>Party Liquor yesterday: $4218.75 across 197 transactions</dd></div>
+      <div><dt>Preheader</dt><dd>$4218.75 across 197 transactions on 2026-07-22.</dd></div>
+    </dl>
+  </header>
+  <div class="frames">
+    <figure><figcaption>Light</figcaption><iframe src="./daily-sales.light.html" style="height:1000px" title="Daily sales summary — light"></iframe></figure>
+    <figure><figcaption>Dark</figcaption><iframe src="./daily-sales.dark.html" style="height:1000px" title="Daily sales summary — dark"></iframe></figure>
+  </div>
+  <details>
+    <summary>Plain-text alternative (what text clients and spam filters read)</summary>
+    <pre>AROS
+Party Liquor
+────────────────────────────────────────────────────────
+
+2026-07-22
+Yesterday at Party Liquor
+
+REVENUE
+  $4218.75   2026-07-22
+
+TRANSACTIONS
+  197
+
+AVERAGE TICKET
+  $21.41
+
+Open the dashboard: https://app.aros.live/dashboard
+
+────────────────────────────────────────────────────────
+— AROS · app.aros.live
+Manage notifications: https://app.aros.live/notifications
+You are receiving this because notifications are on for your AROS workspace.</pre>
+  </details>
+</section>
+<section class="card" id="low-stock">
+  <header class="card-head">
+    <h2>Low stock</h2>
+    <p class="meta">event: low-stock · count as hero, items as a mono-detail list</p>
+    <dl class="kv">
+      <div><dt>Subject</dt><dd>Party Liquor: 5 items at or below reorder point</dd></div>
+      <div><dt>Preheader</dt><dd>Party Liquor: 5 items need reordering.</dd></div>
+    </dl>
+  </header>
+  <div class="frames">
+    <figure><figcaption>Light</figcaption><iframe src="./low-stock.light.html" style="height:1240px" title="Low stock — light"></iframe></figure>
+    <figure><figcaption>Dark</figcaption><iframe src="./low-stock.dark.html" style="height:1240px" title="Low stock — dark"></iframe></figure>
+  </div>
+  <details>
+    <summary>Plain-text alternative (what text clients and spam filters read)</summary>
+    <pre>AROS
+Party Liquor
+────────────────────────────────────────────────────────
+
+LOW STOCK
+5 items at or below reorder point
+
+ITEMS TO REORDER
+  5   Party Liquor
+
+────────────────────────────────────────────────────────
+
+  • TITOS HANDMADE VODKA 750 — 3 / 12
+  • MODELO ESPECIAL 12 CAN — 2 / 10
+  • MARLBORO GOLD BOX — 1 / 8
+  • RED BULL 12OZ 4PK — 4 / 15
+  • ICE 10LB BAG — 6 / 24
+
+On hand / reorder point.
+
+Review inventory: https://app.aros.live/dashboard
+
+────────────────────────────────────────────────────────
+— AROS · app.aros.live
+Manage notifications: https://app.aros.live/notifications
+You are receiving this because notifications are on for your AROS workspace.</pre>
+  </details>
+</section>
+<section class="card" id="connector-health">
+  <header class="card-head">
+    <h2>Connection issue</h2>
+    <p class="meta">event: connector-health · alert callout + ledger of facts</p>
+    <dl class="kv">
+      <div><dt>Subject</dt><dd>Party Liquor: RapidRMS stopped syncing</dd></div>
+      <div><dt>Preheader</dt><dd>Party Liquor: The last three sync attempts were rejected: the store credentials are no longer accepted.</dd></div>
+    </dl>
+  </header>
+  <div class="frames">
+    <figure><figcaption>Light</figcaption><iframe src="./connector-health.light.html" style="height:1180px" title="Connection issue — light"></iframe></figure>
+    <figure><figcaption>Dark</figcaption><iframe src="./connector-health.dark.html" style="height:1180px" title="Connection issue — dark"></iframe></figure>
+  </div>
+  <details>
+    <summary>Plain-text alternative (what text clients and spam filters read)</summary>
+    <pre>AROS
+Party Liquor
+────────────────────────────────────────────────────────
+
+CONNECTION ISSUE
+RapidRMS stopped syncing
+
+WHAT HAPPENED
+The last three sync attempts were rejected: the store credentials
+are no longer accepted.
+
+Store            Party Liquor
+Connection       RapidRMS
+Detected         Jul 22, 2026 · 6:12 AM
+Last good sync   Jul 21, 2026 · 11:47 PM
+
+Sales, inventory and alerts for this store are paused until the
+connection is restored. Nothing is lost — AROS backfills once it
+reconnects.
+
+Fix the connection: https://app.aros.live/connections
+
+────────────────────────────────────────────────────────
+— AROS · app.aros.live
+Manage notifications: https://app.aros.live/notifications
+You are receiving this because notifications are on for your AROS workspace.</pre>
+  </details>
+</section>
+<section class="card" id="team-change">
+  <header class="card-head">
+    <h2>Team change</h2>
+    <p class="meta">event: team-changes · membership facts as a ledger</p>
+    <dl class="kv">
+      <div><dt>Subject</dt><dd>Team change in your AROS workspace</dd></div>
+      <div><dt>Preheader</dt><dd>ravi@partyliquor.com was invited to the workspace as an admin.</dd></div>
+    </dl>
+  </header>
+  <div class="frames">
+    <figure><figcaption>Light</figcaption><iframe src="./team-change.light.html" style="height:960px" title="Team change — light"></iframe></figure>
+    <figure><figcaption>Dark</figcaption><iframe src="./team-change.dark.html" style="height:960px" title="Team change — dark"></iframe></figure>
+  </div>
+  <details>
+    <summary>Plain-text alternative (what text clients and spam filters read)</summary>
+    <pre>AROS
+Party Liquor
+────────────────────────────────────────────────────────
+
+TEAM CHANGE
+Member invited
+
+ravi@partyliquor.com was invited to the workspace as an admin.
+
+Workspace   Party Liquor
+Person      ravi@partyliquor.com
+Role        admin
+
+Review your team: https://app.aros.live/admin/team
+
+Workspace owners and admins are notified of every membership change.
+
+────────────────────────────────────────────────────────
+— AROS · app.aros.live
+Manage notifications: https://app.aros.live/notifications
+You are receiving this because notifications are on for your AROS workspace.</pre>
+  </details>
+</section>
+<section class="card" id="fallback-generic">
+  <header class="card-head">
+    <h2>Fallback (unmapped event)</h2>
+    <p class="meta">renderNotificationEmail() on an event with no bespoke template — the never-regress path</p>
+    <dl class="kv">
+      <div><dt>Subject</dt><dd>Your AROS report is ready</dd></div>
+      <div><dt>Preheader</dt><dd>Your monthly margin report finished generating for Party Liquor.</dd></div>
+    </dl>
+  </header>
+  <div class="frames">
+    <figure><figcaption>Light</figcaption><iframe src="./fallback-generic.light.html" style="height:980px" title="Fallback (unmapped event) — light"></iframe></figure>
+    <figure><figcaption>Dark</figcaption><iframe src="./fallback-generic.dark.html" style="height:980px" title="Fallback (unmapped event) — dark"></iframe></figure>
+  </div>
+  <details>
+    <summary>Plain-text alternative (what text clients and spam filters read)</summary>
+    <pre>AROS
+────────────────────────────────────────────────────────
+
+Your AROS report is ready
+
+Your monthly margin report finished generating for Party Liquor.
+
+Revenue      $128,440.10
+Margin       24.8%
+Exceptions   3
+
+Open the report: https://app.aros.live/dashboard
+
+────────────────────────────────────────────────────────
+— AROS · app.aros.live
+Manage notifications: https://app.aros.live/notifications
+You are receiving this because notifications are on for your AROS workspace.</pre>
+  </details>
+</section>
+  <footer>Generated by <code>scripts/email-preview.mjs</code> — <code>npx tsx scripts/email-preview.mjs</code>. Templates: <code>src/email-templates.ts</code>.</footer>
+</div>
+</body>
+</html>
